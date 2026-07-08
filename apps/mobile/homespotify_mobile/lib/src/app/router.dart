@@ -1,5 +1,6 @@
-import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+
+import '../features/player/presentation/player_screen.dart';
 
 final GoRouter appRouter = GoRouter(
   initialLocation: '/',
@@ -7,16 +8,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/',
       name: 'home',
-      builder: (context, state) => const _HomeScreen(),
+      builder: (context, state) => const PlayerScreen(),
     ),
   ],
 );
-
-class _HomeScreen extends StatelessWidget {
-  const _HomeScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(body: Center(child: Text('HomeSpotify Mobile')));
-  }
-}
