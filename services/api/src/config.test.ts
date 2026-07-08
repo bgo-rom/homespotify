@@ -10,7 +10,15 @@ describe('loadConfig', () => {
       port: 3000,
       dbPath: './data/homespotify.db',
       logLevel: 'info',
+      musicDir: '../../storage/music',
+      incomingDir: '../../storage/imports',
+      coversDir: '../../storage/covers',
+      maxUploadBytes: 200 * 1024 * 1024,
     });
+  });
+
+  it('rejette une limite upload sous 150 Mo (contrainte WAV)', () => {
+    expect(() => loadConfig({ MAX_UPLOAD_MB: '50' })).toThrow(/MAX_UPLOAD_MB/);
   });
 
   it('lit les variables fournies', () => {

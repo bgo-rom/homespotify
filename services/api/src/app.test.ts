@@ -3,12 +3,21 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, CURRENT_PHASE } from './app.js';
 import type { AppConfig } from './config.js';
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const base = mkdtempSync(join(tmpdir(), 'homespotify-app-test-'));
 const testConfig: AppConfig = {
   nodeEnv: 'test',
   host: '127.0.0.1',
   port: 0,
   dbPath: ':memory:',
   logLevel: 'error',
+  musicDir: join(base, 'music'),
+  incomingDir: join(base, 'imports'),
+  coversDir: join(base, 'covers'),
+  maxUploadBytes: 200 * 1024 * 1024,
 };
 
 let app: FastifyInstance;
@@ -20,6 +29,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
+  rmSync(base, { recursive: true, force: true });
 });
 
 describe('GET /health', () => {

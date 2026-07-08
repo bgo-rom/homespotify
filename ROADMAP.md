@@ -2,7 +2,9 @@
 
 Règle : une phase ne démarre que si les critères de réussite de la précédente sont atteints. Simple avant beau.
 
-> État : Phase 0 ✅ (2026-07-08) · Phase 1 ✅ (2026-07-08) · Phase 2 = prochaine.
+> État : Phase 0 ✅ · Phase 1 ✅ · Phase 2 🚧 (import + streaming WAV livrés le 2026-07-08 ; scanner de dossier et enrichissement MusicBrainz restent à faire) · toutes dates 2026-07-08.
+>
+> **Note de périmètre (2026-07-08)** : l'ingestion est désormais **WAV PCM 16 bit / 44,1–48 kHz uniquement** (décision utilisateur). Le streaming (Phase 4) est déjà amorcé en Phase 2 car indissociable de la validation des gros WAV.
 
 ## Phase 0 — Documentation et décisions
 
@@ -18,12 +20,12 @@ Règle : une phase ne démarre que si les critères de réussite de la précéde
 - **Critères** : `docker compose up` → API répond ; migration/rollback fonctionnent ; lint + tests passent en CI locale. *(Atteints localement — typecheck, tests, build, smoke-test serveur OK ; image Docker à valider sur le serveur cible, Docker absent de la machine de dev.)*
 - **Pièges** : ajouter des features métier trop tôt ; coupler la config à la machine ; ignorer la gestion d'erreurs dès le départ.
 
-## Phase 2 — Import musical local
+## Phase 2 — Import musical local 🚧
 
-- **Objectif** : faire entrer des fichiers possédés proprement.
-- **Livrables** : zone de staging, upload API (multipart en flux), hash en streaming, détection de doublons, analyse ffprobe + statut qualité, normalisation `Artiste/Album (Année)/NN - Titre.ext`, table `import_jobs`.
-- **Critères** : importer un album FLAC et un album MP3 → fichiers rangés, qualité mesurée en base, doublon rejeté avec raison ; aucun fichier chargé entier en RAM.
-- **Pièges** : faire confiance à l'extension ; écraser un fichier existant ; bloquer l'API pendant l'analyse (→ jobs en fond).
+- **Objectif** : faire entrer des WAV possédés proprement, et pouvoir les écouter.
+- **Livrables** : ~~zone de staging~~ ✅, ~~upload API (multipart en flux)~~ ✅, ~~hash en streaming (SHA-256)~~ ✅, ~~détection de doublons~~ ✅, ~~analyse + statut qualité (music-metadata, provenance→statut)~~ ✅, ~~normalisation `Artiste/Album/Titre.wav`~~ ✅, ~~streaming HTTP Range + pochette~~ ✅. **Restant** : scanner de dossier existant (ingestion hors upload), file `import_jobs` pour les lots, enrichissement métadonnées (→ Phase 3).
+- **Critères** : ~~importer un WAV → fichier rangé, qualité mesurée en base, doublon rejeté avec raison ; aucun fichier chargé entier en RAM~~ ✅ (vérifié end-to-end : import 201, dédup 409, Range 206/416, 32 tests). Format d'ingestion borné au WAV PCM 16 bit / 44,1–48 kHz ; les autres formats sont refusés en 422.
+- **Pièges** : ~~faire confiance à l'extension~~ (le conteneur est vérifié, le statut vient de la provenance) ; ~~écraser un fichier existant~~ (suffixe hash en cas de collision) ; bloquer l'API pendant l'analyse (l'analyse WAV est rapide ; passer en job de fond si des lots volumineux apparaissent).
 
 ## Phase 3 — Bibliothèque et métadonnées
 

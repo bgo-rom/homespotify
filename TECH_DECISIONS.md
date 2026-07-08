@@ -11,7 +11,9 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | Audio (analyse/transcodage) | ffmpeg + ffprobe (binaires externes) | définitive |
 | Tags | music-metadata | temporaire |
 | Scanner | scan complet + watcher chokidar | temporaire |
-| Format de stockage lossless | FLAC | définitive |
+| Format d'ingestion & stockage | WAV PCM 16 bit / 44,1 ou 48 kHz **uniquement** | définitive (décidé 2026-07-08, remplace FLAC) |
+| Extraction tags & qualité | music-metadata (RIFF INFO + ID3v2 embarqué + pochette) | définitive |
+| Upload | @fastify/multipart, limite 200 Mo (min 150) | définitive |
 | Transcodage streaming mobile | Opus 128–192 kbps à la volée | définitive (principe) / temporaire (débits) |
 | Client v1 | Web mobile-first (PWA) | définitive |
 | App mobile | React Native + Expo + react-native-track-player | temporaire |
@@ -34,7 +36,7 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - **Node.js/TypeScript/Fastify** : un seul langage du backend au mobile (React Native) ; écosystème audio-métadonnées mature (`music-metadata`) ; le streaming est I/O-bound, domaine où Node excelle ; Fastify est rapide, typé, avec plugins de streaming éprouvés.
 - **SQLite** : un serveur, une famille d'utilisateurs — un fichier suffit ; zéro administration ; sauvegarde triviale ; performances largement suffisantes pour des dizaines de milliers de pistes.
 - **ffmpeg/ffprobe en binaires** : référence absolue du domaine ; les bindings natifs Node cassent aux mises à jour, les binaires non.
-- **FLAC comme format de référence** : lossless, libre, tags natifs, ~50 % plus léger que WAV, supporté partout.
+- **WAV PCM comme format d'ingestion unique** (décision utilisateur, 2026-07-08) : l'optimisation audio est gérée manuellement en amont (ex. upscale AudioSR, rip), HomeSpotify n'ingère que le résultat final en WAV 16 bit / 44,1 ou 48 kHz. Simplifie radicalement le pipeline d'import (un seul format à valider, pas de transcodage à l'entrée). **Coût assumé** : un WAV pèse ~2× un FLAC pour une qualité identique — l'espace disque est sacrifié au profit de la simplicité et d'un format PCM brut sans couche de décodage. Le statut qualité reste piloté par la provenance déclarée, jamais par le conteneur (un WAV issu d'un upscale IA = `lossy`).
 - **Opus pour le transcodage mobile** : meilleur codec lossy à débit égal ; standard ouvert ; supporté nativement Android/iOS moderne.
 - **PWA avant app native** : valide l'API et l'UX de streaming sans le coût mobile ; l'app native (Phase 5) arrive quand le backend est prouvé.
 - **Tailscale/WireGuard d'abord** : supprime toute la classe de risques « API exposée à Internet » pour un usage personnel ; l'exposition publique est un choix réversible plus tard, l'inverse ne l'est pas après compromission.
@@ -50,6 +52,8 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | Prisma | Plus lourd que Drizzle sur SQLite, moteur de requêtes opaque ; Drizzle reste temporaire |
 | Flutter | Solide, mais impose Dart ; React Native mutualise TypeScript avec le backend |
 | MP3/AAC comme format de stockage | Lossy : contraire à la priorité n°1 du projet |
+| FLAC comme format de stockage | Abandonné 2026-07-08 : l'utilisateur préfère un pipeline WAV-only (optimisation manuelle en amont) ; FLAC reste envisageable plus tard comme format d'archivage compressé si l'espace disque devient critique |
+| Import multi-formats (MP3/FLAC/ALAC…) | Repoussé : l'ingestion est volontairement bornée au WAV pour la Phase 2 ; élargir plus tard si besoin |
 | Redis + BullMQ dès le départ | File de jobs in-process suffisante en v1 ; Redis ajouté seulement si besoin prouvé |
 | Nginx | Très bien, mais Caddy automatise TLS avec une config minimale — adapté à une exploitation mono-personne |
 | Exposition HTTPS publique en v1 | Surface d'attaque inutile tant que le VPN couvre l'usage |
@@ -69,10 +73,10 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 
 ## Décisions définitives
 
-- Qualité audio stockée = qualité **mesurée** ; statuts `lossless_verifie` / `lossless_probable` / `lossy` / `inconnue`.
+- Qualité audio stockée = qualité **mesurée** (specs) + **provenance déclarée** ; statuts `lossless_verifie` / `lossless_probable` / `lossy` / `inconnue`. La provenance mappe le statut : `rip_cd`/`achat`→`lossless_verifie`, `libre`→`lossless_probable`, `upscale_ia`→`lossy`, `inconnue`→`inconnue`.
 - Aucun contournement DRM, jamais.
 - Jamais de fichier audio chargé entier en mémoire ; streaming + HTTP Range obligatoires.
-- FLAC = format de stockage lossless de référence.
+- Ingestion et stockage = WAV PCM 16 bit / 44,1 ou 48 kHz uniquement (optimisation gérée en amont par l'utilisateur).
 - SQLite, Docker Compose, comptes locaux, VPN d'abord.
 - La documentation guide le code ; les fichiers de fondation sont maintenus à jour.
 

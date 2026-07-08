@@ -2,6 +2,8 @@
 
 Document de référence pour toute fonctionnalité d'import. Règle d'or : **la qualité affichée est la qualité mesurée, jamais la qualité espérée.**
 
+> **Périmètre d'ingestion (décidé 2026-07-08)** : HomeSpotify n'importe que du **WAV PCM 16 bit / 44,1 ou 48 kHz**. L'utilisateur gère l'acquisition et l'optimisation en amont (rip CD, achat, upscale AudioSR, etc.) et fournit un WAV final. Le conteneur PCM ne prouvant rien sur l'origine, le **statut qualité est déterminé par la provenance déclarée à l'import** — voir le mapping en fin de section « Détection de qualité réelle ». Un WAV issu d'un upscale IA reste `lossy`.
+
 ## Vérité technique : YouTube et le lossless
 
 - YouTube encode tout l'audio en **lossy** (Opus ~130–160 kbps, AAC ~128 kbps). L'original non compressé n'est jamais servi.
@@ -84,7 +86,17 @@ Import (toutes voies)
    - Codec lossless (FLAC/ALAC/WAV) → candidat `lossless`, à confirmer.
 3. **Détection de fake lossless** (fichier lossless issu d'une source lossy) : analyse spectrale — un cutoff net vers 16–20 kHz trahit un réencodage. Outils candidats : analyse spectrale ffmpeg, projets type « Lossless Audio Checker » (voir `À vérifier`).
 4. **Statuts stockés en base** : `lossless_verifie`, `lossless_probable`, `lossy`, `inconnue` — plus les specs mesurées et la provenance déclarée.
-5. La provenance (rip CD, achat Bandcamp, upload utilisateur…) est enregistrée à l'import et pèse dans le statut : un rip CD personnel = `lossless_verifie` ; un FLAC d'origine inconnue = au mieux `lossless_probable`.
+5. La provenance est enregistrée à l'import et **détermine le statut** (implémenté Phase 2, `import-service.ts`) :
+
+| Provenance déclarée | Statut attribué | Exemple |
+|---|---|---|
+| `rip_cd` | `lossless_verifie` | CD personnel rippé en WAV |
+| `achat` | `lossless_verifie` | WAV/FLAC acheté (converti WAV) puis importé |
+| `libre` | `lossless_probable` | Bandcamp gratuit, Creative Commons |
+| `upscale_ia` | `lossy` | Sortie AudioSR — hautes fréquences générées, **pas** du vrai lossless |
+| `inconnue` (défaut) | `inconnue` | Origine non déclarée |
+
+> Note : la détection spectrale de « fake lossless » (§ Détection ci-dessus, point 3) reste pertinente comme garde-fou futur, mais en ingestion WAV-only le statut repose d'abord sur la provenance honnêtement déclarée par l'utilisateur.
 
 ## Règles de métadonnées
 

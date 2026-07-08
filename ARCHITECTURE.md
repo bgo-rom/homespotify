@@ -31,7 +31,7 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 
 ## Stockage des fichiers
 
-- Racine unique, ex. `/data/music`, arborescence `Artiste/Album (Année)/NN - Titre.ext`.
+- Racine unique, ex. `/data/music`, arborescence `Artiste/Album/Titre.wav` (composants assainis : caractères interdits Windows/Linux remplacés). En cas de collision de nom, suffixe `[hash8]`. Le numéro de piste et l'année (peu fiables dans les tags WAV) seront réintroduits dans le nom en Phase 3 si l'enrichissement les fournit.
 - Correspondance dépôt ↔ runtime : les dossiers `storage/music`, `storage/imports`, `storage/covers`, `storage/cache` du projet servent de racines locales de dev et sont montés en volumes Docker sur `/data/music`, `/data/incoming`, `/data/artwork`, `/data/cache`. Leur contenu est ignoré par git (`.gitkeep` seulement).
 - Le serveur **ne modifie jamais** un fichier audio sans action explicite ; l'import copie puis normalise le nom.
 - Zone de staging `/data/incoming` pour les uploads avant analyse/validation.
@@ -47,25 +47,24 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 
 ## Gestion des métadonnées
 
-- Extraction locale : `music-metadata` (tags) + `ffprobe` (propriétés techniques).
-- Enrichissement optionnel : MusicBrainz (IDs, année, artiste d'album), Cover Art Archive (pochettes HD).
+- Extraction locale à l'import : `music-metadata` — lit les tags **RIFF INFO** et **ID3v2 embarqué** des WAV, plus la pochette embarquée, sans dépendre d'un `ffprobe` installé. Fallback sur le nom de fichier si un tag manque (`Artiste inconnu` / `Album inconnu`).
+- Enrichissement optionnel (Phase 3) : MusicBrainz (IDs, année, artiste d'album), Cover Art Archive (pochettes HD).
 - Valeurs enrichies stockées en base ; réécriture des tags dans le fichier uniquement sur demande.
 - Règles détaillées dans `AUDIO_SOURCING.md`.
 
 ## Analyse de qualité audio
 
-- Pipeline à l'import et re-exécutable : ffprobe → classement lossy/lossless → détection fake lossless (analyse spectrale) → statut + specs en base.
-- La provenance déclarée (rip CD, achat, upload inconnu) module le statut final.
+- Ingestion bornée : **WAV PCM 16 bit / 44,1 ou 48 kHz uniquement**. Tout autre conteneur ou spec est refusé en `422` à l'import (`music-metadata` fournit `container`, `bitsPerSample`, `sampleRate`).
+- Le **statut** (`lossless_verifie` / `lossless_probable` / `lossy` / `inconnue`) vient de la **provenance déclarée** à l'import, pas du conteneur : un WAV issu d'un upscale IA reste `lossy`. Mapping : `rip_cd`/`achat`→`lossless_verifie`, `libre`→`lossless_probable`, `upscale_ia`→`lossy`, `inconnue`→`inconnue`.
+- Specs mesurées + statut stockés dans `track_quality` ; re-analyse possible.
 - Aucun affichage « lossless » côté client sans statut `lossless_verifie` ou `lossless_probable` (badge distinct pour chacun).
 
 ## Streaming (HTTP Range)
 
-- Endpoint `GET /api/tracks/:id/stream` avec support complet **`Range: bytes=`** : `206 Partial Content`, `Accept-Ranges`, `Content-Range` — indispensable pour le seek et la reprise.
-- Envoi par flux (`fs.createReadStream` borné), jamais de lecture complète en mémoire.
-- Deux modes :
-  - **Direct** : fichier original (FLAC/MP3/…) — défaut en local.
-  - **Transcodé à la volée** : FLAC → Opus (~128–192 kbps) pour le mobile en données cellulaires ; le client choisit selon réseau et préférence. Le fichier source n'est jamais altéré.
-- En-têtes de cache adaptés (`ETag` sur hash de fichier).
+- Endpoint `GET /api/tracks/:id/stream` avec support complet **`Range: bytes=`** : `206 Partial Content`, `Accept-Ranges: bytes`, `Content-Range`, `416` si hors borne, `200` complet si pas de Range — indispensable pour le seek et la reprise sur des WAV lourds (~50 Mo). Parsing isolé et testé dans `lib/range.ts` (formes `a-b`, `a-`, `-n`, multi-range → 200).
+- `Content-Type: audio/wav` ; `ETag` = hash SHA-256 du fichier ; `Cache-Control: private`.
+- Envoi par flux (`fs.createReadStream` borné à `{ start, end }`), jamais de lecture complète en mémoire.
+- **Évolution prévue** (Phase 4/5) : mode transcodé à la volée WAV → Opus (~128–192 kbps) pour le mobile en données cellulaires ; le fichier source n'est jamais altéré.
 
 ## Application mobile
 

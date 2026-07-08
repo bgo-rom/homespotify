@@ -49,3 +49,18 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : Phase 1 — `better-sqlite3` installé sans son binaire natif, erreur « Could not locate the bindings file » seulement au premier test.
 - **Leçon** : pnpm ≥ 10 ignore les scripts postinstall non approuvés ; un module natif peut sembler installé mais être inutilisable, et `pnpm rebuild` seul ne suffit pas toujours (il a fallu `pnpm install --force` après approbation).
 - **Conséquence** : les modules natifs autorisés sont déclarés dans `package.json > pnpm.onlyBuiltDependencies` (versionné) ; vérifier le binaire par un test réel après tout ajout de dépendance native.
+
+### L-008 — Le statut lossless vient de la provenance, pas du conteneur (2026-07-08)
+- **Contexte** : Phase 2, ingestion WAV-only ; un WAV upscalé par IA (AudioSR) a un conteneur PCM 16 bit identique à un rip CD.
+- **Leçon** : un conteneur PCM/WAV ne prouve **rien** sur l'origine réelle du signal — l'upscale IA génère des hautes fréquences plausibles, ce n'est pas du lossless récupéré. Se fier au conteneur reproduirait le piège du « fake FLAC » (cf. [[L-002]]).
+- **Conséquence** : le statut qualité est mappé depuis la **provenance déclarée** à l'import (`upscale_ia`→`lossy`, `rip_cd`/`achat`→`lossless_verifie`, etc.), jamais depuis l'extension ou le conteneur. Table de mapping dans `AUDIO_SOURCING.md` et `import-service.ts`.
+
+### L-009 — WAV-only : simplicité payée en espace disque (2026-07-08)
+- **Contexte** : décision utilisateur de n'ingérer que du WAV PCM 16 bit, remplaçant FLAC (qui était marqué « définitif »).
+- **Leçon** : un WAV pèse ~2× un FLAC à qualité identique. Le choix privilégie un pipeline d'import trivial (un seul format, pas de transcodage à l'entrée) au prix de l'espace disque — arbitrage assumé, pas un oubli.
+- **Conséquence** : import borné au WAV 44,1/48 kHz 16 bit (refus `422` sinon) ; FLAC gardé en réserve comme format d'archivage compressé si l'espace devient critique (`TECH_DECISIONS.md`). Une décision « définitive » peut changer sur demande explicite de l'utilisateur, à condition de tracer le pourquoi.
+
+### L-010 — curl Windows et chemins absolus dans `-F @` (2026-07-08)
+- **Contexte** : smoke-test Phase 2 — `curl -F "file=@C:/…/smoke.wav"` n'envoyait aucune requête (corps vide, rien côté serveur).
+- **Leçon** : le curl fourni sous Git Bash/Windows interprète mal `@C:/chemin` (le `:` du lecteur casse le parsing) ; l'upload échoue silencieusement sans erreur exploitable.
+- **Conséquence** : pour les tests manuels d'upload, se placer dans le dossier (`cd`) et référencer le fichier en **chemin relatif** (`-F "file=@smoke.wav"`). Les tests automatisés utilisent `app.inject` + `form-data` et ne sont pas concernés.

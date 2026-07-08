@@ -29,7 +29,8 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 - Fichiers audio volumineux (FLAC 20–60 Mo/piste) : streaming par flux obligatoire, jamais de chargement complet en mémoire.
 - Réseau domestique + accès distant : l'exposition à Internet doit être minimale et sécurisée.
 - Utilisateur principal unique (usage personnel/familial).
-- La qualité stockée en base = qualité **détectée par analyse**, pas l'extension du fichier.
+- La qualité stockée en base = specs **mesurées** + statut dérivé de la **provenance déclarée**, jamais de l'extension.
+- **Ingestion WAV-only** (décidé 2026-07-08) : seuls des WAV PCM 16 bit / 44,1–48 kHz sont importés ; l'optimisation est gérée manuellement en amont. Coût assumé : ~2× l'espace d'un FLAC équivalent.
 
 ## Priorités (ordre strict)
 
@@ -43,11 +44,11 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 
 ## MVP
 
-- Backend qui scanne un dossier de musique, extrait les métadonnées et la qualité réelle.
-- Base de données de la bibliothèque (artistes, albums, pistes, qualité).
-- API de streaming avec HTTP Range.
-- Client minimal (web mobile-first) : parcourir la bibliothèque, lire une piste.
-- Import par upload de fichiers possédés.
+- Import par upload de WAV possédés, avec extraction des métadonnées et qualité mesurée. ✅ (Phase 2)
+- Base de données de la bibliothèque (pistes, qualité, provenance). ✅ (Phase 2)
+- API de streaming avec HTTP Range. ✅ (Phase 2)
+- Client minimal (web mobile-first) : parcourir la bibliothèque, lire une piste. 🚧 (lecteur dev `/player` livré ; vrai client en Phase 4)
+- Scanner d'un dossier de musique existant (hors upload). ⏳ (restant Phase 2/3)
 
 ## Version production
 

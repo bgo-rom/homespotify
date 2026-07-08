@@ -8,7 +8,7 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## Statut actuel
 
-**Phase 1** — backend minimal Fastify/TypeScript en place dans `services/api` : endpoints `/health`, `/version`, `/api/status`, SQLite + migrations Drizzle, tests Vitest, Dockerfile. Pas encore d'import audio ni de streaming.
+**Phase 2** 🚧 — import et streaming WAV opérationnels dans `services/api` : upload multipart de gros WAV, extraction tags/pochette (music-metadata), qualité mesurée + statut par provenance, streaming HTTP Range robuste (`audio/wav`, 206/416), lecteur dev `/player`. 32 tests. **Ingestion bornée au WAV PCM 16 bit / 44,1–48 kHz.** Restant : scanner de dossier existant, enrichissement MusicBrainz (Phase 3).
 
 ## Stack pressentie
 
@@ -53,7 +53,28 @@ pnpm start            # lance le build compilé
 pnpm db:migrate       # applique les migrations Drizzle sur la base locale
 ```
 
-Configuration par variables d'environnement (toutes optionnelles en dev) : `HOST`, `PORT`, `DB_PATH`, `LOG_LEVEL`, `NODE_ENV`.
+Configuration par variables d'environnement (toutes optionnelles en dev) : `HOST`, `PORT`, `DB_PATH`, `LOG_LEVEL`, `NODE_ENV`, `MUSIC_DIR`, `INCOMING_DIR`, `COVERS_DIR`, `MAX_UPLOAD_MB` (≥ 150, défaut 200).
+
+### Endpoints (Phase 2)
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| GET | `/health` `/version` `/api/status` | Sondes (status inclut `trackCount`) |
+| POST | `/api/tracks` | Import WAV (multipart : champ `file` + `provenance` optionnel) |
+| GET | `/api/tracks?page&limit` | Liste paginée + qualité |
+| GET | `/api/tracks/:id/stream` | Streaming WAV avec HTTP Range (206/416) |
+| GET | `/api/tracks/:id/cover` | Pochette embarquée |
+| GET | `/player` | Lecteur web de validation (dev) |
+
+Import via curl (chemin **relatif**, cf. [LESSONS.md](LESSONS.md) L-010) :
+
+```bash
+cd /dossier/du/wav
+curl -X POST http://127.0.0.1:3000/api/tracks \
+  -F "provenance=rip_cd" -F "file=@morceau.wav;type=audio/wav"
+```
+
+Provenances acceptées : `rip_cd`, `achat`, `libre`, `upscale_ia`, `inconnue` (défaut). Elle détermine le statut qualité — un `upscale_ia` est marqué `lossy`, jamais lossless.
 
 ### Docker
 
@@ -65,7 +86,7 @@ Non testé sur cette machine (Docker absent) — à valider sur le serveur cible
 
 ## Prochaine étape
 
-**Phase 2 — Import musical local** : staging, upload en flux, hash, analyse ffprobe, statut qualité. Voir [ROADMAP.md](ROADMAP.md).
+Terminer la Phase 2 : **scanner de dossier** (ingérer une bibliothèque WAV existante sans passer par l'upload) et file `import_jobs` pour les lots. Puis **Phase 3 — bibliothèque & métadonnées** (enrichissement MusicBrainz, miniatures). Voir [ROADMAP.md](ROADMAP.md).
 
 ## Commandes Git utiles
 
