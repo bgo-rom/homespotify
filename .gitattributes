@@ -1,0 +1,44 @@
+# Fichiers texte : LF partout (évite les conversions CRLF Windows)
+* text=auto eol=lf
+
+*.md text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Scripts Windows : CRLF requis
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Audio : binaire, jamais de conversion (défense en profondeur, déjà gitignorés)
+*.flac binary
+*.mp3 binary
+*.wav binary
+*.aac binary
+*.m4a binary
+*.ogg binary
+*.opus binary
+*.aiff binary
+*.wma binary
+
+# Images / binaires divers
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Bases SQLite
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

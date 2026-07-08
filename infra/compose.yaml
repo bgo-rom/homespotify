@@ -1,0 +1,23 @@
+# Lancer depuis la racine : docker compose -f infra/compose.yaml up --build
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DB_PATH: /data/db/homespotify.db
+      LOG_LEVEL: info
+    volumes:
+      # Bibliothèque musicale (vide pour l'instant) — lecture seule côté conteneur
+      - ../storage/music:/data/music:ro
+      # Base SQLite persistante hors du conteneur
+      - api-db:/data/db
+    restart: unless-stopped
+
+volumes:
+  api-db:

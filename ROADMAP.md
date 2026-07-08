@@ -2,6 +2,8 @@
 
 Règle : une phase ne démarre que si les critères de réussite de la précédente sont atteints. Simple avant beau.
 
+> État : Phase 0 ✅ (2026-07-08) · Phase 1 ✅ (2026-07-08) · Phase 2 = prochaine.
+
 ## Phase 0 — Documentation et décisions
 
 - **Objectif** : fondations documentaires complètes et cohérentes.
@@ -9,11 +11,11 @@ Règle : une phase ne démarre que si les critères de réussite de la précéde
 - **Critères de réussite** : les 8 fichiers existent, sections complètes, aucune contradiction ; points `À vérifier` listés.
 - **Pièges** : sur-documenter des détails qui changeront ; décider sans marquer « temporaire » ce qui est incertain.
 
-## Phase 1 — Backend minimal
+## Phase 1 — Backend minimal ✅
 
 - **Objectif** : squelette API sain et exécutable.
-- **Livrables** : projet TypeScript/Fastify, config par variables d'environnement, SQLite + migrations Drizzle, `/health`, logs pino, tests de base, Dockerfile + docker-compose.
-- **Critères** : `docker compose up` → API répond ; migration/rollback fonctionnent ; lint + tests passent en CI locale.
+- **Livrables** : projet TypeScript/Fastify, config par variables d'environnement, SQLite + migrations Drizzle, `/health`, logs pino, tests de base, Dockerfile + docker-compose. *(Livré : `services/api`, endpoints `/health` `/version` `/api/status`, table `app_meta`, 8 tests Vitest.)*
+- **Critères** : `docker compose up` → API répond ; migration/rollback fonctionnent ; lint + tests passent en CI locale. *(Atteints localement — typecheck, tests, build, smoke-test serveur OK ; image Docker à valider sur le serveur cible, Docker absent de la machine de dev.)*
 - **Pièges** : ajouter des features métier trop tôt ; coupler la config à la machine ; ignorer la gestion d'erreurs dès le départ.
 
 ## Phase 2 — Import musical local

@@ -8,7 +8,7 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## Statut actuel
 
-**Phase 0.5** — fondations documentaires figées, dépôt Git initialisé, structure de projet en place. **Aucun code applicatif.**
+**Phase 1** — backend minimal Fastify/TypeScript en place dans `services/api` : endpoints `/health`, `/version`, `/api/status`, SQLite + migrations Drizzle, tests Vitest, Dockerfile. Pas encore d'import audio ni de streaming.
 
 ## Stack pressentie
 
@@ -39,9 +39,33 @@ infra/              Docker Compose, config déploiement
 tests/              Tests transverses
 ```
 
+## Démarrage rapide
+
+Prérequis : Node.js ≥ 22 et pnpm 10 (`corepack enable` ou `npx -y pnpm@10 <cmd>`).
+
+```bash
+pnpm install          # dépendances du monorepo
+pnpm dev              # backend en mode watch (http://127.0.0.1:3000)
+pnpm test             # tests (Vitest, DB en mémoire, aucun service externe)
+pnpm typecheck        # vérification TypeScript stricte
+pnpm build            # compilation vers services/api/dist
+pnpm start            # lance le build compilé
+pnpm db:migrate       # applique les migrations Drizzle sur la base locale
+```
+
+Configuration par variables d'environnement (toutes optionnelles en dev) : `HOST`, `PORT`, `DB_PATH`, `LOG_LEVEL`, `NODE_ENV`.
+
+### Docker
+
+```bash
+docker compose -f infra/compose.yaml up --build
+```
+
+Non testé sur cette machine (Docker absent) — à valider sur le serveur cible.
+
 ## Prochaine étape
 
-**Phase 1 — Backend minimal** : squelette Fastify/TypeScript, SQLite + migrations, `/health`, logs, Docker. Voir [ROADMAP.md](ROADMAP.md).
+**Phase 2 — Import musical local** : staging, upload en flux, hash, analyse ffprobe, statut qualité. Voir [ROADMAP.md](ROADMAP.md).
 
 ## Commandes Git utiles
 

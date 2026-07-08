@@ -23,6 +23,11 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | Monitoring | Uptime Kuma + endpoint /health | temporaire |
 | Sauvegardes | restic (fichiers) + VACUUM INTO (SQLite) | temporaire |
 | Enrichissement métadonnées | MusicBrainz + Cover Art Archive | définitive |
+| Package manager | pnpm 10 + workspaces (sans Turborepo/Nx) | définitive (pnpm) / temporaire (sans orchestrateur) |
+| Tests | Vitest (DB SQLite `:memory:` pour les tests d'API) | définitive |
+| Exécution dev | tsx watch ; build via tsc | temporaire |
+| Lint | Aucun linter pour l'instant (TypeScript strict seul) | temporaire |
+| Mobile : plateforme prioritaire | Android d'abord | définitive (v1) |
 
 ## Raisons des choix
 
@@ -57,6 +62,10 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - **React Native/Expo** : confirmer en début de Phase 5 (état de react-native-track-player à ce moment-là).
 - **Uptime Kuma / restic / Caddy** : confirmer en Phase 7 selon l'infra réelle.
 - **Débits Opus (128–192)** : ajuster après tests d'écoute et mesure du débit montant réel.
+- **Sans Turborepo/Nx** : réévaluer seulement si les builds croisés deviennent pénibles (≥ 3 packages actifs).
+- **Sans linter** : ajouter ESLint (config plate minimale) au plus tard en Phase 3, quand le volume de code le justifiera.
+- **tsx/tsc** : réévaluer si le build devient lent (alternatives : tsup, esbuild).
+- **Migrations auto au démarrage de l'app** : acceptable pour un serveur mono-utilisateur (idempotent, rapide) ; à revoir si multi-instances un jour.
 
 ## Décisions définitives
 
@@ -73,5 +82,6 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - [ ] Débit montant de la connexion domestique → qualité max de streaming distant.
 - [ ] Nombre d'utilisateurs réels (solo ou famille) → périmètre auth/profils.
 - [ ] Outil de détection fake lossless (cf. `AUDIO_SOURCING.md > À vérifier`).
-- [ ] iOS, Android ou les deux pour l'app mobile (impacte Phase 5 et le coût compte développeur Apple).
+- [x] Plateforme mobile : **Android d'abord** (décidé 2026-07-08) ; iOS éventuellement plus tard (coût compte développeur Apple).
+- [ ] Validation du build Docker sur le serveur cible (Docker absent de la machine de dev).
 - [ ] Cible de sauvegarde hors site (cloud chiffré ? disque chez un proche ?).

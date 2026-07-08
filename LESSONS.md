@@ -39,3 +39,13 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : mise en place des fichiers de fondation (Phase 0).
 - **Leçon** : coder puis documenter produit des docs mortes et des décisions implicites ; l'inverse maintient la cohérence.
 - **Conséquence** : toute implémentation se conforme à `ARCHITECTURE.md` et `TECH_DECISIONS.md` ; tout écart impose la mise à jour du document dans le même lot de travail.
+
+### L-006 — Windows impose une discipline de fins de ligne (2026-07-08)
+- **Contexte** : premier commit — git a averti de conversions LF→CRLF sur tous les fichiers.
+- **Leçon** : sans `.gitattributes`, un dépôt édité sous Windows accumule des diffs parasites de fins de ligne, et les fichiers binaires (audio, sqlite) risquent une corruption par conversion.
+- **Conséquence** : `.gitattributes` à la racine force LF sur le texte et `binary` sur audio/images/DB ; toute nouvelle extension de fichier doit y être classée.
+
+### L-007 — pnpm 10 bloque les scripts de build natifs par défaut (2026-07-08)
+- **Contexte** : Phase 1 — `better-sqlite3` installé sans son binaire natif, erreur « Could not locate the bindings file » seulement au premier test.
+- **Leçon** : pnpm ≥ 10 ignore les scripts postinstall non approuvés ; un module natif peut sembler installé mais être inutilisable, et `pnpm rebuild` seul ne suffit pas toujours (il a fallu `pnpm install --force` après approbation).
+- **Conséquence** : les modules natifs autorisés sont déclarés dans `package.json > pnpm.onlyBuiltDependencies` (versionné) ; vérifier le binaire par un test réel après tout ajout de dépendance native.
