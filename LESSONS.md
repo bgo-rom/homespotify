@@ -64,3 +64,13 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : smoke-test Phase 2 — `curl -F "file=@C:/…/smoke.wav"` n'envoyait aucune requête (corps vide, rien côté serveur).
 - **Leçon** : le curl fourni sous Git Bash/Windows interprète mal `@C:/chemin` (le `:` du lecteur casse le parsing) ; l'upload échoue silencieusement sans erreur exploitable.
 - **Conséquence** : pour les tests manuels d'upload, se placer dans le dossier (`cd`) et référencer le fichier en **chemin relatif** (`-F "file=@smoke.wav"`). Les tests automatisés utilisent `app.inject` + `form-data` et ne sont pas concernés.
+
+### L-011 — Un scanner qui copie dans un dossier sous sa racine se re-scanne lui-même (2026-07-08)
+- **Contexte** : validation du scanner Windows — en plaçant la bibliothèque gérée sous le dossier scanné, le re-scan voyait les copies gérées (7 fichiers au lieu de 4). La dédup par hash les rattrapait, mais au prix d'I/O inutile.
+- **Leçon** : un scanner récursif qui écrit sa sortie sous sa propre racine d'entrée finit par ingérer ses propres copies. Non fatal ici grâce au hash, mais gaspilleur et déroutant.
+- **Conséquence** : la marche exclut explicitement les dossiers gérés (`musicDir`/`incomingDir`/`coversDir`, comparés en chemins résolus). Toujours exclure les dossiers de destination d'un scan récursif.
+
+### L-012 — Encodage des heredocs PowerShell et caractères accentués (2026-07-08)
+- **Contexte** : création de fixtures WAV avec noms accentués (`Café Déjà`) via `Out-File -Encoding ascii` → les accents devenaient `?`, `writeFileSync` échouait (ENOENT).
+- **Leçon** : sous PowerShell 5.1, écrire un script contenant des accents avec `-Encoding ascii` corrompt les caractères ; le défaut UTF-16 pose d'autres soucis à Node. Les accents dans les chemins/tags doivent transiter par un canal UTF-8 propre.
+- **Conséquence** : le cas accentué est couvert par les **tests unitaires** (`app.inject`, sources en UTF-8) ; les validations manuelles Windows évitent les accents dans les scripts générés, ou utilisent un encodage UTF-8 explicite.

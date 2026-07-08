@@ -40,10 +40,9 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 
 ## Scanner de bibliothèque
 
-- Scan initial complet puis **watcher** (chokidar) sur `/data/music` pour les ajouts/retraits.
-- Réconciliation par hash : détection de doublons, de déplacements et de fichiers modifiés.
-- Idempotent et reprenable : un scan interrompu ne corrompt rien.
-- Journalisé dans `scan_log` (fichiers ajoutés, ignorés, en erreur).
+- **Livré (Phase 2)** : CLI `scan` (`src/scripts/scan-cli.ts` → `src/import/scan.ts`) ingère en masse un dossier WAV local sans passer par l'upload HTTP. Marche récursive `node:path` (gère les `\` Windows), copie chaque WAV dans la bibliothèque gérée en réutilisant le cœur d'ingestion (`importFromPath`), déduplication par hash SHA-256, un échec par fichier n'interrompt pas le lot. Les dossiers gérés (`musicDir`/`incomingDir`/`coversDir`) sont exclus de la marche pour ne pas re-scanner les copies. Usage : `pnpm --filter @homespotify/api scan -- "C:\Musique" --provenance rip_cd`.
+- **À venir** : **watcher** (chokidar) sur le dossier musique pour les ajouts/retraits à chaud ; journalisation dans `scan_log` ; réconciliation des déplacements/suppressions.
+- Idempotent et reprenable : re-scanner est sûr (tout doublon est ignoré par hash).
 
 ## Gestion des métadonnées
 
@@ -62,8 +61,9 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 ## Streaming (HTTP Range)
 
 - Endpoint `GET /api/tracks/:id/stream` avec support complet **`Range: bytes=`** : `206 Partial Content`, `Accept-Ranges: bytes`, `Content-Range`, `416` si hors borne, `200` complet si pas de Range — indispensable pour le seek et la reprise sur des WAV lourds (~50 Mo). Parsing isolé et testé dans `lib/range.ts` (formes `a-b`, `a-`, `-n`, multi-range → 200).
-- `Content-Type: audio/wav` ; `ETag` = hash SHA-256 du fichier ; `Cache-Control: private`.
+- `Content-Type: audio/wav` ; `ETag` = hash SHA-256 du fichier ; `Last-Modified` = mtime ; `Cache-Control: private`.
 - Envoi par flux (`fs.createReadStream` borné à `{ start, end }`), jamais de lecture complète en mémoire.
+- **Téléchargement offline** : `GET /api/tracks/:id/download` partage le même service de fichier (Range-resumable) mais force le téléchargement via `Content-Disposition: attachment` (fallback ASCII + `filename*=UTF-8''…` pour les tags accentués). Le listing expose `etag` (hash) et `lastModified` par piste pour que le client compare son cache local sans télécharger.
 - **Évolution prévue** (Phase 4/5) : mode transcodé à la volée WAV → Opus (~128–192 kbps) pour le mobile en données cellulaires ; le fichier source n'est jamais altéré.
 
 ## Application mobile
@@ -75,8 +75,8 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 
 ## Cache hors ligne
 
-- Téléchargement explicite par piste/album/playlist vers le stockage local de l'app.
-- Table `cache_state` côté serveur + manifeste local côté client : synchronisation par comparaison de hashes.
+- Téléchargement explicite par piste/album/playlist vers le stockage local de l'app (route unitaire `download` livrée en Phase 2/3 ; groupage album/playlist à venir).
+- Table `cache_state` côté serveur + manifeste local côté client : synchronisation par comparaison des `etag`/`lastModified` exposés au listing (identité par hash).
 - Choix de qualité du cache : original ou Opus transcodé (économie d'espace).
 - Lecture hors ligne 100 % locale (mode avion) ; purge LRU configurable par plafond d'espace.
 

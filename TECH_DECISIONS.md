@@ -30,6 +30,9 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | Exécution dev | tsx watch ; build via tsc | temporaire |
 | Lint | Aucun linter pour l'instant (TypeScript strict seul) | temporaire |
 | Mobile : plateforme prioritaire | Android d'abord | définitive (v1) |
+| OS serveur hôte | Windows 11 | définitive (confirmé 2026-07-08) |
+| Ingestion masse | CLI `scan` (hors requête HTTP), dédup par hash, dossiers gérés exclus | définitive |
+| Téléchargement offline | Route `download` (`Content-Disposition`, Range-resumable) + `etag`/`lastModified` au listing | définitive |
 
 ## Raisons des choix
 
@@ -87,5 +90,7 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - [ ] Nombre d'utilisateurs réels (solo ou famille) → périmètre auth/profils.
 - [ ] Outil de détection fake lossless (cf. `AUDIO_SOURCING.md > À vérifier`).
 - [x] Plateforme mobile : **Android d'abord** (décidé 2026-07-08) ; iOS éventuellement plus tard (coût compte développeur Apple).
-- [ ] Validation du build Docker sur le serveur cible (Docker absent de la machine de dev).
+- [x] OS serveur hôte : **Windows 11** (confirmé 2026-07-08). Conséquence : chemins gérés via `node:path` (backslash), à surveiller si portage Linux un jour (les chemins stockés en base sont en `\`).
+- [ ] Validation du build Docker sur le serveur cible (Docker absent de la machine de dev). Note : sous Windows, Docker Desktop (backend WSL2) sera nécessaire ; les chemins de volumes dans `compose.yaml` sont relatifs et compatibles.
+- [ ] `import_jobs` / file asynchrone : utile si les scans de très grosses bibliothèques doivent tourner en tâche de fond pilotable depuis l'API (actuellement le scan est un CLI synchrone).
 - [ ] Cible de sauvegarde hors site (cloud chiffré ? disque chez un proche ?).

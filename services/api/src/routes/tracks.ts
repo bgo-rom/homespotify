@@ -1,13 +1,61 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyReply, FastifyRequest, FastifyInstance } from 'fastify';
 import { desc, eq, sql } from 'drizzle-orm';
 import { tracks, trackQuality } from '../db/schema.js';
 import { parseRangeHeader } from '../lib/range.js';
 import { importWav, ImportError, PROVENANCES, type Provenance } from '../import/import-service.js';
 
 const COVER_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
+
+/** Valeur Content-Disposition : fallback ASCII + filename* UTF-8 (RFC 5987) pour tags accentués. */
+function attachmentHeader(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(name);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
+ * Sert un fichier local avec support HTTP Range (206/416/200), pour le streaming
+ * et le téléchargement. `disposition` fixé → force le download.
+ */
+async function serveTrackFile(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  absPath: string,
+  hash: string,
+  disposition?: string,
+): Promise<FastifyReply> {
+  const info = await stat(absPath).then((s) => s, () => null);
+  if (info === null) {
+    request.log.error({ path: absPath }, 'fichier audio absent du disque');
+    return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Fichier audio introuvable' });
+  }
+  const size = info.size;
+
+  reply
+    .header('accept-ranges', 'bytes')
+    .header('etag', `"${hash}"`)
+    .header('last-modified', info.mtime.toUTCString())
+    .header('cache-control', 'private, max-age=3600')
+    .type('audio/wav');
+  if (disposition) reply.header('content-disposition', disposition);
+
+  const range = parseRangeHeader(request.headers.range, size);
+  if (range === 'unsatisfiable') {
+    return reply.code(416).header('content-range', `bytes */${size}`).send();
+  }
+  if (range === 'full') {
+    return reply.code(200).header('content-length', size).send(createReadStream(absPath));
+  }
+  const { start, end } = range;
+  return reply
+    .code(206)
+    .header('content-range', `bytes ${start}-${end}/${size}`)
+    .header('content-length', end - start + 1)
+    .send(createReadStream(absPath, { start, end }));
+}
 
 export function registerTrackRoutes(app: FastifyInstance): void {
   const { db } = app.dbHandle;
@@ -16,6 +64,9 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     incomingDir: app.config.incomingDir,
     coversDir: app.config.coversDir,
   };
+
+  const findTrack = (id: string) =>
+    db.select().from(tracks).where(eq(tracks.id, Number(id))).get();
 
   // Import d'un WAV (multipart, champ "file" + champ optionnel "provenance")
   app.post('/api/tracks', async (request, reply) => {
@@ -42,7 +93,7 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     }
   });
 
-  // Liste paginée avec qualité mesurée
+  // Liste paginée. `etag`/`lastModified` par piste → le client mobile compare son cache local.
   app.get<{ Querystring: { page?: string; limit?: string } }>('/api/tracks', async (request) => {
     const page = Math.max(1, Number(request.query.page ?? 1) || 1);
     const limit = Math.min(200, Math.max(1, Number(request.query.limit ?? 50) || 50));
@@ -64,6 +115,8 @@ export function registerTrackRoutes(app: FastifyInstance): void {
         durationSeconds: t.durationSeconds,
         sizeBytes: t.sizeBytes,
         hasCover: t.coverPath !== null,
+        etag: t.hash, // identité de contenu ; change si le fichier est réimporté
+        lastModified: t.createdAt,
         quality: q && {
           container: q.container,
           codec: q.codec,
@@ -78,43 +131,30 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     return { page, limit, total, items };
   });
 
-  // Streaming avec support HTTP Range complet (seek/reprise sans télécharger les ~50 Mo)
+  // Streaming avec HTTP Range (seek/reprise sans télécharger les ~50 Mo)
   app.get<{ Params: { id: string } }>('/api/tracks/:id/stream', async (request, reply) => {
-    const track = db.select().from(tracks).where(eq(tracks.id, Number(request.params.id))).get();
+    const track = findTrack(request.params.id);
     if (!track) {
       return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
     }
-    const absPath = join(app.config.musicDir, track.path);
-    const size = await stat(absPath).then((s) => s.size, () => null);
-    if (size === null) {
-      request.log.error({ trackId: track.id, path: track.path }, 'fichier audio absent du disque');
-      return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Fichier audio introuvable' });
-    }
+    return serveTrackFile(request, reply, join(app.config.musicDir, track.path), track.hash);
+  });
 
-    reply
-      .header('accept-ranges', 'bytes')
-      .header('etag', `"${track.hash}"`)
-      .header('cache-control', 'private, max-age=3600')
-      .type('audio/wav');
-
-    const range = parseRangeHeader(request.headers.range, size);
-    if (range === 'unsatisfiable') {
-      return reply.code(416).header('content-range', `bytes */${size}`).send();
+  // Téléchargement forcé (cache hors ligne mobile) : Content-Disposition attachment
+  app.get<{ Params: { id: string } }>('/api/tracks/:id/download', async (request, reply) => {
+    const track = findTrack(request.params.id);
+    if (!track) {
+      return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
     }
-    if (range === 'full') {
-      return reply.code(200).header('content-length', size).send(createReadStream(absPath));
-    }
-    const { start, end } = range;
-    return reply
-      .code(206)
-      .header('content-range', `bytes ${start}-${end}/${size}`)
-      .header('content-length', end - start + 1)
-      .send(createReadStream(absPath, { start, end }));
+    const filename = `${track.artist} - ${track.title}.wav`;
+    return serveTrackFile(
+      request, reply, join(app.config.musicDir, track.path), track.hash, attachmentHeader(filename),
+    );
   });
 
   // Pochette embarquée extraite à l'import
   app.get<{ Params: { id: string } }>('/api/tracks/:id/cover', async (request, reply) => {
-    const track = db.select().from(tracks).where(eq(tracks.id, Number(request.params.id))).get();
+    const track = findTrack(request.params.id);
     if (!track?.coverPath) {
       return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Pas de pochette' });
     }

@@ -8,7 +8,7 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## Statut actuel
 
-**Phase 2** 🚧 — import et streaming WAV opérationnels dans `services/api` : upload multipart de gros WAV, extraction tags/pochette (music-metadata), qualité mesurée + statut par provenance, streaming HTTP Range robuste (`audio/wav`, 206/416), lecteur dev `/player`. 32 tests. **Ingestion bornée au WAV PCM 16 bit / 44,1–48 kHz.** Restant : scanner de dossier existant, enrichissement MusicBrainz (Phase 3).
+**Phase 2 ✅ → Phase 3 amorcée** — dans `services/api` : upload multipart de gros WAV, **scanner de dossier local** (CLI `scan`, dédup par hash, chemins Windows), extraction tags/pochette (music-metadata), qualité mesurée + statut par provenance, streaming HTTP Range robuste (`audio/wav`, 206/416), **téléchargement offline** (`download` + `etag`/`lastModified`), lecteur dev `/player`. 43 tests. Serveur hôte **Windows 11**. **Ingestion bornée au WAV PCM 16 bit / 44,1–48 kHz.** Restant : enrichissement MusicBrainz, watcher de dossier (Phase 3).
 
 ## Stack pressentie
 
@@ -61,8 +61,9 @@ Configuration par variables d'environnement (toutes optionnelles en dev) : `HOST
 |---|---|---|
 | GET | `/health` `/version` `/api/status` | Sondes (status inclut `trackCount`) |
 | POST | `/api/tracks` | Import WAV (multipart : champ `file` + `provenance` optionnel) |
-| GET | `/api/tracks?page&limit` | Liste paginée + qualité |
+| GET | `/api/tracks?page&limit` | Liste paginée + qualité + `etag`/`lastModified` (comparaison cache) |
 | GET | `/api/tracks/:id/stream` | Streaming WAV avec HTTP Range (206/416) |
+| GET | `/api/tracks/:id/download` | Téléchargement forcé (`Content-Disposition`, offline mobile) |
 | GET | `/api/tracks/:id/cover` | Pochette embarquée |
 | GET | `/player` | Lecteur web de validation (dev) |
 
@@ -75,6 +76,16 @@ curl -X POST http://127.0.0.1:3000/api/tracks \
 ```
 
 Provenances acceptées : `rip_cd`, `achat`, `libre`, `upscale_ia`, `inconnue` (défaut). Elle détermine le statut qualité — un `upscale_ia` est marqué `lossy`, jamais lossless.
+
+### Scanner un dossier local (ingestion en masse)
+
+Pour ingérer une bibliothèque WAV existante sans upload HTTP (dédup automatique par hash, re-scan sûr) :
+
+```bash
+pnpm --filter @homespotify/api scan -- "C:\Musique_HomeSpotify" --provenance rip_cd
+```
+
+Le scanner parcourt récursivement le dossier (chemins Windows gérés), copie chaque WAV valide dans la bibliothèque gérée (`MUSIC_DIR`), ignore les fichiers déjà en base et refuse ce qui n'est pas du WAV 16 bit / 44,1–48 kHz. Un fichier en échec n'interrompt pas le lot ; code de sortie ≠ 0 s'il y a au moins un échec.
 
 ### Docker
 

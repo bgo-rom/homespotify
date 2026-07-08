@@ -48,7 +48,8 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 - Base de données de la bibliothèque (pistes, qualité, provenance). ✅ (Phase 2)
 - API de streaming avec HTTP Range. ✅ (Phase 2)
 - Client minimal (web mobile-first) : parcourir la bibliothèque, lire une piste. 🚧 (lecteur dev `/player` livré ; vrai client en Phase 4)
-- Scanner d'un dossier de musique existant (hors upload). ⏳ (restant Phase 2/3)
+- Scanner d'un dossier de musique existant (hors upload). ✅ (Phase 2, CLI `scan`)
+- Téléchargement pour cache hors ligne mobile. ✅ (route `download` + `etag`/`lastModified`, Phase 3 amorcée)
 
 ## Version production
 

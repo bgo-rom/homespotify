@@ -2,9 +2,9 @@
 
 Règle : une phase ne démarre que si les critères de réussite de la précédente sont atteints. Simple avant beau.
 
-> État : Phase 0 ✅ · Phase 1 ✅ · Phase 2 🚧 (import + streaming WAV livrés le 2026-07-08 ; scanner de dossier et enrichissement MusicBrainz restent à faire) · toutes dates 2026-07-08.
+> État : Phase 0 ✅ · Phase 1 ✅ · Phase 2 ✅ (import upload + scanner de dossier + streaming livrés le 2026-07-08 ; enrichissement MusicBrainz reporté en Phase 3) · Phase 3 amorcée (téléchargement offline). Toutes dates 2026-07-08.
 >
-> **Note de périmètre (2026-07-08)** : l'ingestion est désormais **WAV PCM 16 bit / 44,1–48 kHz uniquement** (décision utilisateur). Le streaming (Phase 4) est déjà amorcé en Phase 2 car indissociable de la validation des gros WAV.
+> **Note de périmètre (2026-07-08)** : l'ingestion est **WAV PCM 16 bit / 44,1–48 kHz uniquement** (décision utilisateur) ; serveur hôte **Windows 11**. Le streaming (Phase 4) et le téléchargement offline (Phase 6) sont amorcés dès la Phase 2/3 car indissociables de la validation des gros WAV.
 
 ## Phase 0 — Documentation et décisions
 
@@ -20,12 +20,12 @@ Règle : une phase ne démarre que si les critères de réussite de la précéde
 - **Critères** : `docker compose up` → API répond ; migration/rollback fonctionnent ; lint + tests passent en CI locale. *(Atteints localement — typecheck, tests, build, smoke-test serveur OK ; image Docker à valider sur le serveur cible, Docker absent de la machine de dev.)*
 - **Pièges** : ajouter des features métier trop tôt ; coupler la config à la machine ; ignorer la gestion d'erreurs dès le départ.
 
-## Phase 2 — Import musical local 🚧
+## Phase 2 — Import musical local ✅
 
 - **Objectif** : faire entrer des WAV possédés proprement, et pouvoir les écouter.
-- **Livrables** : ~~zone de staging~~ ✅, ~~upload API (multipart en flux)~~ ✅, ~~hash en streaming (SHA-256)~~ ✅, ~~détection de doublons~~ ✅, ~~analyse + statut qualité (music-metadata, provenance→statut)~~ ✅, ~~normalisation `Artiste/Album/Titre.wav`~~ ✅, ~~streaming HTTP Range + pochette~~ ✅. **Restant** : scanner de dossier existant (ingestion hors upload), file `import_jobs` pour les lots, enrichissement métadonnées (→ Phase 3).
-- **Critères** : ~~importer un WAV → fichier rangé, qualité mesurée en base, doublon rejeté avec raison ; aucun fichier chargé entier en RAM~~ ✅ (vérifié end-to-end : import 201, dédup 409, Range 206/416, 32 tests). Format d'ingestion borné au WAV PCM 16 bit / 44,1–48 kHz ; les autres formats sont refusés en 422.
-- **Pièges** : ~~faire confiance à l'extension~~ (le conteneur est vérifié, le statut vient de la provenance) ; ~~écraser un fichier existant~~ (suffixe hash en cas de collision) ; bloquer l'API pendant l'analyse (l'analyse WAV est rapide ; passer en job de fond si des lots volumineux apparaissent).
+- **Livrables** : ~~zone de staging~~ ✅, ~~upload API (multipart en flux)~~ ✅, ~~hash en streaming (SHA-256)~~ ✅, ~~détection de doublons~~ ✅, ~~analyse + statut qualité (music-metadata, provenance→statut)~~ ✅, ~~normalisation `Artiste/Album/Titre.wav`~~ ✅, ~~streaming HTTP Range + pochette~~ ✅, ~~**scanner de dossier local** (CLI `scan`, ingestion masse hors upload, dédup par hash, gestion chemins Windows)~~ ✅. **Reporté Phase 3** : file `import_jobs` pour lots asynchrones, enrichissement MusicBrainz.
+- **Critères** : ~~importer un WAV → fichier rangé, qualité mesurée, doublon rejeté~~ ✅ ; ~~scanner une bibliothèque WAV existante avec dédup~~ ✅ (validé sur vrai dossier Windows : 3 importés, refus 96 kHz, re-scan 100 % dédupé, 43 tests). Format borné au WAV PCM 16 bit / 44,1–48 kHz ; autres formats refusés en 422.
+- **Pièges** : ~~faire confiance à l'extension~~ (conteneur vérifié, statut par provenance) ; ~~écraser un fichier existant~~ (suffixe hash) ; ~~scanner qui re-parcourt sa propre bibliothèque gérée~~ (dossiers gérés exclus de la marche) ; bloquer l'API pendant l'analyse (analyse WAV rapide ; scan en CLI hors requête HTTP).
 
 ## Phase 3 — Bibliothèque et métadonnées
 
@@ -51,7 +51,8 @@ Règle : une phase ne démarre que si les critères de réussite de la précéde
 ## Phase 6 — Cache hors ligne
 
 - **Objectif** : écouter sans réseau.
-- **Livrables** : téléchargement par piste/album/playlist, manifeste local + `cache_state` serveur, vérification par hash, choix qualité du cache, purge LRU par plafond d'espace, lecture 100 % locale.
+- **Fondations posées en Phase 2/3** : route `GET /api/tracks/:id/download` (`Content-Disposition: attachment`, Range-resumable) + `etag`/`lastModified` par piste dans le listing → le client compare son cache local au serveur par hash.
+- **Livrables** : téléchargement par piste/album/playlist (route unitaire prête), manifeste local + `cache_state` serveur, vérification par hash, choix qualité du cache, purge LRU par plafond d'espace, lecture 100 % locale.
 - **Critères** : album mis en cache → lecture complète en mode avion ; resync correcte après modification serveur ; suppression libère l'espace annoncé.
 - **Pièges** : cache incohérent après renommage serveur (→ toujours réconcilier par hash) ; télécharger sur cellulaire sans consentement ; corruption silencieuse (→ vérifier les hashes).
 

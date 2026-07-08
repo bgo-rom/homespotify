@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "tsx src/db/migrate-cli.ts"
+    "db:migrate": "tsx src/db/migrate-cli.ts",
+    "scan": "tsx src/scripts/scan-cli.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.3",

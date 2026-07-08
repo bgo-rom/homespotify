@@ -6,46 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
 import type { AppConfig } from './config.js';
-
-// --- Fixture : WAV PCM synthétique valide, avec tags RIFF INFO optionnels ---
-function riffChunk(id: string, body: Buffer): Buffer {
-  const padded = body.length % 2 ? Buffer.concat([body, Buffer.alloc(1)]) : body;
-  const header = Buffer.alloc(8);
-  header.write(id, 0, 4, 'ascii');
-  header.writeUInt32LE(body.length, 4);
-  return Buffer.concat([header, padded]);
-}
-
-function makeWav(opts: {
-  sampleRate?: number;
-  bitDepth?: number;
-  seconds?: number;
-  title?: string;
-  artist?: string;
-} = {}): Buffer {
-  const { sampleRate = 44100, bitDepth = 16, seconds = 0.05, title, artist } = opts;
-  const bytesPerSample = bitDepth / 8;
-  const data = Buffer.alloc(Math.floor(sampleRate * seconds) * bytesPerSample); // mono, silence
-  const fmt = Buffer.alloc(16);
-  fmt.writeUInt16LE(1, 0); // PCM
-  fmt.writeUInt16LE(1, 2); // mono
-  fmt.writeUInt32LE(sampleRate, 4);
-  fmt.writeUInt32LE(sampleRate * bytesPerSample, 8);
-  fmt.writeUInt16LE(bytesPerSample, 12);
-  fmt.writeUInt16LE(bitDepth, 14);
-  const chunks = [Buffer.from('WAVE'), riffChunk('fmt ', fmt), riffChunk('data', data)];
-  if (title !== undefined || artist !== undefined) {
-    const info: Buffer[] = [Buffer.from('INFO')];
-    if (title !== undefined) info.push(riffChunk('INAM', Buffer.from(`${title}\0`, 'latin1')));
-    if (artist !== undefined) info.push(riffChunk('IART', Buffer.from(`${artist}\0`, 'latin1')));
-    chunks.push(riffChunk('LIST', Buffer.concat(info)));
-  }
-  const body = Buffer.concat(chunks);
-  const riff = Buffer.alloc(8);
-  riff.write('RIFF', 0, 4, 'ascii');
-  riff.writeUInt32LE(body.length, 4);
-  return Buffer.concat([riff, body]);
-}
+import { makeWav } from './test/wav.js';
 
 // --- App de test : DB mémoire + répertoires jetables ---
 const base = mkdtempSync(join(tmpdir(), 'homespotify-test-'));
@@ -136,6 +97,13 @@ describe('GET /api/tracks', () => {
     expect(body.total).toBeGreaterThanOrEqual(1);
     expect(body.items[0].quality.bitDepth).toBe(16);
   });
+
+  it('expose etag + lastModified par piste (comparaison de cache mobile)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/tracks' });
+    const item = res.json().items[0];
+    expect(item.etag).toMatch(/^[0-9a-f]{64}$/); // hash SHA-256
+    expect(new Date(item.lastModified).getTime()).not.toBeNaN();
+  });
 });
 
 describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
@@ -205,6 +173,48 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
 
   it('piste inconnue → 404', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/tracks/424242/stream' });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('GET /api/tracks/:id/download (cache hors ligne)', () => {
+  let trackId: number;
+
+  beforeAll(async () => {
+    const res = await upload(
+      makeWav({ title: 'Café Déjà', artist: 'Renée', seconds: 0.3 }),
+      'd.wav',
+      'achat',
+    );
+    trackId = res.json().id;
+  });
+
+  it('force le téléchargement complet avec Content-Disposition + ETag + Last-Modified', async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/tracks/${trackId}/download` });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('audio/wav');
+    const cd = res.headers['content-disposition'] as string;
+    expect(cd).toContain('attachment');
+    expect(cd).toMatch(/filename="[^"]*\.wav"/); // fallback ASCII
+    expect(cd).toMatch(/filename\*=UTF-8''/); // accents préservés (Café Déjà, Renée)
+    expect(res.headers['etag']).toBeTruthy();
+    expect(res.headers['last-modified']).toBeTruthy();
+    expect(res.rawPayload.subarray(0, 4).toString('ascii')).toBe('RIFF');
+  });
+
+  it('supporte le Range pour la reprise de téléchargement (206)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/download`,
+      headers: { range: 'bytes=0-9' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.rawPayload.length).toBe(10);
+  });
+
+  it('piste inconnue → 404', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/tracks/999999/download' });
     expect(res.statusCode).toBe(404);
   });
 });
