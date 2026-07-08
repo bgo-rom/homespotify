@@ -28,6 +28,15 @@ out/
 coverage/
 *.tsbuildinfo
 
+# --- Flutter / Android : artefacts et signatures (jamais dans git) ---
+.dart_tool/
+.gradle/
+*.apk
+*.aab
+*.keystore
+*.jks
+key.properties
+
 # --- Bases SQLite locales générées ---
 *.sqlite
 *.sqlite3
