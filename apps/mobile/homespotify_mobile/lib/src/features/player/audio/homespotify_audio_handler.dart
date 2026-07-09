@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:developer' as developer;
 
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -87,9 +88,24 @@ Stream<R> _combineLatest3<A, B, C, R>(
 
 class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   HomeSpotifyAudioHandler({AudioPlayer? player})
-    : _player = player ?? AudioPlayer() {
+    : _player =
+          player ??
+          AudioPlayer(
+            // Buffers généreux : évite les sous-alimentations (grésillements,
+            // coupures) en streamant du lossless lourd (WAV ~1,4 Mbps) sur le LAN.
+            audioLoadConfiguration: const AudioLoadConfiguration(
+              androidLoadControl: AndroidLoadControl(
+                minBufferDuration: Duration(seconds: 30),
+                maxBufferDuration: Duration(seconds: 120),
+                bufferForPlaybackDuration: Duration(milliseconds: 2500),
+                bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5),
+                prioritizeTimeOverSizeThresholds: true,
+              ),
+            ),
+          ) {
     // Volume unité (1.0) = flux natif du fichier, bit-perfect, sans boost.
     _player.setVolume(1.0);
+    _configureAudioSession();
     _playbackEventSubscription = _player.playbackEventStream.listen(
       _broadcastPlaybackState,
       onError: _broadcastPlaybackError,
@@ -103,6 +119,65 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
   late final StreamSubscription<PlaybackEvent> _playbackEventSubscription;
   late final StreamSubscription<PlayerState> _playerStateSubscription;
+  StreamSubscription<AudioInterruptionEvent>? _interruptionSubscription;
+  StreamSubscription<void>? _becomingNoisySubscription;
+  bool _pausedByInterruption = false;
+  double _volumeBeforeDuck = 1.0;
+
+  /// Configure la session audio Android en mode « musique » : chemin média
+  /// haute qualité, focus audio propre, gestion des interruptions et du casque.
+  /// Sans cette configuration, Android route l'audio par un chemin dégradé
+  /// (grésillements, mélange avec les sons système).
+  Future<void> _configureAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+
+      // Casque débranché / sortie coupée → pause (évite de jouer fort au HP).
+      _becomingNoisySubscription = session.becomingNoisyEventStream.listen((_) {
+        developer.log('sortie coupée → pause', name: 'homespotify.audio');
+        pause();
+      });
+
+      // Appel entrant, autre app audio, notification…
+      _interruptionSubscription = session.interruptionEventStream.listen((
+        event,
+      ) {
+        if (event.begin) {
+          switch (event.type) {
+            case AudioInterruptionType.duck:
+              _volumeBeforeDuck = _player.volume;
+              _player.setVolume(_volumeBeforeDuck * 0.4);
+            case AudioInterruptionType.pause:
+            case AudioInterruptionType.unknown:
+              if (_player.playing) {
+                _pausedByInterruption = true;
+                pause();
+              }
+          }
+        } else {
+          switch (event.type) {
+            case AudioInterruptionType.duck:
+              _player.setVolume(_volumeBeforeDuck);
+            case AudioInterruptionType.pause:
+              if (_pausedByInterruption) {
+                _pausedByInterruption = false;
+                play();
+              }
+            case AudioInterruptionType.unknown:
+              break;
+          }
+        }
+      });
+    } catch (error, stackTrace) {
+      developer.log(
+        'échec configuration AudioSession',
+        name: 'homespotify.audio',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
 
   Future<void> setTrack({
     required String trackId,
@@ -194,6 +269,8 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   );
 
   Future<void> dispose() async {
+    await _interruptionSubscription?.cancel();
+    await _becomingNoisySubscription?.cancel();
     await _playbackEventSubscription.cancel();
     await _playerStateSubscription.cancel();
     await _player.dispose();
