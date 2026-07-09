@@ -13,6 +13,11 @@ final playbackStateProvider = StreamProvider<PlaybackState>((ref) {
   return ref.watch(audioHandlerProvider).playbackState;
 });
 
+/// File de lecture exposée par audio_service pour l'UI et les contrôles système.
+final queueProvider = StreamProvider<List<MediaItem>>((ref) {
+  return ref.watch(audioHandlerProvider).queue;
+});
+
 /// Position continue + tampon + durée, pour la barre de progression.
 final positionDataProvider = StreamProvider<PlayerPositionData>((ref) {
   return ref.watch(audioHandlerProvider).positionDataStream;

@@ -3,18 +3,27 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../player/audio/homespotify_audio_handler.dart';
+import '../../player/presentation/player_providers.dart';
 import '../data/library_api.dart';
 import '../domain/track.dart';
+import 'library_playback_controller.dart';
 
 const Color _bg = Color(0xFF0D0D10);
 const Color _accent = Color(0xFF1DB954);
 
-/// Écran bibliothèque : liste les pistes du serveur, lance la lecture au tap.
-class LibraryScreen extends ConsumerWidget {
+/// Écran bibliothèque : liste les pistes du serveur, lance une file au tap.
+class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<LibraryScreen> createState() => _LibraryScreenState();
+}
+
+class _LibraryScreenState extends ConsumerState<LibraryScreen> {
+  int? _loadingTrackId;
+
+  @override
+  Widget build(BuildContext context) {
     final library = ref.watch(libraryProvider);
 
     return Scaffold(
@@ -63,7 +72,10 @@ class LibraryScreen extends ConsumerWidget {
                           coverUrl: track.hasCover
                               ? api.coverUri(track.id).toString()
                               : null,
-                          onTap: () => _playTrack(context, ref, track),
+                          isLoading: _loadingTrackId == track.id,
+                          onTap: _loadingTrackId == null
+                              ? () => _playQueue(context, tracks, i)
+                              : null,
                         );
                       },
                     );
@@ -74,36 +86,34 @@ class LibraryScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _playTrack(
+  Future<void> _playQueue(
     BuildContext context,
-    WidgetRef ref,
-    Track track,
+    List<Track> tracks,
+    int initialIndex,
   ) async {
-    final api = ref.read(libraryApiProvider);
-    final handler = ref.read(audioHandlerProvider);
+    if (_loadingTrackId != null) return;
+    final track = tracks[initialIndex];
+    setState(() => _loadingTrackId = track.id);
     try {
-      await handler.setTrack(
-        trackId: '${track.id}',
-        streamUri: api.streamUri(track.id),
-        title: track.title,
-        artist: track.artist,
-        album: track.album.isEmpty ? null : track.album,
-        artUri: track.hasCover ? api.coverUri(track.id) : null,
-        duration: track.duration,
-      );
-      await handler.play();
+      await ref
+          .read(libraryPlaybackControllerProvider)
+          .playQueue(tracks: tracks, initialIndex: initialIndex);
       if (context.mounted) context.push('/player');
-    } catch (_) {
+    } catch (error) {
       if (context.mounted) {
+        final message = error is AudioPlaybackException
+            ? error.userMessage
+            : 'Erreur audio pendant la lecture.';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Lecture impossible de « ${track.title} ». '
-              'Vérifie que le serveur est accessible.',
+              'Lecture impossible de « ${track.title} » : $message',
             ),
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _loadingTrackId = null);
     }
   }
 }
@@ -112,12 +122,14 @@ class _TrackTile extends StatelessWidget {
   const _TrackTile({
     required this.track,
     required this.coverUrl,
+    required this.isLoading,
     required this.onTap,
   });
 
   final Track track;
   final String? coverUrl;
-  final VoidCallback onTap;
+  final bool isLoading;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -129,7 +141,7 @@ class _TrackTile extends StatelessWidget {
     return ListTile(
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: _Thumbnail(url: coverUrl),
+      leading: _Thumbnail(url: coverUrl, isLoading: isLoading),
       title: Text(
         track.title,
         maxLines: 1,
@@ -150,18 +162,23 @@ class _TrackTile extends StatelessWidget {
             ],
             Expanded(
               child: Text(
-                subtitle,
+                isLoading ? 'Préparation de la lecture...' : subtitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white54, fontSize: 12.5),
+                style: TextStyle(
+                  color: isLoading ? _accent : Colors.white54,
+                  fontSize: 12.5,
+                ),
               ),
             ),
           ],
         ),
       ),
       trailing: _TrailingMeta(
+        trackId: '${track.id}',
         duration: track.duration,
         specs: track.quality?.shortLabel,
+        isLoading: isLoading,
       ),
     );
   }
@@ -169,36 +186,79 @@ class _TrackTile extends StatelessWidget {
 
 /// Durée + specs (kHz/bit) alignées à droite, sur deux lignes.
 class _TrailingMeta extends StatelessWidget {
-  const _TrailingMeta({required this.duration, required this.specs});
+  const _TrailingMeta({
+    required this.trackId,
+    required this.duration,
+    required this.specs,
+    required this.isLoading,
+  });
 
+  final String trackId;
   final Duration? duration;
   final String? specs;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
-    if (duration == null && specs == null) return const SizedBox.shrink();
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.end,
+    if (isLoading) {
+      return const SizedBox(
+        width: 24,
+        height: 24,
+        child: CircularProgressIndicator(strokeWidth: 2.4, color: _accent),
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        if (duration != null)
-          Text(
-            _formatDuration(duration!),
-            style: const TextStyle(
-              color: Colors.white54,
-              fontSize: 12,
-              fontFeatures: [FontFeature.tabularFigures()],
-            ),
+        _CurrentTrackIndicator(trackId: trackId),
+        if (duration != null || specs != null) ...[
+          const SizedBox(width: 8),
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (duration != null)
+                Text(
+                  _formatDuration(duration!),
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 12,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              if (specs != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    specs!,
+                    style: const TextStyle(
+                      color: Colors.white30,
+                      fontSize: 10.5,
+                    ),
+                  ),
+                ),
+            ],
           ),
-        if (specs != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              specs!,
-              style: const TextStyle(color: Colors.white30, fontSize: 10.5),
-            ),
-          ),
+        ],
       ],
+    );
+  }
+}
+
+class _CurrentTrackIndicator extends ConsumerWidget {
+  const _CurrentTrackIndicator({required this.trackId});
+
+  final String trackId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final currentTrackId = ref.watch(mediaItemProvider).asData?.value?.id;
+    final playing =
+        ref.watch(playbackStateProvider).asData?.value.playing ?? false;
+    if (currentTrackId != trackId || !playing) return const SizedBox.shrink();
+    return const Tooltip(
+      message: 'En lecture',
+      child: Icon(Icons.play_arrow_rounded, color: _accent, size: 20),
     );
   }
 }
@@ -233,9 +293,10 @@ class _FormatChip extends StatelessWidget {
 }
 
 class _Thumbnail extends StatelessWidget {
-  const _Thumbnail({this.url});
+  const _Thumbnail({required this.isLoading, this.url});
 
   final String? url;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -244,12 +305,14 @@ class _Thumbnail extends StatelessWidget {
       child: SizedBox(
         width: 52,
         height: 52,
-        child: url == null
+        child: url == null || isLoading
             ? const _ThumbnailPlaceholder()
             : Image.network(
                 url!,
                 fit: BoxFit.cover,
                 cacheWidth: 104,
+                cacheHeight: 104,
+                filterQuality: FilterQuality.low,
                 gaplessPlayback: true,
                 errorBuilder: (_, _, _) => const _ThumbnailPlaceholder(),
                 loadingBuilder: (context, child, progress) =>

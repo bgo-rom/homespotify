@@ -26,6 +26,9 @@ void main() {
           playbackStateProvider.overrideWith(
             (ref) => const Stream<PlaybackState>.empty(),
           ),
+          queueProvider.overrideWith(
+            (ref) => Stream.value(const <MediaItem>[]),
+          ),
           positionDataProvider.overrideWith(
             (ref) => const Stream<PlayerPositionData>.empty(),
           ),
@@ -38,6 +41,22 @@ void main() {
     expect(find.text('Aucune piste en lecture'), findsOneWidget);
     expect(find.text('EN LECTURE'), findsOneWidget);
     expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+    expect(
+      tester
+          .widget<IconButton>(
+            find.widgetWithIcon(IconButton, Icons.skip_previous_rounded),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<IconButton>(
+            find.widgetWithIcon(IconButton, Icons.skip_next_rounded),
+          )
+          .onPressed,
+      isNull,
+    );
   });
 
   testWidgets('piste chargée : affiche titre, artiste, temps et volume', (
@@ -54,6 +73,11 @@ void main() {
           ),
           playbackStateProvider.overrideWith(
             (ref) => Stream.value(PlaybackState(playing: true)),
+          ),
+          queueProvider.overrideWith(
+            (ref) => Stream.value(const <MediaItem>[
+              MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+            ]),
           ),
           positionDataProvider.overrideWith(
             (ref) => Stream.value(
@@ -79,5 +103,108 @@ void main() {
     // 2 sliders : progression (SeekBar) + volume ; l'icône volume est unique.
     expect(find.byType(Slider), findsNWidgets(2));
     expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
+    expect(find.text('80 %'), findsOneWidget);
+  });
+
+  testWidgets('buffering : affiche preparation et bloque le play initial', (
+    tester,
+  ) async {
+    await usePhoneSurface(tester);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mediaItemProvider.overrideWith(
+            (ref) => Stream.value(
+              const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+            ),
+          ),
+          playbackStateProvider.overrideWith(
+            (ref) => Stream.value(
+              PlaybackState(
+                playing: false,
+                processingState: AudioProcessingState.buffering,
+              ),
+            ),
+          ),
+          queueProvider.overrideWith(
+            (ref) => Stream.value(const <MediaItem>[
+              MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+            ]),
+          ),
+          positionDataProvider.overrideWith(
+            (ref) => Stream.value(PlayerPositionData.zero),
+          ),
+          volumeProvider.overrideWith((ref) => Stream.value(1.0)),
+        ],
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+    await tester.pump();
+
+    final preparationLabel = find.text('Preparation de la lecture...');
+    final bufferingLabel = find.text('Mise en tampon audio...');
+    expect(
+      preparationLabel.evaluate().isNotEmpty ||
+          bufferingLabel.evaluate().isNotEmpty,
+      isTrue,
+    );
+    expect(find.byType(CircularProgressIndicator), findsWidgets);
+  });
+
+  testWidgets('queue : précédent/suivant suivent les bornes de la file', (
+    tester,
+  ) async {
+    await usePhoneSurface(tester);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mediaItemProvider.overrideWith(
+            (ref) => Stream.value(
+              const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+            ),
+          ),
+          playbackStateProvider.overrideWith(
+            (ref) => Stream.value(
+              PlaybackState(
+                playing: true,
+                processingState: AudioProcessingState.ready,
+                queueIndex: 0,
+              ),
+            ),
+          ),
+          queueProvider.overrideWith(
+            (ref) => Stream.value(const <MediaItem>[
+              MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+              MediaItem(id: '2', title: 'Stress', artist: 'Justice'),
+            ]),
+          ),
+          positionDataProvider.overrideWith(
+            (ref) => Stream.value(PlayerPositionData.zero),
+          ),
+          volumeProvider.overrideWith((ref) => Stream.value(1.0)),
+        ],
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byIcon(Icons.skip_previous_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.skip_next_rounded), findsOneWidget);
+    expect(
+      tester
+          .widget<IconButton>(
+            find.widgetWithIcon(IconButton, Icons.skip_previous_rounded),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<IconButton>(
+            find.widgetWithIcon(IconButton, Icons.skip_next_rounded),
+          )
+          .onPressed,
+      isNotNull,
+    );
   });
 }

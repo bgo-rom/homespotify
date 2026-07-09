@@ -3,12 +3,99 @@ import 'dart:developer' as developer;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
 final audioHandlerProvider = Provider<HomeSpotifyAudioHandler>((ref) {
   throw StateError('audioHandlerProvider must be overridden at startup.');
 });
+
+void _debugAudioLog(String message, {Object? error, StackTrace? stackTrace}) {
+  if (!kDebugMode) return;
+  developer.log(
+    message,
+    name: 'homespotify.audio',
+    error: error,
+    stackTrace: stackTrace,
+  );
+}
+
+/// Métadonnées et URL natives d'une entrée de file audio.
+///
+/// Aucune donnée audio n'est conservée ici : [streamUri] est l'URL du fichier
+/// original servi par le backend, que just_audio lit progressivement.
+class PlayerQueueItem {
+  const PlayerQueueItem({
+    required this.id,
+    required this.streamUri,
+    required this.title,
+    this.artist,
+    this.album,
+    this.artUri,
+    this.duration,
+    this.mimeType,
+    this.extension,
+    this.headers,
+  });
+
+  final String id;
+  final Uri streamUri;
+  final String title;
+  final String? artist;
+  final String? album;
+  final Uri? artUri;
+  final Duration? duration;
+  final String? mimeType;
+  final String? extension;
+  final Map<String, String>? headers;
+
+  String get format {
+    final normalizedExtension = extension?.replaceFirst('.', '').trim();
+    if (normalizedExtension != null && normalizedExtension.isNotEmpty) {
+      return normalizedExtension.toUpperCase();
+    }
+    return switch (mimeType) {
+      'audio/wav' => 'WAV',
+      'audio/flac' => 'FLAC',
+      _ => 'inconnu',
+    };
+  }
+
+  MediaItem toMediaItem({
+    bool includeArtwork = true,
+    Duration? resolvedDuration,
+  }) {
+    return MediaItem(
+      id: id,
+      title: title,
+      artist: artist,
+      album: album,
+      artUri: includeArtwork ? artUri : null,
+      duration: resolvedDuration ?? duration,
+      extras: <String, dynamic>{
+        'streamUri': streamUri.toString(),
+        if (mimeType != null) 'mimeType': mimeType,
+        if (extension != null) 'extension': extension,
+        'format': format,
+      },
+    );
+  }
+
+  AudioSource toAudioSource() {
+    return AudioSource.uri(streamUri, headers: headers, tag: toMediaItem());
+  }
+}
+
+/// Erreur de lecture présentable sans exposer les détails natifs à l'UI.
+class AudioPlaybackException implements Exception {
+  const AudioPlaybackException(this.userMessage);
+
+  final String userMessage;
+
+  @override
+  String toString() => userMessage;
+}
 
 /// Instantané combiné position / tampon / durée du lecteur.
 ///
@@ -60,18 +147,18 @@ Stream<R> _combineLatest3<A, B, C, R>(
 
   controller = StreamController<R>(
     onListen: () {
-      subA = a.listen((v) {
-        lastA = v;
+      subA = a.listen((value) {
+        lastA = value;
         hasA = true;
         emit();
       }, onError: controller.addError);
-      subB = b.listen((v) {
-        lastB = v;
+      subB = b.listen((value) {
+        lastB = value;
         hasB = true;
         emit();
       }, onError: controller.addError);
-      subC = c.listen((v) {
-        lastC = v;
+      subC = c.listen((value) {
+        lastC = value;
         hasC = true;
         emit();
       }, onError: controller.addError);
@@ -91,8 +178,6 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     : _player =
           player ??
           AudioPlayer(
-            // Buffers généreux : évite les sous-alimentations (grésillements,
-            // coupures) en streamant du lossless lourd (WAV ~1,4 Mbps) sur le LAN.
             audioLoadConfiguration: const AudioLoadConfiguration(
               androidLoadControl: AndroidLoadControl(
                 minBufferDuration: Duration(seconds: 30),
@@ -103,9 +188,10 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
               ),
             ),
           ) {
-    // Volume unité (1.0) = flux natif du fichier, bit-perfect, sans boost.
-    _player.setVolume(1.0);
-    _configureAudioSession();
+    // Le gain applicatif démarre à l'unité. Il n'est jamais augmenté au-delà
+    // de 1.0 et aucun effet DSP, ReplayGain ou normalisation n'est appliqué.
+    _initialVolumeSetup = _player.setVolume(1.0);
+    _audioSessionSetup = _configureAudioSession();
     _playbackEventSubscription = _player.playbackEventStream.listen(
       _broadcastPlaybackState,
       onError: _broadcastPlaybackError,
@@ -113,135 +199,156 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     _playerStateSubscription = _player.playerStateStream.listen((_) {
       _broadcastPlaybackState(_player.playbackEvent);
     });
+    _currentIndexSubscription = _player.currentIndexStream.listen(
+      _onCurrentIndexChanged,
+    );
   }
 
   final AudioPlayer _player;
+  final List<PlayerQueueItem> _queueItems = <PlayerQueueItem>[];
 
+  late final Future<void> _initialVolumeSetup;
+  late final Future<void> _audioSessionSetup;
   late final StreamSubscription<PlaybackEvent> _playbackEventSubscription;
   late final StreamSubscription<PlayerState> _playerStateSubscription;
+  late final StreamSubscription<int?> _currentIndexSubscription;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSubscription;
   StreamSubscription<void>? _becomingNoisySubscription;
-  bool _pausedByInterruption = false;
-  double _volumeBeforeDuck = 1.0;
 
-  /// Configure la session audio Android en mode « musique » : chemin média
-  /// haute qualité, focus audio propre, gestion des interruptions et du casque.
-  /// Sans cette configuration, Android route l'audio par un chemin dégradé
-  /// (grésillements, mélange avec les sons système).
-  Future<void> _configureAudioSession() async {
-    try {
-      final session = await AudioSession.instance;
-      await session.configure(const AudioSessionConfiguration.music());
+  int _loadRequest = 0;
+  int? _currentQueueIndex;
+  bool _sourceReady = false;
+  ProcessingState? _lastLoggedProcessingState;
+  String? _publishedMediaKey;
 
-      // Casque débranché / sortie coupée → pause (évite de jouer fort au HP).
-      _becomingNoisySubscription = session.becomingNoisyEventStream.listen((_) {
-        developer.log('sortie coupée → pause', name: 'homespotify.audio');
-        pause();
-      });
-
-      // Appel entrant, autre app audio, notification…
-      _interruptionSubscription = session.interruptionEventStream.listen((
-        event,
-      ) {
-        if (event.begin) {
-          switch (event.type) {
-            case AudioInterruptionType.duck:
-              _volumeBeforeDuck = _player.volume;
-              _player.setVolume(_volumeBeforeDuck * 0.4);
-            case AudioInterruptionType.pause:
-            case AudioInterruptionType.unknown:
-              if (_player.playing) {
-                _pausedByInterruption = true;
-                pause();
-              }
-          }
-        } else {
-          switch (event.type) {
-            case AudioInterruptionType.duck:
-              _player.setVolume(_volumeBeforeDuck);
-            case AudioInterruptionType.pause:
-              if (_pausedByInterruption) {
-                _pausedByInterruption = false;
-                play();
-              }
-            case AudioInterruptionType.unknown:
-              break;
-          }
-        }
-      });
-    } catch (error, stackTrace) {
-      developer.log(
-        'échec configuration AudioSession',
-        name: 'homespotify.audio',
-        error: error,
-        stackTrace: stackTrace,
-      );
-    }
-  }
-
-  Future<void> setTrack({
-    required String trackId,
-    required Uri streamUri,
-    required String title,
-    String? artist,
-    String? album,
-    Uri? artUri,
-    Duration? duration,
-    Map<String, String>? headers,
+  /// Prépare puis démarre atomiquement une file de lecture.
+  ///
+  /// `setAudioSources` initialise seulement la piste demandée ; la file elle-
+  /// même reste une liste de sources distantes, jamais des fichiers chargés en
+  /// mémoire. Un second tap remplace proprement la demande précédente.
+  Future<void> setQueueAndPlay({
+    required List<PlayerQueueItem> items,
+    required int initialIndex,
   }) async {
-    final item = MediaItem(
-      id: trackId,
-      title: title,
-      artist: artist,
-      album: album,
-      artUri: artUri,
-      duration: duration,
-      extras: {'streamUrl': streamUri.toString()},
-    );
+    if (items.isEmpty) {
+      throw ArgumentError.value(
+        items,
+        'items',
+        'La file ne peut pas être vide.',
+      );
+    }
+    if (initialIndex < 0 || initialIndex >= items.length) {
+      throw RangeError.index(initialIndex, items, 'initialIndex');
+    }
 
-    mediaItem.add(item);
-    developer.log(
-      'chargement piste $trackId · $streamUri · durée=${duration ?? 'inconnue'}',
-      name: 'homespotify.audio',
-    );
+    final request = ++_loadRequest;
+    final immutableItems = List<PlayerQueueItem>.unmodifiable(items);
+    final initialItem = immutableItems[initialIndex];
+
     try {
-      developer.log(
-        'setTrack $trackId · volume=${_player.volume}',
-        name: 'homespotify.audio',
+      await _ensurePlaybackReady();
+      if (request != _loadRequest) return;
+
+      _queueItems
+        ..clear()
+        ..addAll(immutableItems);
+      _currentQueueIndex = initialIndex;
+      _sourceReady = false;
+      _publishedMediaKey = null;
+
+      // audio_service expose la file complète au lockscreen/notification.
+      queue.add(
+        immutableItems
+            .map((item) => item.toMediaItem())
+            .toList(growable: false),
       );
-      await _player.setAudioSource(
-        AudioSource.uri(streamUri, headers: headers),
+      queueTitle.add('File d’attente');
+      _publishCurrentMediaItem(includeArtwork: false);
+      _publishLoadingState(initialIndex);
+
+      _debugAudioLog(
+        'préparation queue track=${initialItem.id} index=$initialIndex '
+        'size=${immutableItems.length} streamUri=${initialItem.streamUri} '
+        'format=${initialItem.format} mimeType=${initialItem.mimeType ?? 'inconnu'} '
+        'volume=${_player.volume}',
       );
-      developer.log(
-        'source prête $trackId · état=${_player.processingState.name} · volume=${_player.volume}',
-        name: 'homespotify.audio',
+
+      await _player.pause();
+      if (request != _loadRequest) return;
+
+      _debugAudioLog(
+        'début setAudioSources track=${initialItem.id} '
+        'state=${_player.processingState.name} '
+        'buffered=${_player.bufferedPosition}',
       );
+      final loadedDuration = await _player.setAudioSources(
+        immutableItems
+            .map((item) => item.toAudioSource())
+            .toList(growable: false),
+        initialIndex: initialIndex,
+        preload: true,
+      );
+      if (request != _loadRequest) return;
+
+      _sourceReady = true;
+      _currentQueueIndex = _player.currentIndex ?? initialIndex;
+      _publishCurrentMediaItem(
+        includeArtwork: true,
+        resolvedDuration: loadedDuration,
+      );
+      _debugAudioLog(
+        'fin setAudioSources track=${initialItem.id} '
+        'returnedDuration=${loadedDuration ?? initialItem.duration ?? 'inconnue'} '
+        'state=${_player.processingState.name} '
+        'buffered=${_player.bufferedPosition} '
+        'volume=${_player.volume}',
+      );
+      _broadcastPlaybackState(_player.playbackEvent);
+
+      await _startPlayback();
+    } on PlayerInterruptedException catch (error, stackTrace) {
+      if (request != _loadRequest) {
+        _debugAudioLog(
+          'préparation remplacée track=${initialItem.id}',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        return;
+      }
+      _recordPlaybackFailure(initialItem, error, stackTrace);
+      throw AudioPlaybackException(_friendlyAudioError(error));
     } catch (error, stackTrace) {
-      developer.log(
-        'échec du chargement de la source $trackId',
-        name: 'homespotify.audio',
-        error: error,
-        stackTrace: stackTrace,
-      );
-      rethrow;
+      if (request != _loadRequest) return;
+      _recordPlaybackFailure(initialItem, error, stackTrace);
+      if (error is AudioPlaybackException) rethrow;
+      throw AudioPlaybackException(_friendlyAudioError(error));
     }
   }
 
-  /// Volume interne du lecteur (0.0–1.0), indépendant du volume système Android.
+  /// Volume interne du lecteur (0.0–1.0), sans boost applicatif.
   double get volume => _player.volume;
 
   Stream<double> get volumeStream => _player.volumeStream;
 
-  Future<void> setVolume(double volume) =>
-      _player.setVolume(volume.clamp(0.0, 1.0));
+  Future<void> setVolume(double volume) {
+    return _player.setVolume(volume.clamp(0.0, 1.0).toDouble());
+  }
 
   @override
-  Future<void> play() {
-    developer.log(
-      'play · volume=${_player.volume} · état=${_player.processingState.name}',
-      name: 'homespotify.audio',
-    );
-    return _player.play();
+  Future<void> play() async {
+    if (_queueItems.isEmpty) return;
+    await _ensurePlaybackReady();
+    if (!_sourceReady) {
+      throw const AudioPlaybackException('Source audio inaccessible.');
+    }
+    try {
+      await _startPlayback();
+    } catch (error, stackTrace) {
+      final item = _currentItem;
+      if (item != null) _recordPlaybackFailure(item, error, stackTrace);
+      if (error is AudioPlaybackException) rethrow;
+      throw AudioPlaybackException(_friendlyAudioError(error));
+    }
   }
 
   @override
@@ -249,6 +356,39 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> seek(Duration position) => _player.seek(position);
+
+  @override
+  Future<void> skipToNext() async {
+    final currentIndex = _activeQueueIndex;
+    if (currentIndex == null || currentIndex >= _queueItems.length - 1) return;
+    await skipToQueueItem(currentIndex + 1);
+  }
+
+  @override
+  Future<void> skipToPrevious() async {
+    final currentIndex = _activeQueueIndex;
+    if (currentIndex == null || currentIndex <= 0) return;
+    await skipToQueueItem(currentIndex - 1);
+  }
+
+  @override
+  Future<void> skipToQueueItem(int index) async {
+    if (!_sourceReady || index < 0 || index >= _queueItems.length) return;
+    final item = _queueItems[index];
+    _currentQueueIndex = index;
+    _publishCurrentMediaItem(includeArtwork: false);
+    _debugAudioLog(
+      'saut queue track=${item.id} index=$index streamUri=${item.streamUri} '
+      'format=${item.format} mimeType=${item.mimeType ?? 'inconnu'}',
+    );
+    try {
+      await _player.seek(Duration.zero, index: index);
+      _broadcastPlaybackState(_player.playbackEvent);
+    } catch (error, stackTrace) {
+      _recordPlaybackFailure(item, error, stackTrace);
+      throw AudioPlaybackException(_friendlyAudioError(error));
+    }
+  }
 
   @override
   Future<void> stop() async {
@@ -273,51 +413,203 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     await _becomingNoisySubscription?.cancel();
     await _playbackEventSubscription.cancel();
     await _playerStateSubscription.cancel();
+    await _currentIndexSubscription.cancel();
     await _player.dispose();
   }
 
-  void _broadcastPlaybackState(PlaybackEvent event) {
+  /// Configure le focus Android avant tout chargement de source.
+  ///
+  /// Toute interruption, y compris un événement de ducking, met en pause au
+  /// lieu de modifier le gain du fichier en cours de lecture.
+  Future<void> _configureAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+
+      _becomingNoisySubscription = session.becomingNoisyEventStream.listen((_) {
+        _debugAudioLog('sortie audio coupée, pause');
+        unawaited(pause());
+      });
+      _interruptionSubscription = session.interruptionEventStream.listen((
+        event,
+      ) {
+        if (event.begin && _player.playing) {
+          _debugAudioLog('interruption ${event.type.name}, pause sans ducking');
+          unawaited(pause());
+        }
+      });
+    } catch (error, stackTrace) {
+      _debugAudioLog(
+        'échec configuration AudioSession',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<void> _ensurePlaybackReady() async {
+    await _initialVolumeSetup;
+    await _audioSessionSetup;
+  }
+
+  Future<void> _startPlayback() async {
+    final item = _currentItem;
+    _debugAudioLog(
+      'play track=${item?.id ?? 'inconnu'} '
+      'streamUri=${item?.streamUri ?? 'inconnue'} '
+      'format=${item?.format ?? 'inconnu'} '
+      'mimeType=${item?.mimeType ?? 'inconnu'} '
+      'volume=${_player.volume} state=${_player.processingState.name} '
+      'buffered=${_player.bufferedPosition}',
+    );
+    await _player.play();
+  }
+
+  void _onCurrentIndexChanged(int? index) {
+    if (index == null || index < 0 || index >= _queueItems.length) return;
+    _currentQueueIndex = index;
+    _publishedMediaKey = null;
+    _publishCurrentMediaItem(
+      includeArtwork:
+          _player.processingState == ProcessingState.ready ||
+          _player.processingState == ProcessingState.completed,
+    );
+    _broadcastPlaybackState(_player.playbackEvent);
+  }
+
+  void _publishLoadingState(int index) {
     playbackState.add(
       playbackState.value.copyWith(
-        controls: _controlsFor(_player.playing),
-        systemActions: const {
+        controls: const <MediaControl>[MediaControl.stop],
+        processingState: AudioProcessingState.loading,
+        playing: false,
+        updatePosition: Duration.zero,
+        bufferedPosition: Duration.zero,
+        queueIndex: index,
+      ),
+    );
+  }
+
+  void _broadcastPlaybackState(PlaybackEvent event) {
+    if (event.currentIndex != null) _currentQueueIndex = event.currentIndex;
+    _logProcessingState();
+    _publishCurrentMediaItem(
+      includeArtwork:
+          _sourceReady &&
+          (_player.processingState == ProcessingState.ready ||
+              _player.processingState == ProcessingState.completed),
+    );
+
+    final controls = _controlsFor(_player.playing);
+    playbackState.add(
+      playbackState.value.copyWith(
+        controls: controls,
+        systemActions: const <MediaAction>{
           MediaAction.seek,
           MediaAction.seekForward,
           MediaAction.seekBackward,
         },
-        androidCompactActionIndices: const [0, 1],
+        androidCompactActionIndices: _compactActionIndices(controls),
         processingState: _mapProcessingState(_player.processingState),
         playing: _player.playing,
         updatePosition: _player.position,
         bufferedPosition: _player.bufferedPosition,
         speed: _player.speed,
-        queueIndex: event.currentIndex,
+        queueIndex: _activeQueueIndex,
       ),
     );
   }
 
   void _broadcastPlaybackError(Object error, StackTrace stackTrace) {
-    developer.log(
-      'erreur de lecture just_audio',
-      name: 'homespotify.audio',
+    final item = _currentItem;
+    _debugAudioLog(
+      'erreur just_audio track=${item?.id ?? 'inconnu'} '
+      'streamUri=${item?.streamUri ?? 'inconnue'} '
+      'format=${item?.format ?? 'inconnu'} '
+      'mimeType=${item?.mimeType ?? 'inconnu'}',
       error: error,
       stackTrace: stackTrace,
     );
+    if (item != null) {
+      _recordPlaybackFailure(item, error, stackTrace, logError: false);
+    }
+  }
+
+  void _recordPlaybackFailure(
+    PlayerQueueItem item,
+    Object error,
+    StackTrace stackTrace, {
+    bool logError = true,
+  }) {
+    if (logError) {
+      _debugAudioLog(
+        'échec audio track=${item.id} streamUri=${item.streamUri} '
+        'format=${item.format} mimeType=${item.mimeType ?? 'inconnu'}',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+    _sourceReady = false;
     playbackState.add(
       playbackState.value.copyWith(
-        controls: const [MediaControl.play, MediaControl.stop],
+        controls: const <MediaControl>[MediaControl.stop],
         processingState: AudioProcessingState.error,
         playing: false,
-        errorMessage: error.toString(),
+        errorMessage: _friendlyAudioError(error),
+        queueIndex: _activeQueueIndex,
       ),
     );
   }
 
+  void _publishCurrentMediaItem({
+    required bool includeArtwork,
+    Duration? resolvedDuration,
+  }) {
+    final item = _currentItem;
+    if (item == null) return;
+    final duration = resolvedDuration ?? _player.duration ?? item.duration;
+    final key = '${item.id}|$includeArtwork|${duration?.inMilliseconds ?? -1}';
+    if (key == _publishedMediaKey) return;
+    _publishedMediaKey = key;
+    mediaItem.add(
+      item.toMediaItem(
+        includeArtwork: includeArtwork,
+        resolvedDuration: duration,
+      ),
+    );
+  }
+
+  void _logProcessingState() {
+    final state = _player.processingState;
+    if (_lastLoggedProcessingState == state) return;
+    _lastLoggedProcessingState = state;
+    final item = _currentItem;
+    _debugAudioLog(
+      'processingState track=${item?.id ?? 'inconnu'} '
+      'state=${state.name} buffered=${_player.bufferedPosition}',
+    );
+  }
+
   List<MediaControl> _controlsFor(bool playing) {
-    return [
+    if (!_sourceReady) return const <MediaControl>[MediaControl.stop];
+    return <MediaControl>[
+      if (_canSkipPrevious) MediaControl.skipToPrevious,
       if (playing) MediaControl.pause else MediaControl.play,
+      if (_canSkipNext) MediaControl.skipToNext,
       MediaControl.stop,
     ];
+  }
+
+  List<int> _compactActionIndices(List<MediaControl> controls) {
+    final compact = <int>[];
+    for (
+      var index = 0;
+      index < controls.length && compact.length < 3;
+      index++
+    ) {
+      if (controls[index].action != MediaAction.stop) compact.add(index);
+    }
+    return compact;
   }
 
   AudioProcessingState _mapProcessingState(ProcessingState state) {
@@ -328,5 +620,53 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       ProcessingState.ready => AudioProcessingState.ready,
       ProcessingState.completed => AudioProcessingState.completed,
     };
+  }
+
+  String _friendlyAudioError(Object error) {
+    final message = error.toString().toLowerCase();
+    if (message.contains('404') ||
+        message.contains('403') ||
+        message.contains('416') ||
+        message.contains('not found')) {
+      return 'Source audio inaccessible.';
+    }
+    if (message.contains('unsupported') ||
+        message.contains('decoder') ||
+        message.contains('unrecognized') ||
+        message.contains('format')) {
+      return 'Format audio non pris en charge par cet appareil.';
+    }
+    if (message.contains('timeout') ||
+        message.contains('network') ||
+        message.contains('socket')) {
+      return 'Erreur réseau pendant la lecture.';
+    }
+    if (message.contains('connection') ||
+        message.contains('refused') ||
+        message.contains('unknown host')) {
+      return 'Serveur non joignable.';
+    }
+    return 'Erreur audio pendant la lecture.';
+  }
+
+  int? get _activeQueueIndex {
+    final index = _currentQueueIndex ?? _player.currentIndex;
+    if (index == null || index < 0 || index >= _queueItems.length) return null;
+    return index;
+  }
+
+  PlayerQueueItem? get _currentItem {
+    final index = _activeQueueIndex;
+    return index == null ? null : _queueItems[index];
+  }
+
+  bool get _canSkipPrevious {
+    final index = _activeQueueIndex;
+    return _sourceReady && index != null && index > 0;
+  }
+
+  bool get _canSkipNext {
+    final index = _activeQueueIndex;
+    return _sourceReady && index != null && index < _queueItems.length - 1;
   }
 }

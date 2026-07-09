@@ -1,6 +1,7 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../audio/homespotify_audio_handler.dart';
 import 'player_providers.dart';
@@ -8,7 +9,7 @@ import 'widgets/seek_bar.dart';
 
 const Color _accent = Color(0xFF1DB954);
 
-/// Écran de lecture principal.
+/// Écran principal de lecture.
 ///
 /// Sombre, centré, branché sur les streams de [HomeSpotifyAudioHandler] via
 /// Riverpod. Le tick de position est isolé dans [_ProgressBar] pour ne pas
@@ -22,6 +23,7 @@ class PlayerScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final mediaItem = ref.watch(mediaItemProvider).asData?.value;
     final playback = ref.watch(playbackStateProvider).asData?.value;
+    final queue = ref.watch(queueProvider).asData?.value ?? const <MediaItem>[];
 
     final hasTrack = mediaItem != null;
     final playing = playback?.playing ?? false;
@@ -30,6 +32,9 @@ class PlayerScreen extends ConsumerWidget {
         processing == AudioProcessingState.loading ||
         processing == AudioProcessingState.buffering;
     final hasError = processing == AudioProcessingState.error;
+    final queueIndex = playback?.queueIndex ?? -1;
+    final canSkipPrevious = queueIndex > 0 && queueIndex < queue.length;
+    final canSkipNext = queueIndex >= 0 && queueIndex < queue.length - 1;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D10),
@@ -47,15 +52,42 @@ class PlayerScreen extends ConsumerWidget {
             child: Column(
               children: [
                 const SizedBox(height: 12),
-                Text(
-                  'EN LECTURE',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.5),
-                    fontSize: 12,
-                    letterSpacing: 2,
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Retour',
+                      onPressed: () =>
+                          context.canPop() ? context.pop() : context.go('/'),
+                      color: Colors.white,
+                      icon: const Icon(Icons.arrow_back_rounded),
+                    ),
+                    Expanded(
+                      child: Text(
+                        'EN LECTURE',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontSize: 12,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Arrêter',
+                      onPressed: hasTrack
+                          ? () => ref.read(audioHandlerProvider).stop()
+                          : null,
+                      color: Colors.white,
+                      disabledColor: Colors.white24,
+                      icon: const Icon(Icons.stop_rounded),
+                    ),
+                  ],
                 ),
+                if (isBusy) ...[
+                  const SizedBox(height: 8),
+                  _PlaybackStatus(processingState: processing),
+                ],
                 const Spacer(flex: 2),
                 _Artwork(artUri: mediaItem?.artUri),
                 const Spacer(),
@@ -64,7 +96,7 @@ class PlayerScreen extends ConsumerWidget {
                   artist: mediaItem?.artist ?? '—',
                   dimmed: !hasTrack,
                 ),
-                if (hasError) const _ErrorBanner(),
+                if (hasError) _ErrorBanner(message: playback?.errorMessage),
                 const SizedBox(height: 24),
                 _ProgressBar(enabled: hasTrack),
                 const SizedBox(height: 8),
@@ -72,11 +104,20 @@ class PlayerScreen extends ConsumerWidget {
                   playing: playing,
                   isBusy: isBusy,
                   enabled: hasTrack,
-                  onPlayPause: () {
-                    final handler = ref.read(audioHandlerProvider);
-                    playing ? handler.pause() : handler.play();
-                  },
-                  onStop: () => ref.read(audioHandlerProvider).stop(),
+                  onPlayPause: isBusy && !playing
+                      ? null
+                      : hasError
+                      ? null
+                      : () {
+                          final handler = ref.read(audioHandlerProvider);
+                          playing ? handler.pause() : handler.play();
+                        },
+                  onPrevious: canSkipPrevious
+                      ? () => ref.read(audioHandlerProvider).skipToPrevious()
+                      : null,
+                  onNext: canSkipNext
+                      ? () => ref.read(audioHandlerProvider).skipToNext()
+                      : null,
                   onSeekBackward: () => _seekBy(ref, -_seekStep),
                   onSeekForward: () => _seekBy(ref, _seekStep),
                 ),
@@ -123,16 +164,15 @@ class _ProgressBar extends ConsumerWidget {
   }
 }
 
-/// Volume interne du lecteur (0.0–1.0). Distinct du volume système Android.
+/// Volume interne du lecteur, borné à 0–100 % sans gain supérieur à l'unité.
 class _VolumeControl extends ConsumerWidget {
   const _VolumeControl();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final volume = (ref.watch(volumeProvider).asData?.value ?? 1.0).clamp(
-      0.0,
-      1.0,
-    );
+    final volume = (ref.watch(volumeProvider).asData?.value ?? 1.0)
+        .clamp(0.0, 1.0)
+        .toDouble();
     return Row(
       children: [
         Icon(
@@ -157,31 +197,87 @@ class _VolumeControl extends ConsumerWidget {
             ),
           ),
         ),
+        SizedBox(
+          width: 44,
+          child: Text(
+            '${(volume * 100).round()} %',
+            textAlign: TextAlign.end,
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 12,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
       ],
     );
   }
 }
 
 class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner();
+  const _ErrorBanner({this.message});
+
+  final String? message;
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(top: 10),
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.error_outline_rounded, color: Color(0xFFE57373), size: 16),
-          SizedBox(width: 6),
+        children: <Widget>[
+          const Icon(
+            Icons.error_outline_rounded,
+            color: Color(0xFFE57373),
+            size: 16,
+          ),
+          const SizedBox(width: 6),
           Flexible(
             child: Text(
-              'Lecture impossible — vérifie le serveur et l\'URL de l\'API.',
+              message ?? 'Erreur audio pendant la lecture.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFFE57373), fontSize: 12),
+              style: const TextStyle(color: Color(0xFFE57373), fontSize: 12),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PlaybackStatus extends StatelessWidget {
+  const _PlaybackStatus({required this.processingState});
+
+  final AudioProcessingState? processingState;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = processingState == AudioProcessingState.buffering
+        ? 'Mise en tampon audio...'
+        : 'Preparation de la lecture...';
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: _accent),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -195,6 +291,7 @@ class _Artwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final side = (MediaQuery.sizeOf(context).width - 48).clamp(0.0, 340.0);
+    final cacheSide = (side * MediaQuery.devicePixelRatioOf(context)).round();
     return SizedBox(
       width: side,
       height: side,
@@ -216,6 +313,9 @@ class _Artwork extends StatelessWidget {
               : Image.network(
                   artUri.toString(),
                   fit: BoxFit.cover,
+                  cacheWidth: cacheSide,
+                  cacheHeight: cacheSide,
+                  filterQuality: FilterQuality.medium,
                   errorBuilder: (_, _, _) => const _ArtworkPlaceholder(),
                   loadingBuilder: (context, child, progress) =>
                       progress == null ? child : const _ArtworkPlaceholder(),
@@ -291,7 +391,8 @@ class _Controls extends StatelessWidget {
     required this.isBusy,
     required this.enabled,
     required this.onPlayPause,
-    required this.onStop,
+    required this.onPrevious,
+    required this.onNext,
     required this.onSeekBackward,
     required this.onSeekForward,
   });
@@ -299,8 +400,9 @@ class _Controls extends StatelessWidget {
   final bool playing;
   final bool isBusy;
   final bool enabled;
-  final VoidCallback onPlayPause;
-  final VoidCallback onStop;
+  final VoidCallback? onPlayPause;
+  final VoidCallback? onPrevious;
+  final VoidCallback? onNext;
   final VoidCallback onSeekBackward;
   final VoidCallback onSeekForward;
 
@@ -310,6 +412,12 @@ class _Controls extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
         _RoundIcon(
+          tooltip: 'Piste précédente',
+          icon: Icons.skip_previous_rounded,
+          onPressed: enabled ? onPrevious : null,
+        ),
+        _RoundIcon(
+          tooltip: 'Reculer de 10 secondes',
           icon: Icons.replay_10_rounded,
           onPressed: enabled ? onSeekBackward : null,
         ),
@@ -319,12 +427,14 @@ class _Controls extends StatelessWidget {
           onPressed: enabled ? onPlayPause : null,
         ),
         _RoundIcon(
-          icon: Icons.stop_rounded,
-          onPressed: enabled ? onStop : null,
-        ),
-        _RoundIcon(
+          tooltip: 'Avancer de 10 secondes',
           icon: Icons.forward_10_rounded,
           onPressed: enabled ? onSeekForward : null,
+        ),
+        _RoundIcon(
+          tooltip: 'Piste suivante',
+          icon: Icons.skip_next_rounded,
+          onPressed: enabled ? onNext : null,
         ),
       ],
     );
@@ -332,14 +442,16 @@ class _Controls extends StatelessWidget {
 }
 
 class _RoundIcon extends StatelessWidget {
-  const _RoundIcon({required this.icon, this.onPressed});
+  const _RoundIcon({required this.tooltip, required this.icon, this.onPressed});
 
+  final String tooltip;
   final IconData icon;
   final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
     return IconButton(
+      tooltip: tooltip,
       onPressed: onPressed,
       iconSize: 32,
       color: Colors.white,
