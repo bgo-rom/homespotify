@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -122,8 +123,36 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     );
 
     mediaItem.add(item);
-    await _player.setAudioSource(AudioSource.uri(streamUri, headers: headers));
+    developer.log(
+      'chargement piste $trackId · $streamUri · durée=${duration ?? 'inconnue'}',
+      name: 'homespotify.audio',
+    );
+    try {
+      await _player.setAudioSource(
+        AudioSource.uri(streamUri, headers: headers),
+      );
+      developer.log(
+        'source prête $trackId · état=${_player.processingState.name}',
+        name: 'homespotify.audio',
+      );
+    } catch (error, stackTrace) {
+      developer.log(
+        'échec du chargement de la source $trackId',
+        name: 'homespotify.audio',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
   }
+
+  /// Volume interne du lecteur (0.0–1.0), indépendant du volume système Android.
+  double get volume => _player.volume;
+
+  Stream<double> get volumeStream => _player.volumeStream;
+
+  Future<void> setVolume(double volume) =>
+      _player.setVolume(volume.clamp(0.0, 1.0));
 
   @override
   Future<void> play() => _player.play();
@@ -179,6 +208,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void _broadcastPlaybackError(Object error, StackTrace stackTrace) {
+    developer.log(
+      'erreur de lecture just_audio',
+      name: 'homespotify.audio',
+      error: error,
+      stackTrace: stackTrace,
+    );
     playbackState.add(
       playbackState.value.copyWith(
         controls: const [MediaControl.play, MediaControl.stop],

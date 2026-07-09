@@ -17,3 +17,8 @@ final playbackStateProvider = StreamProvider<PlaybackState>((ref) {
 final positionDataProvider = StreamProvider<PlayerPositionData>((ref) {
   return ref.watch(audioHandlerProvider).positionDataStream;
 });
+
+/// Volume interne du lecteur (0.0–1.0), pour le slider de volume.
+final volumeProvider = StreamProvider<double>((ref) {
+  return ref.watch(audioHandlerProvider).volumeStream;
+});

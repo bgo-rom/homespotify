@@ -6,10 +6,13 @@ import '../audio/homespotify_audio_handler.dart';
 import 'player_providers.dart';
 import 'widgets/seek_bar.dart';
 
-/// Écran de lecture principal (page d'accueil de l'app).
+const Color _accent = Color(0xFF1DB954);
+
+/// Écran de lecture principal.
 ///
 /// Sombre, centré, branché sur les streams de [HomeSpotifyAudioHandler] via
-/// Riverpod. Aucune duplication d'état : tout vient des `StreamProvider`.
+/// Riverpod. Le tick de position est isolé dans [_ProgressBar] pour ne pas
+/// reconstruire la pochette/les contrôles ~5 fois par seconde.
 class PlayerScreen extends ConsumerWidget {
   const PlayerScreen({super.key});
 
@@ -19,9 +22,6 @@ class PlayerScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final mediaItem = ref.watch(mediaItemProvider).asData?.value;
     final playback = ref.watch(playbackStateProvider).asData?.value;
-    final positionData =
-        ref.watch(positionDataProvider).asData?.value ??
-        PlayerPositionData.zero;
 
     final hasTrack = mediaItem != null;
     final playing = playback?.playing ?? false;
@@ -29,6 +29,7 @@ class PlayerScreen extends ConsumerWidget {
     final isBusy =
         processing == AudioProcessingState.loading ||
         processing == AudioProcessingState.buffering;
+    final hasError = processing == AudioProcessingState.error;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D10),
@@ -63,15 +64,9 @@ class PlayerScreen extends ConsumerWidget {
                   artist: mediaItem?.artist ?? '—',
                   dimmed: !hasTrack,
                 ),
+                if (hasError) const _ErrorBanner(),
                 const SizedBox(height: 24),
-                SeekBar(
-                  position: positionData.position,
-                  bufferedPosition: positionData.bufferedPosition,
-                  duration: positionData.duration,
-                  onSeek: hasTrack
-                      ? (pos) => ref.read(audioHandlerProvider).seek(pos)
-                      : null,
-                ),
+                _ProgressBar(enabled: hasTrack),
                 const SizedBox(height: 8),
                 _Controls(
                   playing: playing,
@@ -82,9 +77,11 @@ class PlayerScreen extends ConsumerWidget {
                     playing ? handler.pause() : handler.play();
                   },
                   onStop: () => ref.read(audioHandlerProvider).stop(),
-                  onSeekBackward: () => _seekBy(ref, -_seekStep, positionData),
-                  onSeekForward: () => _seekBy(ref, _seekStep, positionData),
+                  onSeekBackward: () => _seekBy(ref, -_seekStep),
+                  onSeekForward: () => _seekBy(ref, _seekStep),
                 ),
+                const SizedBox(height: 8),
+                const _VolumeControl(),
                 const Spacer(flex: 2),
               ],
             ),
@@ -94,12 +91,99 @@ class PlayerScreen extends ConsumerWidget {
     );
   }
 
-  void _seekBy(WidgetRef ref, Duration delta, PlayerPositionData data) {
-    if (data.duration <= Duration.zero) return;
+  void _seekBy(WidgetRef ref, Duration delta) {
+    final data = ref.read(positionDataProvider).asData?.value;
+    if (data == null || data.duration <= Duration.zero) return;
     var target = data.position + delta;
     if (target < Duration.zero) target = Duration.zero;
     if (target > data.duration) target = data.duration;
     ref.read(audioHandlerProvider).seek(target);
+  }
+}
+
+/// Barre de progression isolée : seul ce widget se reconstruit à chaque tick.
+class _ProgressBar extends ConsumerWidget {
+  const _ProgressBar({required this.enabled});
+
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final data =
+        ref.watch(positionDataProvider).asData?.value ??
+        PlayerPositionData.zero;
+    return SeekBar(
+      position: data.position,
+      bufferedPosition: data.bufferedPosition,
+      duration: data.duration,
+      onSeek: enabled
+          ? (pos) => ref.read(audioHandlerProvider).seek(pos)
+          : null,
+    );
+  }
+}
+
+/// Volume interne du lecteur (0.0–1.0). Distinct du volume système Android.
+class _VolumeControl extends ConsumerWidget {
+  const _VolumeControl();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final volume = (ref.watch(volumeProvider).asData?.value ?? 1.0).clamp(
+      0.0,
+      1.0,
+    );
+    return Row(
+      children: [
+        Icon(
+          volume <= 0.0 ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+          color: Colors.white54,
+          size: 20,
+        ),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 2,
+              activeTrackColor: Colors.white70,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.white,
+              overlayColor: const Color(0x291DB954),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+            ),
+            child: Slider(
+              value: volume,
+              onChanged: (v) => ref.read(audioHandlerProvider).setVolume(v),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.only(top: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline_rounded, color: Color(0xFFE57373), size: 16),
+          SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              'Lecture impossible — vérifie le serveur et l\'URL de l\'API.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Color(0xFFE57373), fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -280,7 +364,7 @@ class _PlayPauseButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final enabled = onPressed != null;
     return Material(
-      color: enabled ? const Color(0xFF1DB954) : Colors.white12,
+      color: enabled ? _accent : Colors.white12,
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),

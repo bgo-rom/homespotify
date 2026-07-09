@@ -8,7 +8,15 @@ import 'package:homespotify_mobile/src/features/player/presentation/player_provi
 import 'package:homespotify_mobile/src/features/player/presentation/player_screen.dart';
 
 void main() {
+  // Surface de test type téléphone : la colonne du lecteur (pochette + contrôles
+  // + volume) dépasse les 600px par défaut.
+  Future<void> usePhoneSurface(WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(400, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+  }
+
   testWidgets('état vide : affiche le placeholder sans piste', (tester) async {
+    await usePhoneSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -21,6 +29,7 @@ void main() {
           positionDataProvider.overrideWith(
             (ref) => const Stream<PlayerPositionData>.empty(),
           ),
+          volumeProvider.overrideWith((ref) => Stream.value(1.0)),
         ],
         child: const MaterialApp(home: PlayerScreen()),
       ),
@@ -31,9 +40,10 @@ void main() {
     expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
   });
 
-  testWidgets('piste chargée : affiche titre, artiste et temps', (
+  testWidgets('piste chargée : affiche titre, artiste, temps et volume', (
     tester,
   ) async {
+    await usePhoneSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -54,6 +64,7 @@ void main() {
               ),
             ),
           ),
+          volumeProvider.overrideWith((ref) => Stream.value(0.8)),
         ],
         child: const MaterialApp(home: PlayerScreen()),
       ),
@@ -65,5 +76,8 @@ void main() {
     expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
     expect(find.text('0:30'), findsOneWidget);
     expect(find.text('3:00'), findsOneWidget);
+    // 2 sliders : progression (SeekBar) + volume ; l'icône volume est unique.
+    expect(find.byType(Slider), findsNWidgets(2));
+    expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
   });
 }

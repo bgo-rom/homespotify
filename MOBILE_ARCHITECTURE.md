@@ -225,6 +225,46 @@ flutter create --platforms ios .
 flutter doctor
 ```
 
+## Tests runtime (dev local)
+
+Base URL configurable via le dart-define **`HOMESPOTIFY_API_BASE_URL`** (défaut
+`http://10.0.2.2:3000`, défini dans `core/network/api_client.dart`). Le HTTP en
+clair est autorisé en **debug uniquement** (network security config sous
+`android/app/src/debug`) ; la build release refuse le cleartext.
+
+### Backend
+
+```powershell
+# Émulateur : 127.0.0.1 suffit. Vrai téléphone : écouter sur toutes les interfaces.
+$env:HOST = "0.0.0.0"; pnpm --filter @homespotify/api dev
+```
+
+### Émulateur Android (défaut, rien à passer)
+
+```powershell
+flutter run
+# utilise http://10.0.2.2:3000 (loopback de l'hôte vu depuis l'émulateur)
+```
+
+### Vrai téléphone (même Wi-Fi que le PC)
+
+Récupère l'IP LAN du PC (`ipconfig` → IPv4, ex. 192.168.1.20), puis :
+
+```powershell
+flutter run --dart-define=HOMESPOTIFY_API_BASE_URL=http://192.168.1.20:3000
+```
+
+Le pare-feu Windows doit autoriser le port 3000 entrant.
+
+### Profile mode (perf / grésillements)
+
+Les micro-grésillements audio et lenteurs d'UI viennent souvent du **mode debug**
+(JIT, instrumentation). Pour juger les vraies performances, lancer en profile :
+
+```powershell
+flutter run --profile --dart-define=HOMESPOTIFY_API_BASE_URL=http://192.168.1.20:3000
+```
+
 ## Contrats Backend Consommés
 
 - `GET /api/tracks?page&limit` : liste paginée de bibliothèque.

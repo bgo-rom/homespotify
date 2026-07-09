@@ -93,11 +93,16 @@ class LibraryScreen extends ConsumerWidget {
       );
       await handler.play();
       if (context.mounted) context.push('/player');
-    } catch (error) {
+    } catch (_) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Lecture impossible : $error')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Lecture impossible de « ${track.title} ». '
+              'Vérifie que le serveur est accessible.',
+            ),
+          ),
+        );
       }
     }
   }
