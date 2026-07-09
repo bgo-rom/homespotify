@@ -21,7 +21,9 @@ void main() {
     expect(find.text('Aucune piste dans la bibliothèque'), findsOneWidget);
   });
 
-  testWidgets('état données : affiche titre et artiste', (tester) async {
+  testWidgets('état données : titre, artiste, format FLAC et specs', (
+    tester,
+  ) async {
     const track = Track(
       id: 1,
       title: 'Genesis',
@@ -29,6 +31,8 @@ void main() {
       album: 'Cross',
       hasCover: false,
       durationSeconds: 200,
+      extension: '.flac',
+      mimeType: 'audio/flac',
       quality: TrackQuality(
         sampleRate: 44100,
         bitDepth: 16,
@@ -49,5 +53,6 @@ void main() {
     expect(find.textContaining('Justice'), findsOneWidget);
     expect(find.textContaining('3:20'), findsOneWidget); // 200s
     expect(find.textContaining('44.1kHz'), findsOneWidget);
+    expect(find.text('FLAC'), findsOneWidget); // puce de format
   });
 }

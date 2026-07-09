@@ -50,11 +50,14 @@ class LibraryApi {
   String _friendlyDioMessage(DioException error) {
     return switch (error.type) {
       DioExceptionType.connectionError || DioExceptionType.connectionTimeout =>
-        'Serveur injoignable. Vérifie que l\'API tourne et l\'adresse ($_baseUrl).',
+        'Serveur injoignable. Vérifie que l\'API tourne et l\'adresse ($_baseUrl), '
+            'et que le HTTP local est autorisé.',
       DioExceptionType.receiveTimeout || DioExceptionType.sendTimeout =>
         'Le serveur met trop de temps à répondre.',
-      _ =>
-        'Échec de la requête bibliothèque (${error.response?.statusCode ?? error.type.name}).',
+      DioExceptionType.badCertificate => 'Certificat refusé par le serveur.',
+      DioExceptionType.badResponse =>
+        'Le serveur a répondu une erreur (${error.response?.statusCode ?? '?'}).',
+      _ => 'Échec de la requête bibliothèque (${error.type.name}).',
     };
   }
 }

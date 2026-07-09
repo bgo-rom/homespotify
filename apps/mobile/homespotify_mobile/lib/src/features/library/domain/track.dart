@@ -40,6 +40,8 @@ class Track {
     this.genre,
     this.durationSeconds,
     this.quality,
+    this.mimeType,
+    this.extension,
   });
 
   final int id;
@@ -51,6 +53,8 @@ class Track {
   final String? genre;
   final double? durationSeconds;
   final TrackQuality? quality;
+  final String? mimeType; // audio/wav | audio/flac
+  final String? extension; // .wav | .flac
 
   factory Track.fromJson(Map<String, dynamic> json) {
     final rawTitle = (json['title'] as String?)?.trim();
@@ -71,10 +75,20 @@ class Track {
       quality: quality is Map<String, dynamic>
           ? TrackQuality.fromJson(quality)
           : null,
+      mimeType: json['mimeType'] as String?,
+      extension: json['extension'] as String?,
     );
   }
 
   Duration? get duration => durationSeconds == null
       ? null
       : Duration(milliseconds: (durationSeconds! * 1000).round());
+
+  /// Étiquette de format lisible : 'FLAC' ou 'WAV' (null si inconnu).
+  String? get formatLabel {
+    final ext = extension?.toLowerCase();
+    if (ext == '.flac' || mimeType == 'audio/flac') return 'FLAC';
+    if (ext == '.wav' || mimeType == 'audio/wav') return 'WAV';
+    return null;
+  }
 }

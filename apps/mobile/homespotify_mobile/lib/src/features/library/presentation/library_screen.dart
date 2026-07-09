@@ -125,13 +125,10 @@ class _TrackTile extends StatelessWidget {
       track.artist,
       if (track.album.isNotEmpty) track.album,
     ].join(' · ');
-    final trailing = [
-      if (track.duration != null) _formatDuration(track.duration!),
-      if (track.quality?.shortLabel != null) track.quality!.shortLabel!,
-    ].join('\n');
 
     return ListTile(
       onTap: onTap,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       leading: _Thumbnail(url: coverUrl),
       title: Text(
         track.title,
@@ -140,25 +137,97 @@ class _TrackTile extends StatelessWidget {
         style: const TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.w600,
+          fontSize: 15,
         ),
       ),
-      subtitle: Text(
-        subtitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(color: Colors.white60),
-      ),
-      trailing: trailing.isEmpty
-          ? null
-          : Text(
-              trailing,
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                color: Colors.white38,
-                fontSize: 11,
-                height: 1.3,
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: Row(
+          children: [
+            if (track.formatLabel != null) ...[
+              _FormatChip(label: track.formatLabel!),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 12.5),
               ),
             ),
+          ],
+        ),
+      ),
+      trailing: _TrailingMeta(
+        duration: track.duration,
+        specs: track.quality?.shortLabel,
+      ),
+    );
+  }
+}
+
+/// Durée + specs (kHz/bit) alignées à droite, sur deux lignes.
+class _TrailingMeta extends StatelessWidget {
+  const _TrailingMeta({required this.duration, required this.specs});
+
+  final Duration? duration;
+  final String? specs;
+
+  @override
+  Widget build(BuildContext context) {
+    if (duration == null && specs == null) return const SizedBox.shrink();
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        if (duration != null)
+          Text(
+            _formatDuration(duration!),
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 12,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        if (specs != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              specs!,
+              style: const TextStyle(color: Colors.white30, fontSize: 10.5),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Petite pastille de format : FLAC (accent) ou WAV (neutre).
+class _FormatChip extends StatelessWidget {
+  const _FormatChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final isFlac = label == 'FLAC';
+    final color = isFlac ? _accent : Colors.white54;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
+        ),
+      ),
     );
   }
 }
@@ -171,16 +240,17 @@ class _Thumbnail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(8),
       child: SizedBox(
-        width: 48,
-        height: 48,
+        width: 52,
+        height: 52,
         child: url == null
             ? const _ThumbnailPlaceholder()
             : Image.network(
                 url!,
                 fit: BoxFit.cover,
-                cacheWidth: 96,
+                cacheWidth: 104,
+                gaplessPlayback: true,
                 errorBuilder: (_, _, _) => const _ThumbnailPlaceholder(),
                 loadingBuilder: (context, child, progress) =>
                     progress == null ? child : const _ThumbnailPlaceholder(),
@@ -222,7 +292,7 @@ class _EmptyState extends StatelessWidget {
             ),
             SizedBox(height: 8),
             Text(
-              'Importe des WAV côté serveur, puis rafraîchis.',
+              'Importe des fichiers WAV ou FLAC côté serveur, puis rafraîchis.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white38, fontSize: 13),
             ),
