@@ -9,10 +9,15 @@ import { importFromPath, ImportError, type ImportDirs, type Provenance } from '.
  * se trouve sous `root` — évite de re-scanner les copies déjà rangées).
  */
 export async function findWavFiles(root: string, exclude: string[] = []): Promise<string[]> {
+  const resolvedRoot = resolve(root);
   const excluded = new Set(exclude.map((p) => resolve(p)));
   const out: string[] = [];
   async function walk(dir: string): Promise<void> {
-    if (excluded.has(resolve(dir))) return;
+    const resolvedDir = resolve(dir);
+    // On ne saute JAMAIS la racine explicitement demandée (ex. scanner directement
+    // `storage/imports`) ; on n'exclut les dossiers gérés que rencontrés en descendant,
+    // pour éviter de re-scanner les copies déjà rangées dans la bibliothèque.
+    if (resolvedDir !== resolvedRoot && excluded.has(resolvedDir)) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });

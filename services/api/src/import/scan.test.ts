@@ -46,6 +46,18 @@ describe('findWavFiles', () => {
       expect(files.every((f) => /\.wav$/i.test(f))).toBe(true);
     });
   });
+
+  it('scanne la racine même si elle figure dans la liste d\'exclusion (staging), ignore .gitkeep', async () => {
+    // Reproduit le bug : root == dossier exclu (ex. storage/imports). Noms avec
+    // espaces/parenthèses/accents.
+    writeFileSync(join(library, 'Britney (All Black).wav'), makeWav());
+    writeFileSync(join(library, 'LA FÈVE -  Finis-les.wav'), makeWav({ seconds: 0.06 }));
+    writeFileSync(join(library, '.gitkeep'), '');
+
+    const files = await findWavFiles(library, [library]); // la racine est exclue…
+    expect(files).toHaveLength(2); // …mais scannée quand même
+    expect(files.every((f) => /\.wav$/i.test(f))).toBe(true);
+  });
 });
 
 describe('scanDirectory', () => {
@@ -112,6 +124,16 @@ describe('scanDirectory', () => {
     const second = await scanDirectory(handle.db, nestedDirs, library, 'rip_cd');
     expect(second.total).toBe(1); // seulement l'original, pas la copie gérée
     expect(second.duplicates).toBe(1);
+  });
+
+  it('ingère quand la racine scannée EST le dossier de staging configuré (storage/imports)', async () => {
+    // Cas réel du bug : l'utilisateur pointe le scan directement sur incomingDir.
+    writeFileSync(join(dirs.incomingDir, 'BIA - WE ON GO.wav'), makeWav({ title: 'WE ON GO', artist: 'BIA', seconds: 0.2 }));
+    writeFileSync(join(dirs.incomingDir, 'LA FÈVE -  Finis-les.wav'), makeWav({ title: 'Finis-les', artist: 'LA FÈVE', seconds: 0.21 }));
+    writeFileSync(join(dirs.incomingDir, '.gitkeep'), '');
+
+    const summary = await scanDirectory(handle.db, dirs, dirs.incomingDir, 'rip_cd');
+    expect(summary).toMatchObject({ total: 2, imported: 2, duplicates: 0, failed: 0 });
   });
 
   it('provenance propagée au statut qualité', async () => {
