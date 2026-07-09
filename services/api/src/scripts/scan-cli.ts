@@ -45,7 +45,7 @@ async function main(): Promise<number> {
     });
     console.log(
       `\nTerminé : ${summary.imported} importés, ${summary.duplicates} déjà présents, ` +
-        `${summary.failed} en échec (sur ${summary.total} WAV trouvés).`,
+        `${summary.failed} en échec (sur ${summary.total} fichiers audio trouvés).`,
     );
     return summary.failed > 0 ? 1 : 0;
   } finally {

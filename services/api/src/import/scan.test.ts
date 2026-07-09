@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, type DbHandle } from '../db/client.js';
 import { runMigrations } from '../db/migrate.js';
-import { findWavFiles, scanDirectory } from './scan.js';
+import { findAudioFiles, scanDirectory } from './scan.js';
 import type { ImportDirs } from './import-service.js';
 import { makeWav } from '../test/wav.js';
+import { makeFlac } from '../test/flac.js';
 
 let base: string;
 let handle: DbHandle;
@@ -33,14 +34,14 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-describe('findWavFiles', () => {
+describe('findAudioFiles', () => {
   it('trouve les .wav récursivement (sous-dossiers, casse), ignore le reste', () => {
     mkdirSync(join(library, 'Artiste', 'Album'), { recursive: true });
     writeFileSync(join(library, 'a.wav'), makeWav());
     writeFileSync(join(library, 'Artiste', 'Album', 'b.WAV'), makeWav({ seconds: 0.06 }));
     writeFileSync(join(library, 'notes.txt'), 'pas un wav');
     writeFileSync(join(library, 'cover.jpg'), 'pas un wav');
-    const found = findWavFiles(library);
+    const found = findAudioFiles(library);
     return found.then((files) => {
       expect(files).toHaveLength(2);
       expect(files.every((f) => /\.wav$/i.test(f))).toBe(true);
@@ -54,9 +55,18 @@ describe('findWavFiles', () => {
     writeFileSync(join(library, 'LA FÈVE -  Finis-les.wav'), makeWav({ seconds: 0.06 }));
     writeFileSync(join(library, '.gitkeep'), '');
 
-    const files = await findWavFiles(library, [library]); // la racine est exclue…
+    const files = await findAudioFiles(library, [library]); // la racine est exclue…
     expect(files).toHaveLength(2); // …mais scannée quand même
     expect(files.every((f) => /\.wav$/i.test(f))).toBe(true);
+  });
+
+  it('trouve aussi les .flac (casse ignorée) et ignore les non-audio', async () => {
+    writeFileSync(join(library, 'a.FLAC'), makeFlac());
+    writeFileSync(join(library, 'b.Wav'), makeWav());
+    writeFileSync(join(library, 'c.txt'), 'pas audio');
+    const files = await findAudioFiles(library);
+    expect(files).toHaveLength(2);
+    expect(files.every((f) => /\.(wav|flac)$/i.test(f))).toBe(true);
   });
 });
 
@@ -70,9 +80,9 @@ describe('scanDirectory', () => {
     expect(summary).toMatchObject({ total: 2, imported: 2, duplicates: 0, failed: 0 });
 
     // Originaux toujours là (copie, pas déplacement)
-    await expect(findWavFiles(library)).resolves.toHaveLength(2);
+    await expect(findAudioFiles(library)).resolves.toHaveLength(2);
     // Et rangés dans la bibliothèque gérée
-    const managed = await findWavFiles(dirs.musicDir);
+    const managed = await findAudioFiles(dirs.musicDir);
     expect(managed).toHaveLength(2);
   });
 
@@ -134,6 +144,15 @@ describe('scanDirectory', () => {
 
     const summary = await scanDirectory(handle.db, dirs, dirs.incomingDir, 'rip_cd');
     expect(summary).toMatchObject({ total: 2, imported: 2, duplicates: 0, failed: 0 });
+  });
+
+  it('importe un FLAC (bit-perfect, rangé en .flac)', async () => {
+    writeFileSync(join(library, 'chanson.flac'), makeFlac({ seconds: 0.2 }));
+    const summary = await scanDirectory(handle.db, dirs, library, 'achat');
+    expect(summary).toMatchObject({ total: 1, imported: 1, failed: 0 });
+    const managed = await findAudioFiles(dirs.musicDir);
+    expect(managed).toHaveLength(1);
+    expect(managed[0]!.endsWith('.flac')).toBe(true);
   });
 
   it('provenance propagée au statut qualité', async () => {

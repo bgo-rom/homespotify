@@ -10,6 +10,8 @@ export const tracks = sqliteTable('tracks', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   hash: text('hash').notNull().unique(), // SHA-256 du fichier, calculé en flux
   path: text('path').notNull(), // relatif à musicDir
+  originalExtension: text('original_extension'), // .wav | .flac
+  mimeType: text('mime_type'), // audio/wav | audio/flac (pour le Content-Type de stream)
   sizeBytes: integer('size_bytes').notNull(),
   durationSeconds: real('duration_seconds'),
   title: text('title').notNull(),

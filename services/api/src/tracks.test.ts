@@ -8,6 +8,7 @@ import { buildApp } from './app.js';
 import type { AppConfig } from './config.js';
 import { trackEnrichment } from './db/schema.js';
 import { makeWav } from './test/wav.js';
+import { makeFlac } from './test/flac.js';
 
 // --- App de test : DB mémoire + répertoires jetables ---
 const base = mkdtempSync(join(tmpdir(), 'homespotify-test-'));
@@ -90,13 +91,48 @@ describe('POST /api/tracks (import WAV)', () => {
   });
 });
 
+describe('POST /api/tracks (import FLAC)', () => {
+  it('importe un FLAC lossless et détecte le format', async () => {
+    const res = await upload(makeFlac({ seconds: 0.3 }), 'Chanson FLAC.flac', 'achat');
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.path.endsWith('.flac')).toBe(true);
+    expect(body.mimeType).toBe('audio/flac');
+    expect(body.quality).toMatchObject({
+      container: 'FLAC',
+      codec: 'FLAC',
+      sampleRate: 44100,
+      bitDepth: 16,
+      status: 'lossless_verifie',
+    });
+  });
+
+  it('accepte un FLAC Hi-Res 24 bit / 96 kHz', async () => {
+    const res = await upload(
+      makeFlac({ bitDepth: 24, sampleRate: 96000, seconds: 0.2 }),
+      'hires.flac',
+      'achat',
+    );
+    expect(res.statusCode).toBe(201);
+    expect(res.json().quality.bitDepth).toBe(24);
+    expect(res.json().quality.sampleRate).toBe(96000);
+  });
+
+  it('rejette un fichier ni WAV ni FLAC (422)', async () => {
+    const res = await upload(Buffer.from('OggS pas supporté'), 'weird.ogg');
+    expect(res.statusCode).toBe(422);
+  });
+});
+
 describe('GET /api/tracks', () => {
-  it('liste paginée avec qualité', async () => {
+  it('liste paginée avec qualité et format', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/tracks' });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.total).toBeGreaterThanOrEqual(1);
-    expect(body.items[0].quality.bitDepth).toBe(16);
+    expect(body.items[0].quality.bitDepth).toBeGreaterThan(0);
+    expect(body.items[0].mimeType).toMatch(/^audio\/(wav|flac)$/);
+    expect(body.items[0].extension).toMatch(/^\.(wav|flac)$/);
   });
 
   it('expose etag + lastModified par piste (comparaison de cache mobile)', async () => {
@@ -175,6 +211,28 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   it('piste inconnue → 404', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/tracks/424242/stream' });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('GET /api/tracks/:id/stream (FLAC bit-perfect)', () => {
+  it('sert le FLAC tel quel avec Content-Type audio/flac + Range', async () => {
+    const up = await upload(makeFlac({ seconds: 0.25 }), 'streamflac.flac', 'achat');
+    const id = up.json().id as number;
+
+    const full = await app.inject({ method: 'GET', url: `/api/tracks/${id}/stream` });
+    expect(full.statusCode).toBe(200);
+    expect(full.headers['content-type']).toBe('audio/flac');
+    expect(full.headers['accept-ranges']).toBe('bytes');
+    expect(full.rawPayload.subarray(0, 4).toString('ascii')).toBe('fLaC');
+
+    const partial = await app.inject({
+      method: 'GET',
+      url: `/api/tracks/${id}/stream`,
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(partial.statusCode).toBe(206);
+    expect(partial.headers['content-type']).toBe('audio/flac');
+    expect(partial.rawPayload.toString('ascii')).toBe('fLaC');
   });
 });
 

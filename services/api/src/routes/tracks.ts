@@ -1,11 +1,12 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import type { FastifyReply, FastifyRequest, FastifyInstance } from 'fastify';
 import { desc, eq, sql } from 'drizzle-orm';
 import { tracks, trackEnrichment, trackQuality } from '../db/schema.js';
 import { parseRangeHeader } from '../lib/range.js';
 import { importWav, ImportError, PROVENANCES, type Provenance } from '../import/import-service.js';
+import { mimeTypeForPath } from '../import/audio-format.js';
 import { coverArtPath } from '../metadata/cover-art-archive-client.js';
 
 const COVER_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
@@ -26,6 +27,7 @@ async function serveTrackFile(
   reply: FastifyReply,
   absPath: string,
   hash: string,
+  contentType: string,
   disposition?: string,
 ): Promise<FastifyReply> {
   const info = await stat(absPath).then((s) => s, () => null);
@@ -40,7 +42,7 @@ async function serveTrackFile(
     .header('etag', `"${hash}"`)
     .header('last-modified', info.mtime.toUTCString())
     .header('cache-control', 'private, max-age=3600')
-    .type('audio/wav');
+    .type(contentType);
   if (disposition) reply.header('content-disposition', disposition);
 
   const range = parseRangeHeader(request.headers.range, size);
@@ -116,6 +118,8 @@ export function registerTrackRoutes(app: FastifyInstance): void {
         durationSeconds: t.durationSeconds,
         sizeBytes: t.sizeBytes,
         hasCover: t.coverPath !== null,
+        mimeType: t.mimeType ?? mimeTypeForPath(t.path),
+        extension: t.originalExtension ?? extname(t.path),
         etag: t.hash, // identité de contenu ; change si le fichier est réimporté
         lastModified: t.createdAt,
         quality: q && {
@@ -132,13 +136,15 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     return { page, limit, total, items };
   });
 
-  // Streaming avec HTTP Range (seek/reprise sans télécharger les ~50 Mo)
+  // Streaming avec HTTP Range (seek/reprise sans télécharger les ~50 Mo).
+  // Content-Type = format réel de la piste (audio/wav ou audio/flac), fichier envoyé tel quel.
   app.get<{ Params: { id: string } }>('/api/tracks/:id/stream', async (request, reply) => {
     const track = findTrack(request.params.id);
     if (!track) {
       return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
     }
-    return serveTrackFile(request, reply, join(app.config.musicDir, track.path), track.hash);
+    const contentType = track.mimeType ?? mimeTypeForPath(track.path);
+    return serveTrackFile(request, reply, join(app.config.musicDir, track.path), track.hash, contentType);
   });
 
   // Téléchargement forcé (cache hors ligne mobile) : Content-Disposition attachment
@@ -147,9 +153,11 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     if (!track) {
       return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
     }
-    const filename = `${track.artist} - ${track.title}.wav`;
+    const ext = extname(track.path) || track.originalExtension || '.wav';
+    const contentType = track.mimeType ?? mimeTypeForPath(track.path);
+    const filename = `${track.artist} - ${track.title}${ext}`;
     return serveTrackFile(
-      request, reply, join(app.config.musicDir, track.path), track.hash, attachmentHeader(filename),
+      request, reply, join(app.config.musicDir, track.path), track.hash, contentType, attachmentHeader(filename),
     );
   });
 

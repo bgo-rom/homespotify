@@ -3,12 +3,15 @@ import { join, resolve } from 'node:path';
 import type { Db } from '../db/client.js';
 import { importFromPath, ImportError, type ImportDirs, type Provenance } from './import-service.js';
 
+const AUDIO_FILE_RE = /\.(wav|flac)$/i;
+
 /**
- * Liste récursive des .wav sous `root`. `node:path` gère les `\` Windows nativement.
+ * Liste récursive des fichiers audio (.wav/.flac, casse ignorée) sous `root`.
+ * `node:path` gère les `\` Windows nativement (accents/espaces/parenthèses inclus).
  * `exclude` : dossiers à ne pas parcourir (typiquement la bibliothèque gérée, si elle
  * se trouve sous `root` — évite de re-scanner les copies déjà rangées).
  */
-export async function findWavFiles(root: string, exclude: string[] = []): Promise<string[]> {
+export async function findAudioFiles(root: string, exclude: string[] = []): Promise<string[]> {
   const resolvedRoot = resolve(root);
   const excluded = new Set(exclude.map((p) => resolve(p)));
   const out: string[] = [];
@@ -28,7 +31,7 @@ export async function findWavFiles(root: string, exclude: string[] = []): Promis
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(full);
-      } else if (entry.isFile() && /\.wav$/i.test(entry.name)) {
+      } else if (entry.isFile() && AUDIO_FILE_RE.test(entry.name)) {
         out.push(full);
       }
     }
@@ -54,9 +57,9 @@ export interface ScanProgress {
 }
 
 /**
- * Ingère en masse tous les WAV d'un dossier local dans la bibliothèque gérée.
- * Déduplication par hash (fichiers déjà en base ignorés). Un échec par fichier
- * n'interrompt pas le lot.
+ * Ingère en masse tous les fichiers audio (WAV/FLAC) d'un dossier local dans la
+ * bibliothèque gérée. Déduplication par hash (fichiers déjà en base ignorés).
+ * Un échec par fichier n'interrompt pas le lot.
  */
 export async function scanDirectory(
   db: Db,
@@ -66,7 +69,7 @@ export async function scanDirectory(
   onProgress?: (p: ScanProgress) => void,
 ): Promise<ScanSummary> {
   // Exclut les dossiers gérés au cas où ils seraient sous `root` (évite de re-scanner les copies)
-  const files = await findWavFiles(root, [dirs.musicDir, dirs.incomingDir, dirs.coversDir]);
+  const files = await findAudioFiles(root, [dirs.musicDir, dirs.incomingDir, dirs.coversDir]);
   const summary: ScanSummary = {
     total: files.length,
     imported: 0,

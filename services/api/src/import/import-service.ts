@@ -8,9 +8,14 @@ import { parseFile } from 'music-metadata';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { tracks, trackQuality } from '../db/schema.js';
+import { audioFormat, detectAudioKind } from './audio-format.js';
 
-const ALLOWED_SAMPLE_RATES = [44100, 48000];
-const ALLOWED_BIT_DEPTH = 16;
+// WAV PCM : la contrainte historique du projet (qualité CD).
+const ALLOWED_WAV_SAMPLE_RATES = [44100, 48000];
+const ALLOWED_WAV_BIT_DEPTH = 16;
+// FLAC lossless : on accepte les résolutions courantes sans conversion.
+const ALLOWED_FLAC_SAMPLE_RATES = [44100, 48000, 88200, 96000, 176400, 192000];
+const ALLOWED_FLAC_BIT_DEPTHS = [16, 24];
 
 export const PROVENANCES = ['rip_cd', 'achat', 'libre', 'upscale_ia', 'inconnue'] as const;
 export type Provenance = (typeof PROVENANCES)[number];
@@ -47,6 +52,7 @@ export interface ImportedTrack {
   artist: string;
   album: string;
   path: string;
+  mimeType: string;
   quality: {
     container: string;
     codec: string;
@@ -95,32 +101,47 @@ async function finalizeIngest(
   const dup = db.select({ id: tracks.id }).from(tracks).where(eq(tracks.hash, hash)).get();
   if (dup) return { status: 'duplicate', existingId: dup.id };
 
-  // 2. Analyse réelle : conteneur WAV PCM 16 bit / 44,1 ou 48 kHz exigé
+  // 2. Analyse réelle : WAV PCM 16 bit ou FLAC lossless (aucune conversion).
   const meta = await parseFile(localPath, { duration: true }).catch(() => {
-    throw new ImportError(422, 'Fichier illisible : pas un WAV valide');
+    throw new ImportError(422, 'Fichier illisible : ni WAV ni FLAC valide');
   });
   const { container, codec, sampleRate, bitsPerSample, numberOfChannels, duration } = meta.format;
-  if (!container?.includes('WAVE')) {
-    throw new ImportError(422, `Format refusé : conteneur "${container ?? 'inconnu'}" (WAV attendu)`);
+  const kind = detectAudioKind(container, codec);
+  if (kind === null) {
+    throw new ImportError(422, `Format refusé : "${container ?? codec ?? 'inconnu'}" (WAV ou FLAC attendu)`);
   }
-  if (bitsPerSample !== ALLOWED_BIT_DEPTH || !ALLOWED_SAMPLE_RATES.includes(sampleRate ?? 0)) {
-    throw new ImportError(
-      422,
-      `Specs refusées : ${bitsPerSample ?? '?'} bit / ${sampleRate ?? '?'} Hz (attendu 16 bit / 44100 ou 48000 Hz)`,
-    );
+  if (kind === 'wav') {
+    if (bitsPerSample !== ALLOWED_WAV_BIT_DEPTH || !ALLOWED_WAV_SAMPLE_RATES.includes(sampleRate ?? 0)) {
+      throw new ImportError(
+        422,
+        `Specs WAV refusées : ${bitsPerSample ?? '?'} bit / ${sampleRate ?? '?'} Hz (attendu 16 bit / 44100 ou 48000 Hz)`,
+      );
+    }
+  } else {
+    if (
+      meta.format.lossless === false ||
+      !ALLOWED_FLAC_BIT_DEPTHS.includes(bitsPerSample ?? 0) ||
+      !ALLOWED_FLAC_SAMPLE_RATES.includes(sampleRate ?? 0)
+    ) {
+      throw new ImportError(
+        422,
+        `Specs FLAC refusées : ${bitsPerSample ?? '?'} bit / ${sampleRate ?? '?'} Hz (attendu 16/24 bit, 44100–192000 Hz, lossless)`,
+      );
+    }
   }
+  const format = audioFormat(kind);
 
-  // 3. Rangement : Artiste/Album/Titre.wav (fallbacks depuis le nom de fichier)
-  const fallbackTitle = originalFilename.replace(/\.wav$/i, '');
+  // 3. Rangement : Artiste/Album/Titre.ext (extension réelle, fallbacks depuis le nom)
+  const fallbackTitle = originalFilename.replace(/\.(wav|flac)$/i, '');
   const title = meta.common.title?.trim() || fallbackTitle;
   const artist = meta.common.artist?.trim() || 'Artiste inconnu';
   const album = meta.common.album?.trim() || 'Album inconnu';
   const shortHash = hash.slice(0, 8);
-  let relPath = join(sanitize(artist), sanitize(album), `${sanitize(title)}.wav`);
+  let relPath = join(sanitize(artist), sanitize(album), `${sanitize(title)}${format.extension}`);
   let destPath = join(dirs.musicDir, relPath);
   const exists = await stat(destPath).then(() => true, () => false);
   if (exists) {
-    relPath = join(sanitize(artist), sanitize(album), `${sanitize(title)} [${shortHash}].wav`);
+    relPath = join(sanitize(artist), sanitize(album), `${sanitize(title)} [${shortHash}]${format.extension}`);
     destPath = join(dirs.musicDir, relPath);
   }
   await mkdir(dirname(destPath), { recursive: true });
@@ -149,6 +170,8 @@ async function finalizeIngest(
     .values({
       hash,
       path: relPath,
+      originalExtension: format.extension,
+      mimeType: format.mimeType,
       sizeBytes: size,
       durationSeconds: duration ?? null,
       title,
@@ -162,10 +185,10 @@ async function finalizeIngest(
     .returning({ id: tracks.id })
     .get();
   const quality = {
-    container: container ?? 'WAVE',
-    codec: codec ?? 'PCM',
+    container: container ?? (kind === 'flac' ? 'FLAC' : 'WAVE'),
+    codec: codec ?? (kind === 'flac' ? 'FLAC' : 'PCM'),
     sampleRate: sampleRate ?? 0,
-    bitDepth: ALLOWED_BIT_DEPTH,
+    bitDepth: bitsPerSample ?? 0,
     channels: numberOfChannels ?? 0,
     status: STATUS_BY_PROVENANCE[provenance],
     provenance,
@@ -176,7 +199,7 @@ async function finalizeIngest(
 
   return {
     status: 'imported',
-    track: { id: inserted.id, title, artist, album, path: relPath, quality },
+    track: { id: inserted.id, title, artist, album, path: relPath, mimeType: format.mimeType, quality },
   };
 }
 
