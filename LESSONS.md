@@ -28,7 +28,7 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 ### L-003 — Les gros fichiers audio imposent une discipline stricte (2026-07-08)
 - **Contexte** : conception du streaming et de l'import.
 - **Leçon** : avec des FLAC de 20–60 Mo, tout chargement complet en mémoire finit en saturation RAM ; le seek exige HTTP Range complet ; le mobile exige cache et streaming progressif.
-- **Conséquence** : streams uniquement (upload, hash, envoi), HTTP Range 206 complet, transcodage à la volée pour le cellulaire, cache hors ligne vérifié par hash. Règles gravées dans `AGENTS.md` et `ARCHITECTURE.md`.
+- **Conséquence** : streams uniquement (upload, hash, envoi), HTTP Range 206 complet, WAV/FLAC natifs sans transcodage, cache hors ligne vérifié par hash. Règles gravées dans `AGENTS.md` et `ARCHITECTURE.md`.
 
 ### L-004 — Simple avant beau (2026-07-08)
 - **Contexte** : définition des priorités du projet.
@@ -59,6 +59,7 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : décision utilisateur de n'ingérer que du WAV PCM 16 bit, remplaçant FLAC (qui était marqué « définitif »).
 - **Leçon** : un WAV pèse ~2× un FLAC à qualité identique. Le choix privilégie un pipeline d'import trivial (un seul format, pas de transcodage à l'entrée) au prix de l'espace disque — arbitrage assumé, pas un oubli.
 - **Conséquence** : import borné au WAV 44,1/48 kHz 16 bit (refus `422` sinon) ; FLAC gardé en réserve comme format d'archivage compressé si l'espace devient critique (`TECH_DECISIONS.md`). Une décision « définitive » peut changer sur demande explicite de l'utilisateur, à condition de tracer le pourquoi.
+- **État** : décision remplacée le 2026-07-09 : les WAV PCM et FLAC lossless conformes sont désormais acceptés et préservés nativement, sans conversion.
 
 ### L-010 — curl Windows et chemins absolus dans `-F @` (2026-07-08)
 - **Contexte** : smoke-test Phase 2 — `curl -F "file=@C:/…/smoke.wav"` n'envoyait aucune requête (corps vide, rien côté serveur).
@@ -78,3 +79,13 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : validation Phase 3 MusicBrainz dans Codex sandbox ; `pnpm --filter ... test/typecheck` a tenté de recréer `node_modules`, puis l'installation a expiré car l'accès au registre npm est interdit (`EACCES`).
 - **Leçon** : en environnement non interactif avec réseau restreint, ne pas relancer `pnpm install` implicitement si `node_modules` est jugé incohérent ; l'opération peut laisser des liens incomplets et empêcher les tests locaux.
 - **Conséquence** : relancer `pnpm install` sur la machine utilisateur avec réseau autorisé avant les tests si le sandbox a purgé les liens ; en sandbox, privilégier les vérifications qui n'exigent pas de réinstallation.
+
+### L-014 — Le démarrage audio mobile doit être atomique (2026-07-09)
+- **Contexte** : passe runtime Flutter ; le tap piste declenchait preparation, lecture et navigation depuis l'UI, sans etat de chargement ni protection contre les doubles taps.
+- **Leçon** : pour les flux WAV/FLAC lourds, l'UI ne doit pas appeler `setTrack()` puis `play()` de façon dispersée ; le handler doit préparer la source, attendre son chargement et seulement ensuite lancer la lecture.
+- **Conséquence** : exposer `setQueueAndPlay()` comme méthode atomique, journaliser les états audio seulement en debug, afficher un état de préparation et empêcher les lancements concurrents.
+
+### L-015 — L'absence de DSP applicatif ne garantit pas un bit-perfect matériel (2026-07-09)
+- **Contexte** : audit du pipeline Flutter Android (`just_audio` + `audio_service`) pour des flux WAV/FLAC natifs.
+- **Leçon** : HomeSpotify peut préserver le fichier servi, ne pas appliquer de gain automatique, de normalisation, d'égaliseur ou de transcodage ; Android peut néanmoins mixer ou rééchantillonner après la sortie de l'application selon l'appareil, le DAC et la route audio.
+- **Conséquence** : ne jamais promettre un bit-perfect matériel universel sans mesure sur l'appareil cible. Les garanties du projet portent sur le flux HTTP original et l'absence de transformation dans HomeSpotify ; la fréquence de sortie Android reste à valider avec le matériel réel.

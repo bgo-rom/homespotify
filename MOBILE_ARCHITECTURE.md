@@ -4,11 +4,11 @@ Document de cadrage de la Phase 4 : client mobile Flutter. Aucun code d'interfac
 
 ## Objectif Phase 4
 
-Créer une application mobile fluide et robuste pour parcourir la bibliothèque HomeSpotify, streamer des WAV lourds via HTTP Range, afficher les métadonnées enrichies, puis préparer le cache hors ligne piloté par `GET /api/sync/manifest`.
+Créer une application mobile fluide et robuste pour parcourir la bibliothèque HomeSpotify, streamer des WAV/FLAC natifs via HTTP Range, afficher les métadonnées enrichies, puis préparer le cache hors ligne piloté par `GET /api/sync/manifest`.
 
 Contraintes non négociables :
 
-- Les fichiers source restent des WAV PCM côté serveur ; le client ne réécrit jamais l'audio.
+- Les fichiers source restent des WAV PCM ou FLAC lossless côté serveur ; le client ne réécrit, ne convertit ni ne compresse jamais l'audio.
 - Streaming réseau par URL `/api/tracks/:id/stream`, avec seek/reprise via Range serveur.
 - Téléchargement offline par `/api/tracks/:id/download`, jamais via chargement complet en mémoire.
 - Synchronisation légère via `/api/sync/manifest` et ETag global.
@@ -24,9 +24,9 @@ Contraintes non négociables :
 
 ### Audio / Lockscreen
 
-- **`just_audio` — obligatoire** : lecteur audio principal. Il sait charger des URL, gérer les playlists, le seek, les erreurs de lecture, et s'appuie sur les en-têtes serveur (`Content-Length`, `Content-Type`, Range) pour les flux distants. C'est le bon choix pour les WAV lourds servis par l'API HomeSpotify.
+- **`just_audio` — obligatoire** : lecteur audio principal. Il sait charger des URL, gérer les playlists, le seek, les erreurs de lecture, et s'appuie sur les en-têtes serveur (`Content-Length`, `Content-Type`, Range) pour les flux distants. C'est le bon choix pour les WAV/FLAC lourds servis nativement par l'API HomeSpotify.
 - **`audio_service` — obligatoire** : couche background audio, notification média, lockscreen, contrôles casque/voiture et file de lecture système. Toute logique audio longue durée passe par un `AudioHandler`.
-- **`audio_session` — recommandé** : configuration explicite de l'audio focus Android/iOS, interruptions, ducking et coexistence avec les autres apps audio.
+- **`audio_session` — recommandé** : configuration explicite de l'audio focus Android/iOS, interruptions et coexistence avec les autres apps audio. Les interruptions mettent HomeSpotify en pause ; aucun ducking ou changement automatique de gain n'est appliqué.
 
 Règle d'architecture : l'UI ne pilote jamais directement `AudioPlayer`. Elle envoie des intentions à un service applicatif qui délègue à l'`AudioHandler`.
 
@@ -46,7 +46,7 @@ Règle d'architecture : l'UI ne pilote jamais directement `AudioPlayer`. Elle en
 - **`path_provider` — obligatoire** : racines de stockage de l'application.
 - Stockage cible :
   - DB locale : `Application Support` ou `Application Documents` selon plateforme.
-  - WAV téléchargés : sous-dossier applicatif `offline/tracks/{track_id}.wav`.
+  - Fichiers téléchargés : sous-dossier applicatif `offline/tracks/{track_id}.{ext}`.
   - Pochettes : sous-dossier applicatif `offline/covers/{track_id}.jpg` ou URL distante tant que non cachée.
 
 Tables locales prévues :
@@ -268,12 +268,12 @@ flutter run --profile --dart-define=HOMESPOTIFY_API_BASE_URL=http://192.168.1.20
 ## Contrats Backend Consommés
 
 - `GET /api/tracks?page&limit` : liste paginée de bibliothèque.
-- `GET /api/tracks/:id/stream` : streaming WAV avec HTTP Range.
+- `GET /api/tracks/:id/stream` : streaming WAV/FLAC natif avec HTTP Range.
 - `GET /api/tracks/:id/download` : téléchargement offline Range-resumable.
 - `GET /api/tracks/:id/cover` : pochette HD enrichie ou fallback embarqué.
 - `GET /api/sync/manifest` : manifeste léger avec ETag global.
 
-Le client mobile doit démarrer par le manifeste : si `If-None-Match` retourne `304`, il conserve son état local ; sinon il met à jour SQLite puis réconcilie les fichiers WAV présents sur disque par `track_id` + `etag`.
+Le client mobile doit démarrer par le manifeste : si `If-None-Match` retourne `304`, il conserve son état local ; sinon il met à jour SQLite puis réconcilie les fichiers WAV/FLAC présents sur disque par `track_id` + `etag`.
 
 ## Références Officielles
 

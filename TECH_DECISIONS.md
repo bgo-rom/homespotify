@@ -11,10 +11,10 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | Audio (analyse/validation) | ffmpeg + ffprobe (binaires externes) | définitive |
 | Tags | music-metadata | temporaire |
 | Scanner | scan complet + watcher chokidar | temporaire |
-| Format d'ingestion & stockage | WAV PCM 16 bit / 44,1 ou 48 kHz **uniquement** | définitive (décidé 2026-07-08, remplace FLAC) |
+| Format d'ingestion & stockage | WAV PCM 16 bit / 44,1 ou 48 kHz + FLAC lossless 16/24 bit / 44,1, 48, 88,2, 96, 176,4 ou 192 kHz, conservés nativement | définitive (mis à jour 2026-07-09) |
 | Extraction tags & qualité | music-metadata (RIFF INFO + ID3v2 embarqué + pochette) | définitive |
 | Upload | @fastify/multipart, limite 200 Mo (min 150) | définitive |
-| Streaming mobile | WAV direct via HTTP Range | définitive |
+| Streaming mobile | WAV/FLAC natifs via HTTP Range | définitive |
 | Client v1 | App mobile Flutter Android-first | définitive (décidé 2026-07-08) |
 | App mobile | Flutter + just_audio + audio_service | définitive |
 | Réseau client mobile | dio | définitive |
@@ -42,8 +42,8 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - **Node.js/TypeScript/Fastify** : backend simple, typé, I/O-bound et adapté au streaming ; l'écosystème audio-métadonnées côté serveur reste mature (`music-metadata`). Le mobile passe en Flutter/Dart par décision Phase 4.
 - **SQLite** : un serveur, une famille d'utilisateurs — un fichier suffit ; zéro administration ; sauvegarde triviale ; performances largement suffisantes pour des dizaines de milliers de pistes.
 - **ffmpeg/ffprobe en binaires** : référence absolue du domaine ; les bindings natifs Node cassent aux mises à jour, les binaires non.
-- **WAV PCM comme format d'ingestion unique** (décision utilisateur, 2026-07-08) : l'optimisation audio est gérée manuellement en amont (ex. upscale AudioSR, rip), HomeSpotify n'ingère que le résultat final en WAV 16 bit / 44,1 ou 48 kHz. Simplifie radicalement le pipeline d'import (un seul format à valider, pas de transcodage à l'entrée). **Coût assumé** : un WAV pèse ~2× un FLAC pour une qualité identique — l'espace disque est sacrifié au profit de la simplicité et d'un format PCM brut sans couche de décodage. Le statut qualité reste piloté par la provenance déclarée, jamais par le conteneur (un WAV issu d'un upscale IA = `lossy`).
-- **WAV direct via HTTP Range pour le mobile** : la Phase 4 cible explicitement les flux WAV lourds ; l'optimisation côté client passe par Range, ETags, cache offline et politiques réseau plutôt que par un transcodage serveur.
+- **WAV et FLAC natifs** (mis à jour 2026-07-09) : le serveur accepte le WAV PCM 16 bit / 44,1–48 kHz et le FLAC lossless 16/24 bit / 44,1, 48, 88,2, 96, 176,4 ou 192 kHz. Il conserve l'extension, le contenu et les métadonnées du fichier importé ; aucune conversion, compression ou réécriture n'intervient dans le pipeline. Le statut qualité reste piloté par la provenance déclarée, jamais par le conteneur (un WAV ou FLAC issu d'un upscale IA = `lossy`).
+- **WAV/FLAC natifs via HTTP Range pour le mobile** : la Phase 4 cible explicitement les flux lossless lourds ; l'optimisation côté client passe par Range, ETags, cache offline et politiques réseau, jamais par un transcodage serveur ou un DSP applicatif.
 - **Flutter direct en Phase 4** : le backend Phase 1–3 est opérationnel ; l'application mobile devient le client v1. Flutter est retenu pour la fluidité UI, le contrôle natif audio et l'écosystème `just_audio`/`audio_service`.
 - **Tailscale/WireGuard d'abord** : supprime toute la classe de risques « API exposée à Internet » pour un usage personnel ; l'exposition publique est un choix réversible plus tard, l'inverse ne l'est pas après compromission.
 - **Docker Compose** : reproductibilité et rollback sur une machine unique, sans la complexité d'un orchestrateur.
@@ -57,10 +57,10 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | PostgreSQL | Surdimensionné pour un serveur mono-utilisateur ; un service de plus à maintenir H24 |
 | Prisma | Plus lourd que Drizzle sur SQLite, moteur de requêtes opaque ; Drizzle reste temporaire |
 | React Native + Expo | Remplacé en Phase 4 : Flutter offre un meilleur contrôle UI/animations et une pile audio claire (`just_audio` + `audio_service`) pour les WAV lourds |
-| Transcodage Opus mobile en v1 | Écarté du cadrage Phase 4 : introduit une seconde représentation audio et complexifie cache/qualité alors que l'objectif immédiat est la lecture WAV directe |
+| Transcodage Opus mobile en v1 | Écarté du cadrage Phase 4 : introduit une seconde représentation audio et complexifie cache/qualité alors que l'objectif immédiat est la lecture WAV/FLAC native |
 | MP3/AAC comme format de stockage | Lossy : contraire à la priorité n°1 du projet |
-| FLAC comme format de stockage | Abandonné 2026-07-08 : l'utilisateur préfère un pipeline WAV-only (optimisation manuelle en amont) ; FLAC reste envisageable plus tard comme format d'archivage compressé si l'espace disque devient critique |
-| Import multi-formats (MP3/FLAC/ALAC…) | Repoussé : l'ingestion est volontairement bornée au WAV pour la Phase 2 ; élargir plus tard si besoin |
+| FLAC comme format de stockage | Décision WAV-only remplacée le 2026-07-09 : le FLAC lossless est désormais conservé et streamé nativement, sans conversion |
+| Import multi-formats (MP3/AAC/ALAC…) | Rejeté : seuls WAV PCM et FLAC lossless sont acceptés ; les formats lossy ou sans analyse lossless fiable restent hors périmètre |
 | Redis + BullMQ dès le départ | File de jobs in-process suffisante en v1 ; Redis ajouté seulement si besoin prouvé |
 | Nginx | Très bien, mais Caddy automatise TLS avec une config minimale — adapté à une exploitation mono-personne |
 | Exposition HTTPS publique en v1 | Surface d'attaque inutile tant que le VPN couvre l'usage |
@@ -83,7 +83,7 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - Qualité audio stockée = qualité **mesurée** (specs) + **provenance déclarée** ; statuts `lossless_verifie` / `lossless_probable` / `lossy` / `inconnue`. La provenance mappe le statut : `rip_cd`/`achat`→`lossless_verifie`, `libre`→`lossless_probable`, `upscale_ia`→`lossy`, `inconnue`→`inconnue`.
 - Aucun contournement DRM, jamais.
 - Jamais de fichier audio chargé entier en mémoire ; streaming + HTTP Range obligatoires.
-- Ingestion et stockage = WAV PCM 16 bit / 44,1 ou 48 kHz uniquement (optimisation gérée en amont par l'utilisateur).
+- Ingestion et stockage = WAV PCM 16 bit / 44,1–48 kHz ou FLAC lossless 16/24 bit / 44,1, 48, 88,2, 96, 176,4 ou 192 kHz, préservés sans transformation.
 - SQLite, Docker Compose, comptes locaux, VPN d'abord.
 - La documentation guide le code ; les fichiers de fondation sont maintenus à jour.
 
@@ -91,6 +91,7 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 
 - [ ] OS et specs exactes du serveur maison (CPU, RAM, disques) → dimensionnement streaming, scan et cache.
 - [ ] Débit montant de la connexion domestique → qualité max de streaming distant.
+- [ ] Vérifier sur les DAC/appareils Android cibles la fréquence réellement ouverte par le système : Android peut mixer ou rééchantillonner après la sortie de l'application, donc l'absence de DSP HomeSpotify ne suffit pas à promettre un bit-perfect matériel universel.
 - [ ] Nombre d'utilisateurs réels (solo ou famille) → périmètre auth/profils.
 - [ ] Outil de détection fake lossless (cf. `AUDIO_SOURCING.md > À vérifier`).
 - [x] Plateforme mobile : **Android d'abord** (décidé 2026-07-08) ; iOS éventuellement plus tard (coût compte développeur Apple).

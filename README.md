@@ -8,11 +8,11 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## Statut actuel
 
-**Backend Phase 1–3 ✅ → Phase 4 mobile Flutter démarrée** — dans `services/api` : upload/scanner WAV, dédup par hash, extraction tags/pochette, qualité mesurée + statut par provenance, streaming HTTP Range robuste, téléchargement offline, enrichissement MusicBrainz, pochettes HD Cover Art Archive, manifeste `/api/sync/manifest`. Serveur hôte **Windows 11**. **Ingestion bornée au WAV PCM 16 bit / 44,1–48 kHz.** Prochaine étape : initialiser l'app Flutter mobile.
+**Backend Phase 1–3 ✅ → Phase 4 mobile Flutter démarrée** — dans `services/api` : upload/scanner WAV/FLAC, dédup par hash, extraction tags/pochette, qualité mesurée + statut par provenance, streaming HTTP Range robuste, téléchargement offline, enrichissement MusicBrainz, pochettes HD Cover Art Archive, manifeste `/api/sync/manifest`. Serveur hôte **Windows 11**. **Ingestion native : WAV PCM 16 bit / 44,1–48 kHz et FLAC lossless 16/24 bit / 44,1–192 kHz, sans transcodage.**
 
 ## Stack pressentie
 
-Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe · WAV PCM (ingestion, stockage, streaming Range) · Flutter mobile (`just_audio`, `audio_service`, `dio`, `sqflite`, Riverpod) · WireGuard/Tailscale · Docker Compose. Justifications et statuts (définitif/temporaire) : [TECH_DECISIONS.md](TECH_DECISIONS.md).
+Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe · WAV PCM + FLAC lossless natifs (ingestion, stockage, streaming Range) · Flutter mobile (`just_audio`, `audio_service`, `dio`, `sqflite`, Riverpod) · WireGuard/Tailscale · Docker Compose. Justifications et statuts (définitif/temporaire) : [TECH_DECISIONS.md](TECH_DECISIONS.md).
 
 ## Ordre de lecture
 
@@ -62,7 +62,7 @@ Configuration par variables d'environnement (toutes optionnelles en dev) : `HOST
 | GET | `/health` `/version` `/api/status` | Sondes (status inclut `trackCount`) |
 | POST | `/api/tracks` | Import WAV (multipart : champ `file` + `provenance` optionnel) |
 | GET | `/api/tracks?page&limit` | Liste paginée + qualité + `etag`/`lastModified` (comparaison cache) |
-| GET | `/api/tracks/:id/stream` | Streaming WAV avec HTTP Range (206/416) |
+| GET | `/api/tracks/:id/stream` | Streaming WAV/FLAC natif avec HTTP Range (206/416) |
 | GET | `/api/tracks/:id/download` | Téléchargement forcé (`Content-Disposition`, offline mobile) |
 | GET | `/api/tracks/:id/cover` | Pochette HD enrichie ou fallback embarqué |
 | GET | `/api/sync/manifest` | Manifeste offline compact (`track_id`, statut enrichissement, `etag`, `lastModified`) avec ETag global |
