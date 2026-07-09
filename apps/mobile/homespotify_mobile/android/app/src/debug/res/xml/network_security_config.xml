@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG UNIQUEMENT (dossier src/debug) : autorise le HTTP en clair vers le
+  serveur HomeSpotify local pour le streaming audio (just_audio/ExoPlayer).
+  La build release n'embarque pas cette config → cleartext reste bloqué.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Loopback de la machine hôte vu depuis l'émulateur Android -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <!-- Accès direct localhost (appareil filaire / port-forward adb) -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
