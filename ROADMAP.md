@@ -34,25 +34,25 @@ Règle : une phase ne démarre que si les critères de réussite de la précéde
 - **Critères** : bibliothèque de test (≥ 500 pistes) scannée sans erreur ; re-scan idempotent ; recherche répond < 200 ms en local.
 - **Pièges** : écraser les tags d'origine ; scanner récursif qui suit les liens symboliques ; tags malveillants non échappés (injection).
 
-## Phase 4 — Streaming audio
+## Phase 4 — Application mobile Flutter
 
-- **Objectif** : écouter depuis un navigateur, de façon robuste.
-- **Livrables** : endpoint stream avec HTTP Range complet (206, seek, reprise), ETag, transcodage Opus à la volée optionnel, client web mobile-first minimal (liste + lecteur).
-- **Critères** : seek instantané dans un FLAC de 50 Mo ; reprise après coupure réseau ; deux lectures simultanées sans saturer le serveur.
-- **Pièges** : implémenter Range à moitié (certains lecteurs exigent la spec complète) ; transcoder par défaut en local ; fuites de processus ffmpeg orphelins.
+- **Objectif** : créer le client mobile v1 en Flutter, robuste pour les WAV lourds.
+- **Livrables** : projet Flutter initialisé, architecture mobile, navigation bibliothèque/recherche/lecteur, couche audio `just_audio` + `audio_service`, client API `dio`, manifeste offline via `sqflite` + `path_provider`.
+- **Critères** : streaming WAV avec seek/reprise via HTTP Range ; lecture arrière-plan/lockscreen Android ; sync manifeste en une requête légère ; premiers téléchargements offline vérifiés par ETag.
+- **Pièges** : piloter `just_audio` directement depuis l'UI ; télécharger des WAV entiers en mémoire ; ignorer les ETags ; soigner l'esthétique avant la stabilité audio.
 
-## Phase 5 — Application mobile
+## Phase 5 — Expérience mobile avancée
 
-- **Objectif** : vraie app mobile avec lecture en arrière-plan.
-- **Livrables** : app React Native/Expo, react-native-track-player (lock screen, notifications, file d'attente), navigation bibliothèque/recherche/lecteur, badges de qualité, choix direct/transcodé.
-- **Critères** : lecture continue en arrière-plan et écran verrouillé ; contrôles casque/voiture ; parcours fluide sur la bibliothèque de test.
-- **Pièges** : sous-estimer les permissions/audio focus Android et iOS ; dupliquer la logique métier côté client ; soigner l'esthétique avant la stabilité de lecture.
+- **Objectif** : enrichir l'app Flutter après validation du socle audio/offline.
+- **Livrables** : animations avancées, file d'attente complète, badges de qualité, politiques Wi-Fi/cellulaire pour les WAV lourds, gestion fine du cache, éventuellement iOS.
+- **Critères** : lecture continue en arrière-plan et écran verrouillé ; contrôles casque/voiture ; parcours fluide sur bibliothèque réelle ; cache cohérent après modifications serveur.
+- **Pièges** : sous-estimer les permissions/audio focus Android et iOS ; dupliquer la logique métier côté client ; complexifier les animations avant d'avoir stabilisé lecture et offline.
 
 ## Phase 6 — Cache hors ligne
 
 - **Objectif** : écouter sans réseau.
 - **Fondations posées en Phase 2/3** : route `GET /api/tracks/:id/download` (`Content-Disposition: attachment`, Range-resumable) + `etag`/`lastModified` par piste dans le listing → le client compare son cache local au serveur par hash.
-- **Livrables** : téléchargement par piste/album/playlist (route unitaire prête), manifeste local + `cache_state` serveur, vérification par hash, choix qualité du cache, purge LRU par plafond d'espace, lecture 100 % locale.
+- **Livrables** : téléchargement par piste/album/playlist (route unitaire prête), manifeste local + `cache_state` serveur, vérification par hash, politique de cache WAV original, purge LRU par plafond d'espace, lecture 100 % locale.
 - **Critères** : album mis en cache → lecture complète en mode avion ; resync correcte après modification serveur ; suppression libère l'espace annoncé.
 - **Pièges** : cache incohérent après renommage serveur (→ toujours réconcilier par hash) ; télécharger sur cellulaire sans consentement ; corruption silencieuse (→ vérifier les hashes).
 

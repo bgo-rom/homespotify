@@ -4,15 +4,15 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## ⚠️ Avertissement qualité audio
 
-**YouTube ≠ lossless.** YouTube (et toute source équivalente) sert de l'audio déjà compressé (~130–160 kbps Opus/AAC). Le convertir en FLAC ne recrée aucune qualité perdue. Ici, la qualité affichée est toujours **mesurée** (ffprobe + analyse), jamais déduite de l'extension du fichier. Détails : [AUDIO_SOURCING.md](AUDIO_SOURCING.md). Aucun contournement DRM dans ce projet.
+**YouTube ≠ lossless.** YouTube (et toute source équivalente) sert de l'audio déjà compressé (~130–160 kbps Opus/AAC). Le convertir en WAV ne recrée aucune qualité perdue. Ici, la qualité affichée est toujours **mesurée** (ffprobe + analyse), jamais déduite de l'extension du fichier. Détails : [AUDIO_SOURCING.md](AUDIO_SOURCING.md). Aucun contournement DRM dans ce projet.
 
 ## Statut actuel
 
-**Phase 2 ✅ → Phase 3 amorcée** — dans `services/api` : upload multipart de gros WAV, **scanner de dossier local** (CLI `scan`, dédup par hash, chemins Windows), extraction tags/pochette (music-metadata), qualité mesurée + statut par provenance, streaming HTTP Range robuste (`audio/wav`, 206/416), **téléchargement offline** (`download` + `etag`/`lastModified`), lecteur dev `/player`. 43 tests. Serveur hôte **Windows 11**. **Ingestion bornée au WAV PCM 16 bit / 44,1–48 kHz.** Restant : enrichissement MusicBrainz, watcher de dossier (Phase 3).
+**Backend Phase 1–3 ✅ → Phase 4 mobile Flutter démarrée** — dans `services/api` : upload/scanner WAV, dédup par hash, extraction tags/pochette, qualité mesurée + statut par provenance, streaming HTTP Range robuste, téléchargement offline, enrichissement MusicBrainz, pochettes HD Cover Art Archive, manifeste `/api/sync/manifest`. Serveur hôte **Windows 11**. **Ingestion bornée au WAV PCM 16 bit / 44,1–48 kHz.** Prochaine étape : initialiser l'app Flutter mobile.
 
 ## Stack pressentie
 
-Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe · FLAC (stockage) / Opus (streaming mobile) · PWA puis React Native/Expo · WireGuard/Tailscale · Docker Compose. Justifications et statuts (définitif/temporaire) : [TECH_DECISIONS.md](TECH_DECISIONS.md).
+Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe · WAV PCM (ingestion, stockage, streaming Range) · Flutter mobile (`just_audio`, `audio_service`, `dio`, `sqflite`, Riverpod) · WireGuard/Tailscale · Docker Compose. Justifications et statuts (définitif/temporaire) : [TECH_DECISIONS.md](TECH_DECISIONS.md).
 
 ## Ordre de lecture
 
@@ -29,8 +29,8 @@ Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe �
 
 ```
 docs/               Documentation complémentaire
-apps/mobile/        Future app React Native (Phase 5)
-apps/web/           Future PWA mobile-first (Phase 4)
+apps/mobile/        Future app Flutter Android-first (Phase 4)
+apps/web/           Future web client éventuel
 services/api/       Futur backend Fastify (Phase 1)
 packages/shared/    Types et logique partagés
 storage/            Données locales (music, imports, covers, cache) — non versionnées
@@ -64,7 +64,8 @@ Configuration par variables d'environnement (toutes optionnelles en dev) : `HOST
 | GET | `/api/tracks?page&limit` | Liste paginée + qualité + `etag`/`lastModified` (comparaison cache) |
 | GET | `/api/tracks/:id/stream` | Streaming WAV avec HTTP Range (206/416) |
 | GET | `/api/tracks/:id/download` | Téléchargement forcé (`Content-Disposition`, offline mobile) |
-| GET | `/api/tracks/:id/cover` | Pochette embarquée |
+| GET | `/api/tracks/:id/cover` | Pochette HD enrichie ou fallback embarqué |
+| GET | `/api/sync/manifest` | Manifeste offline compact (`track_id`, statut enrichissement, `etag`, `lastModified`) avec ETag global |
 | GET | `/player` | Lecteur web de validation (dev) |
 
 Import via curl (chemin **relatif**, cf. [LESSONS.md](LESSONS.md) L-010) :
@@ -87,6 +88,18 @@ pnpm --filter @homespotify/api scan -- "C:\Musique_HomeSpotify" --provenance rip
 
 Le scanner parcourt récursivement le dossier (chemins Windows gérés), copie chaque WAV valide dans la bibliothèque gérée (`MUSIC_DIR`), ignore les fichiers déjà en base et refuse ce qui n'est pas du WAV 16 bit / 44,1–48 kHz. Un fichier en échec n'interrompt pas le lot ; code de sortie ≠ 0 s'il y a au moins un échec.
 
+### Enrichissement MusicBrainz (Phase 3)
+
+Traitement manuel, sans écriture dans les fichiers WAV :
+
+```bash
+$env:MUSICBRAINZ_USER_AGENT="HomeSpotify/0.1.0 (contact: vous@example.com)"
+pnpm --filter @homespotify/api enrich:musicbrainz -- --limit 50 --dry-run
+pnpm --filter @homespotify/api enrich:musicbrainz -- --limit 50
+```
+
+Options utiles : `--track-id <id>`, `--force`, `--min-score <0-100>`. Le client MusicBrainz sérialise les appels et respecte strictement 1 requête/seconde ; en mode réel, les matches avec `release_group_id` téléchargent aussi la pochette HD Cover Art Archive dans `storage/covers/{release_group_id}.jpg`.
+
 ### Docker
 
 ```bash
@@ -97,7 +110,7 @@ Non testé sur cette machine (Docker absent) — à valider sur le serveur cible
 
 ## Prochaine étape
 
-Terminer la Phase 2 : **scanner de dossier** (ingérer une bibliothèque WAV existante sans passer par l'upload) et file `import_jobs` pour les lots. Puis **Phase 3 — bibliothèque & métadonnées** (enrichissement MusicBrainz, miniatures). Voir [ROADMAP.md](ROADMAP.md).
+Phase 4 — initialiser l'application Flutter mobile selon [MOBILE_ARCHITECTURE.md](MOBILE_ARCHITECTURE.md).
 
 ## Commandes Git utiles
 

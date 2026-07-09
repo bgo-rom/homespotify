@@ -74,3 +74,7 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : création de fixtures WAV avec noms accentués (`Café Déjà`) via `Out-File -Encoding ascii` → les accents devenaient `?`, `writeFileSync` échouait (ENOENT).
 - **Leçon** : sous PowerShell 5.1, écrire un script contenant des accents avec `-Encoding ascii` corrompt les caractères ; le défaut UTF-16 pose d'autres soucis à Node. Les accents dans les chemins/tags doivent transiter par un canal UTF-8 propre.
 - **Conséquence** : le cas accentué est couvert par les **tests unitaires** (`app.inject`, sources en UTF-8) ; les validations manuelles Windows évitent les accents dans les scripts générés, ou utilisent un encodage UTF-8 explicite.
+### L-013 — `pnpm` peut casser `node_modules` en sandbox sans réseau (2026-07-08)
+- **Contexte** : validation Phase 3 MusicBrainz dans Codex sandbox ; `pnpm --filter ... test/typecheck` a tenté de recréer `node_modules`, puis l'installation a expiré car l'accès au registre npm est interdit (`EACCES`).
+- **Leçon** : en environnement non interactif avec réseau restreint, ne pas relancer `pnpm install` implicitement si `node_modules` est jugé incohérent ; l'opération peut laisser des liens incomplets et empêcher les tests locaux.
+- **Conséquence** : relancer `pnpm install` sur la machine utilisateur avec réseau autorisé avant les tests si le sandbox a purgé les liens ; en sandbox, privilégier les vérifications qui n'exigent pas de réinstallation.

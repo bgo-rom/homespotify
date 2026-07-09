@@ -19,7 +19,7 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 
 - **Node.js LTS + TypeScript + Fastify.**
 - Rôles : API REST (bibliothèque, lecture, import), service de streaming, orchestration des workers.
-- Tâches lourdes (scan, analyse qualité, transcodage) hors du cycle requête/réponse : file de jobs interne (better-queue ou BullMQ si Redis ajouté plus tard — démarrer sans Redis).
+- Tâches lourdes (scan, analyse qualité, enrichissement) hors du cycle requête/réponse : file de jobs interne (better-queue ou BullMQ si Redis ajouté plus tard — démarrer sans Redis).
 - `ffmpeg`/`ffprobe` invoqués comme binaires externes (pas de bindings natifs fragiles).
 
 ## Base de données
@@ -64,20 +64,20 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 - `Content-Type: audio/wav` ; `ETag` = hash SHA-256 du fichier ; `Last-Modified` = mtime ; `Cache-Control: private`.
 - Envoi par flux (`fs.createReadStream` borné à `{ start, end }`), jamais de lecture complète en mémoire.
 - **Téléchargement offline** : `GET /api/tracks/:id/download` partage le même service de fichier (Range-resumable) mais force le téléchargement via `Content-Disposition: attachment` (fallback ASCII + `filename*=UTF-8''…` pour les tags accentués). Le listing expose `etag` (hash) et `lastModified` par piste pour que le client compare son cache local sans télécharger.
-- **Évolution prévue** (Phase 4/5) : mode transcodé à la volée WAV → Opus (~128–192 kbps) pour le mobile en données cellulaires ; le fichier source n'est jamais altéré.
+- **Évolution prévue** (Phase 4/5) : lecture mobile WAV directe via HTTP Range, avec cache offline, reprise et politiques Wi-Fi/cellulaire ; le fichier source n'est jamais altéré.
 
 ## Application mobile
 
-- **React Native + Expo**, lecteur via `react-native-track-player` (lecture arrière-plan, notifications média, files d'attente).
-- Écrans MVP : bibliothèque (artistes/albums/pistes), recherche, lecteur, file d'attente, gestion hors ligne, réglages (qualité streaming/cache).
+- **Flutter Android-first**, lecteur via `just_audio` + `audio_service` (lecture arrière-plan, notifications média, lockscreen, files d'attente).
+- Écrans MVP : bibliothèque (artistes/albums/pistes), recherche, lecteur, file d'attente, gestion hors ligne, réglages (streaming/cache WAV).
 - Affiche systématiquement le badge de qualité mesurée de chaque piste.
-- Avant l'app native, un client **web mobile-first** (PWA) sert de premier client (Phase 4).
+- Le client v1 est l'app Flutter décrite dans `MOBILE_ARCHITECTURE.md`.
 
 ## Cache hors ligne
 
 - Téléchargement explicite par piste/album/playlist vers le stockage local de l'app (route unitaire `download` livrée en Phase 2/3 ; groupage album/playlist à venir).
 - Table `cache_state` côté serveur + manifeste local côté client : synchronisation par comparaison des `etag`/`lastModified` exposés au listing (identité par hash).
-- Choix de qualité du cache : original ou Opus transcodé (économie d'espace).
+- Cache offline en WAV original uniquement ; la gestion d'espace passe par quotas, suppression locale et priorités utilisateur.
 - Lecture hors ligne 100 % locale (mode avion) ; purge LRU configurable par plafond d'espace.
 
 ## Authentification
@@ -120,10 +120,10 @@ Utilisateur → Upload/dépôt fichier → Staging → Analyse (ffprobe + spectr
 
 ÉCOUTE
 App mobile → Auth (JWT) → Parcourt bibliothèque (API paginée)
-→ Play → GET /stream (Range) → Direct FLAC (Wi-Fi) ou Opus (cellulaire)
+→ Play → GET /stream (Range) → WAV direct
 → Seek/reprise via Range
 
 HORS LIGNE
-App → Sélection pistes → Téléchargement (original ou Opus) → Manifeste local
+App → Sélection pistes → Téléchargement WAV original → Manifeste local
 → Mode avion → Lecture locale → Reconnexion → Sync cache_state
 ```

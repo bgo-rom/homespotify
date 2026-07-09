@@ -26,11 +26,11 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 ## Contraintes
 
 - Serveur personnel unique, allumé H24 : sobriété CPU/RAM/disque.
-- Fichiers audio volumineux (FLAC 20–60 Mo/piste) : streaming par flux obligatoire, jamais de chargement complet en mémoire.
+- Fichiers audio volumineux (WAV souvent ~40–80 Mo/piste) : streaming par flux obligatoire, jamais de chargement complet en mémoire.
 - Réseau domestique + accès distant : l'exposition à Internet doit être minimale et sécurisée.
 - Utilisateur principal unique (usage personnel/familial).
 - La qualité stockée en base = specs **mesurées** + statut dérivé de la **provenance déclarée**, jamais de l'extension.
-- **Ingestion WAV-only** (décidé 2026-07-08) : seuls des WAV PCM 16 bit / 44,1–48 kHz sont importés ; l'optimisation est gérée manuellement en amont. Coût assumé : ~2× l'espace d'un FLAC équivalent.
+- **Ingestion WAV-only** (décidé 2026-07-08) : seuls des WAV PCM 16 bit / 44,1–48 kHz sont importés ; l'optimisation est gérée manuellement en amont. Coût assumé : espace disque élevé, accepté pour garder un pipeline WAV-only simple.
 
 ## Priorités (ordre strict)
 
@@ -47,7 +47,7 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 - Import par upload de WAV possédés, avec extraction des métadonnées et qualité mesurée. ✅ (Phase 2)
 - Base de données de la bibliothèque (pistes, qualité, provenance). ✅ (Phase 2)
 - API de streaming avec HTTP Range. ✅ (Phase 2)
-- Client minimal (web mobile-first) : parcourir la bibliothèque, lire une piste. 🚧 (lecteur dev `/player` livré ; vrai client en Phase 4)
+- Client mobile Flutter : parcourir la bibliothèque, lire une piste WAV lourde via Range, préparer le hors ligne. 🚧 (lecteur dev `/player` livré ; vrai client mobile en Phase 4)
 - Scanner d'un dossier de musique existant (hors upload). ✅ (Phase 2, CLI `scan`)
 - Téléchargement pour cache hors ligne mobile. ✅ (route `download` + `etag`/`lastModified`, Phase 3 amorcée)
 
@@ -64,7 +64,7 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 
 - **Légal** : seuls les fichiers possédés ou légalement téléchargeables sont importés. Les flux des services de streaming (Spotify, Deezer, YouTube…) sont protégés par DRM/CGU : leur extraction est exclue du projet. Détail dans `AUDIO_SOURCING.md`.
 - **Technique** : une source compressée (YouTube, MP3) ne peut jamais redevenir lossless. Le projet affiche la qualité réelle, y compris quand elle est médiocre.
-- **Réseau** : le débit montant de la connexion domestique borne la qualité de streaming à distance ; un transcodage à la volée (FLAC → Opus) est prévu pour ce cas.
+- **Réseau** : le débit montant de la connexion domestique borne la stabilité du streaming à distance ; la Phase 4 privilégie le WAV direct via HTTP Range, le cache offline et des politiques Wi-Fi/cellulaire côté client.
 
 ## Critères de réussite
 

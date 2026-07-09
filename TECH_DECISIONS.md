@@ -8,15 +8,18 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 |---|---|---|
 | Backend | Node.js LTS + TypeScript + Fastify | définitive |
 | Base de données | SQLite (WAL) + Drizzle ORM | définitive (SQLite) / temporaire (Drizzle) |
-| Audio (analyse/transcodage) | ffmpeg + ffprobe (binaires externes) | définitive |
+| Audio (analyse/validation) | ffmpeg + ffprobe (binaires externes) | définitive |
 | Tags | music-metadata | temporaire |
 | Scanner | scan complet + watcher chokidar | temporaire |
 | Format d'ingestion & stockage | WAV PCM 16 bit / 44,1 ou 48 kHz **uniquement** | définitive (décidé 2026-07-08, remplace FLAC) |
 | Extraction tags & qualité | music-metadata (RIFF INFO + ID3v2 embarqué + pochette) | définitive |
 | Upload | @fastify/multipart, limite 200 Mo (min 150) | définitive |
-| Transcodage streaming mobile | Opus 128–192 kbps à la volée | définitive (principe) / temporaire (débits) |
-| Client v1 | Web mobile-first (PWA) | définitive |
-| App mobile | React Native + Expo + react-native-track-player | temporaire |
+| Streaming mobile | WAV direct via HTTP Range | définitive |
+| Client v1 | App mobile Flutter Android-first | définitive (décidé 2026-07-08) |
+| App mobile | Flutter + just_audio + audio_service | définitive |
+| Réseau client mobile | dio | définitive |
+| Cache offline mobile | sqflite + path_provider | définitive |
+| State management mobile | Riverpod | définitive |
 | Auth | Comptes locaux, Argon2id, JWT + refresh révocable | définitive (principe) |
 | Accès distant | WireGuard via Tailscale, pas d'exposition publique | définitive (v1) |
 | Reverse proxy | Caddy | temporaire |
@@ -36,12 +39,12 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 
 ## Raisons des choix
 
-- **Node.js/TypeScript/Fastify** : un seul langage du backend au mobile (React Native) ; écosystème audio-métadonnées mature (`music-metadata`) ; le streaming est I/O-bound, domaine où Node excelle ; Fastify est rapide, typé, avec plugins de streaming éprouvés.
+- **Node.js/TypeScript/Fastify** : backend simple, typé, I/O-bound et adapté au streaming ; l'écosystème audio-métadonnées côté serveur reste mature (`music-metadata`). Le mobile passe en Flutter/Dart par décision Phase 4.
 - **SQLite** : un serveur, une famille d'utilisateurs — un fichier suffit ; zéro administration ; sauvegarde triviale ; performances largement suffisantes pour des dizaines de milliers de pistes.
 - **ffmpeg/ffprobe en binaires** : référence absolue du domaine ; les bindings natifs Node cassent aux mises à jour, les binaires non.
 - **WAV PCM comme format d'ingestion unique** (décision utilisateur, 2026-07-08) : l'optimisation audio est gérée manuellement en amont (ex. upscale AudioSR, rip), HomeSpotify n'ingère que le résultat final en WAV 16 bit / 44,1 ou 48 kHz. Simplifie radicalement le pipeline d'import (un seul format à valider, pas de transcodage à l'entrée). **Coût assumé** : un WAV pèse ~2× un FLAC pour une qualité identique — l'espace disque est sacrifié au profit de la simplicité et d'un format PCM brut sans couche de décodage. Le statut qualité reste piloté par la provenance déclarée, jamais par le conteneur (un WAV issu d'un upscale IA = `lossy`).
-- **Opus pour le transcodage mobile** : meilleur codec lossy à débit égal ; standard ouvert ; supporté nativement Android/iOS moderne.
-- **PWA avant app native** : valide l'API et l'UX de streaming sans le coût mobile ; l'app native (Phase 5) arrive quand le backend est prouvé.
+- **WAV direct via HTTP Range pour le mobile** : la Phase 4 cible explicitement les flux WAV lourds ; l'optimisation côté client passe par Range, ETags, cache offline et politiques réseau plutôt que par un transcodage serveur.
+- **Flutter direct en Phase 4** : le backend Phase 1–3 est opérationnel ; l'application mobile devient le client v1. Flutter est retenu pour la fluidité UI, le contrôle natif audio et l'écosystème `just_audio`/`audio_service`.
 - **Tailscale/WireGuard d'abord** : supprime toute la classe de risques « API exposée à Internet » pour un usage personnel ; l'exposition publique est un choix réversible plus tard, l'inverse ne l'est pas après compromission.
 - **Docker Compose** : reproductibilité et rollback sur une machine unique, sans la complexité d'un orchestrateur.
 
@@ -53,7 +56,8 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 | Go / Rust backend | Excellents pour le streaming, mais second langage à maintenir et écosystème tags/métadonnées moins direct ; gain non nécessaire à cette échelle |
 | PostgreSQL | Surdimensionné pour un serveur mono-utilisateur ; un service de plus à maintenir H24 |
 | Prisma | Plus lourd que Drizzle sur SQLite, moteur de requêtes opaque ; Drizzle reste temporaire |
-| Flutter | Solide, mais impose Dart ; React Native mutualise TypeScript avec le backend |
+| React Native + Expo | Remplacé en Phase 4 : Flutter offre un meilleur contrôle UI/animations et une pile audio claire (`just_audio` + `audio_service`) pour les WAV lourds |
+| Transcodage Opus mobile en v1 | Écarté du cadrage Phase 4 : introduit une seconde représentation audio et complexifie cache/qualité alors que l'objectif immédiat est la lecture WAV directe |
 | MP3/AAC comme format de stockage | Lossy : contraire à la priorité n°1 du projet |
 | FLAC comme format de stockage | Abandonné 2026-07-08 : l'utilisateur préfère un pipeline WAV-only (optimisation manuelle en amont) ; FLAC reste envisageable plus tard comme format d'archivage compressé si l'espace disque devient critique |
 | Import multi-formats (MP3/FLAC/ALAC…) | Repoussé : l'ingestion est volontairement bornée au WAV pour la Phase 2 ; élargir plus tard si besoin |
@@ -66,9 +70,9 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 - **Drizzle ORM** : réévaluer après Phase 1 (ergonomie migrations).
 - **music-metadata** : réévaluer en Phase 2 si des tags exotiques passent mal (fallback : ffprobe seul).
 - **chokidar watcher** : fiabilité à valider sur le système de fichiers réel du serveur (Phase 3).
-- **React Native/Expo** : confirmer en début de Phase 5 (état de react-native-track-player à ce moment-là).
+- **Riverpod** : à réévaluer seulement si l'état applicatif devient trop événementiel pour un modèle provider (cas peu probable en v1 personnelle).
 - **Uptime Kuma / restic / Caddy** : confirmer en Phase 7 selon l'infra réelle.
-- **Débits Opus (128–192)** : ajuster après tests d'écoute et mesure du débit montant réel.
+- **Politiques réseau mobile** : ajuster après tests réels de débit montant, consommation data et stabilité des gros WAV en Wi-Fi/cellulaire.
 - **Sans Turborepo/Nx** : réévaluer seulement si les builds croisés deviennent pénibles (≥ 3 packages actifs).
 - **Sans linter** : ajouter ESLint (config plate minimale) au plus tard en Phase 3, quand le volume de code le justifiera.
 - **tsx/tsc** : réévaluer si le build devient lent (alternatives : tsup, esbuild).
@@ -85,7 +89,7 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
 
 ## Points à confirmer plus tard
 
-- [ ] OS et specs exactes du serveur maison (CPU, RAM, disques) → dimensionnement transcodage.
+- [ ] OS et specs exactes du serveur maison (CPU, RAM, disques) → dimensionnement streaming, scan et cache.
 - [ ] Débit montant de la connexion domestique → qualité max de streaming distant.
 - [ ] Nombre d'utilisateurs réels (solo ou famille) → périmètre auth/profils.
 - [ ] Outil de détection fake lossless (cf. `AUDIO_SOURCING.md > À vérifier`).
