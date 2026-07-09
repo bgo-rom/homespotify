@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:homespotify_mobile/src/app/runtime_library_screen.dart';
 import 'package:homespotify_mobile/src/features/library/data/library_api.dart';
 import 'package:homespotify_mobile/src/features/library/domain/track.dart';
 import 'package:homespotify_mobile/src/features/library/presentation/library_playback_controller.dart';
@@ -43,16 +42,16 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: baseOverrides(library: () => <Track>[]),
-        child: const MaterialApp(home: RuntimeLibraryScreen()),
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Aucune piste dans la bibliotheque'), findsOneWidget);
     expect(
-      find.textContaining('pnpm --filter @homespotify/api scan'),
+      find.textContaining('Aucune piste dans la biblioth'),
       findsOneWidget,
     );
+    expect(find.textContaining('WAV ou FLAC'), findsOneWidget);
   });
 
   testWidgets('etat donnees : titre, artiste, format FLAC et specs', (
@@ -61,7 +60,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: baseOverrides(library: () => <Track>[track]),
-        child: const MaterialApp(home: RuntimeLibraryScreen()),
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -73,7 +72,7 @@ void main() {
     expect(find.text('FLAC'), findsOneWidget);
   });
 
-  testWidgets('etat erreur : affiche serveur, URL API et retry', (
+  testWidgets('etat erreur : affiche le message serveur et retry', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -89,17 +88,18 @@ void main() {
             (ref) => const Stream<PlaybackState>.empty(),
           ),
         ],
-        child: const MaterialApp(home: RuntimeLibraryScreen()),
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Serveur non joignable'), findsOneWidget);
-    expect(find.textContaining('http://10.0.2.2:3000'), findsOneWidget);
-    expect(find.text('Reessayer'), findsOneWidget);
+    expect(find.text('Serveur injoignable.'), findsOneWidget);
+    expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
   });
 
-  testWidgets('mini-player : affiche la piste en cours', (tester) async {
+  testWidgets('piste en cours : affiche un indicateur de lecture', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -112,19 +112,19 @@ void main() {
           playbackStateProvider.overrideWith(
             (ref) => Stream.value(
               PlaybackState(
-                playing: false,
+                playing: true,
                 processingState: AudioProcessingState.ready,
               ),
             ),
           ),
         ],
-        child: const MaterialApp(home: RuntimeLibraryScreen()),
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Genesis'), findsWidgets);
-    expect(find.text('Justice'), findsWidgets);
+    expect(find.text('Genesis'), findsOneWidget);
+    expect(find.textContaining('Justice'), findsOneWidget);
     expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
   });
 
@@ -140,7 +140,7 @@ void main() {
           ...baseOverrides(library: () => <Track>[track]),
           libraryPlaybackControllerProvider.overrideWith((ref) => controller),
         ],
-        child: const MaterialApp(home: RuntimeLibraryScreen()),
+        child: const MaterialApp(home: LibraryScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -153,7 +153,7 @@ void main() {
     expect(controller.calls, 1);
     expect(controller.tracks, <Track>[track]);
     expect(controller.initialIndex, 0);
-    expect(find.text('Preparation de la lecture...'), findsOneWidget);
+    expect(find.textContaining('paration de la lecture...'), findsOneWidget);
 
     completer.complete();
     await tester.pumpAndSettle();
