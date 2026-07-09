@@ -10,6 +10,7 @@ import { mimeTypeForPath } from '../import/audio-format.js';
 import { coverArtPath } from '../metadata/cover-art-archive-client.js';
 
 const COVER_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
+const STREAM_HIGH_WATER_MARK = 256 * 1024;
 
 /** Valeur Content-Disposition : fallback ASCII + filename* UTF-8 (RFC 5987) pour tags accentués. */
 function attachmentHeader(name: string): string {
@@ -50,14 +51,17 @@ async function serveTrackFile(
     return reply.code(416).header('content-range', `bytes */${size}`).send();
   }
   if (range === 'full') {
-    return reply.code(200).header('content-length', size).send(createReadStream(absPath));
+    return reply
+      .code(200)
+      .header('content-length', size)
+      .send(createReadStream(absPath, { highWaterMark: STREAM_HIGH_WATER_MARK }));
   }
   const { start, end } = range;
   return reply
     .code(206)
     .header('content-range', `bytes ${start}-${end}/${size}`)
     .header('content-length', end - start + 1)
-    .send(createReadStream(absPath, { start, end }));
+    .send(createReadStream(absPath, { start, end, highWaterMark: STREAM_HIGH_WATER_MARK }));
 }
 
 export function registerTrackRoutes(app: FastifyInstance): void {

@@ -208,6 +208,17 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
     expect(res.headers['content-range']).toBe(`bytes */${size}`);
   });
 
+  it('Range invalide → 200 complet avec taille exacte', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { range: 'bytes=0-3,8-11' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(Number(res.headers['content-length'])).toBe(size);
+    expect(res.rawPayload.length).toBe(size);
+  });
+
   it('piste inconnue → 404', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/tracks/424242/stream' });
     expect(res.statusCode).toBe(404);
@@ -232,6 +243,8 @@ describe('GET /api/tracks/:id/stream (FLAC bit-perfect)', () => {
     });
     expect(partial.statusCode).toBe(206);
     expect(partial.headers['content-type']).toBe('audio/flac');
+    expect(partial.headers['content-range']).toMatch(/^bytes 0-3\/\d+$/);
+    expect(Number(partial.headers['content-length'])).toBe(4);
     expect(partial.rawPayload.toString('ascii')).toBe('fLaC');
   });
 });
