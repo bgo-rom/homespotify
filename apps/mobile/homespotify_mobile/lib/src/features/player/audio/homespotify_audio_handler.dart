@@ -88,6 +88,8 @@ Stream<R> _combineLatest3<A, B, C, R>(
 class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   HomeSpotifyAudioHandler({AudioPlayer? player})
     : _player = player ?? AudioPlayer() {
+    // Volume unité (1.0) = flux natif du fichier, bit-perfect, sans boost.
+    _player.setVolume(1.0);
     _playbackEventSubscription = _player.playbackEventStream.listen(
       _broadcastPlaybackState,
       onError: _broadcastPlaybackError,
@@ -128,11 +130,15 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       name: 'homespotify.audio',
     );
     try {
+      developer.log(
+        'setTrack $trackId · volume=${_player.volume}',
+        name: 'homespotify.audio',
+      );
       await _player.setAudioSource(
         AudioSource.uri(streamUri, headers: headers),
       );
       developer.log(
-        'source prête $trackId · état=${_player.processingState.name}',
+        'source prête $trackId · état=${_player.processingState.name} · volume=${_player.volume}',
         name: 'homespotify.audio',
       );
     } catch (error, stackTrace) {
@@ -155,7 +161,13 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       _player.setVolume(volume.clamp(0.0, 1.0));
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() {
+    developer.log(
+      'play · volume=${_player.volume} · état=${_player.processingState.name}',
+      name: 'homespotify.audio',
+    );
+    return _player.play();
+  }
 
   @override
   Future<void> pause() => _player.pause();
