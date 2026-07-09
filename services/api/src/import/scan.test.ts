@@ -58,7 +58,7 @@ describe('scanDirectory', () => {
     expect(summary).toMatchObject({ total: 2, imported: 2, duplicates: 0, failed: 0 });
 
     // Originaux toujours là (copie, pas déplacement)
-    expect(findWavFiles(library)).resolves.toHaveLength(2);
+    await expect(findWavFiles(library)).resolves.toHaveLength(2);
     // Et rangés dans la bibliothèque gérée
     const managed = await findWavFiles(dirs.musicDir);
     expect(managed).toHaveLength(2);

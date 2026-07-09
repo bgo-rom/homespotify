@@ -3,9 +3,10 @@ import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyReply, FastifyRequest, FastifyInstance } from 'fastify';
 import { desc, eq, sql } from 'drizzle-orm';
-import { tracks, trackQuality } from '../db/schema.js';
+import { tracks, trackEnrichment, trackQuality } from '../db/schema.js';
 import { parseRangeHeader } from '../lib/range.js';
 import { importWav, ImportError, PROVENANCES, type Provenance } from '../import/import-service.js';
+import { coverArtPath } from '../metadata/cover-art-archive-client.js';
 
 const COVER_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
 
@@ -152,10 +153,33 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     );
   });
 
-  // Pochette embarquée extraite à l'import
+  // Pochette HD Cover Art Archive si disponible, sinon pochette embarquée extraite à l'import.
   app.get<{ Params: { id: string } }>('/api/tracks/:id/cover', async (request, reply) => {
-    const track = findTrack(request.params.id);
-    if (!track?.coverPath) {
+    const row = db
+      .select()
+      .from(tracks)
+      .leftJoin(trackEnrichment, eq(trackEnrichment.trackId, tracks.id))
+      .where(eq(tracks.id, Number(request.params.id)))
+      .get();
+    if (!row) {
+      return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
+    }
+    const track = row.tracks;
+
+    const releaseGroupId = row.track_enrichment?.musicbrainzReleaseGroupId;
+    if (releaseGroupId) {
+      try {
+        const hdCoverPath = coverArtPath(app.config.coversDir, releaseGroupId);
+        const hasHdCover = await stat(hdCoverPath).then(() => true, () => false);
+        if (hasHdCover) {
+          return reply.type('image/jpeg').send(createReadStream(hdCoverPath));
+        }
+      } catch (error) {
+        request.log.warn({ err: error, releaseGroupId }, 'pochette Cover Art Archive ignorée');
+      }
+    }
+
+    if (!track.coverPath) {
       return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Pas de pochette' });
     }
     const ext = track.coverPath.split('.').pop() ?? 'jpg';

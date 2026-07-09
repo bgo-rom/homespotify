@@ -8,12 +8,13 @@ import { runMigrations, isDbInitialized } from './db/migrate.js';
 import { tracks } from './db/schema.js';
 import { registerTrackRoutes } from './routes/tracks.js';
 import { registerPlayerRoute } from './routes/player.js';
+import { registerSyncRoutes } from './routes/sync.js';
 
 const pkg = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
 ) as { name: string; version: string };
 
-export const CURRENT_PHASE = 'Phase 2 — import & streaming WAV';
+export const CURRENT_PHASE = 'Phase 3 — bibliothèque, métadonnées & sync offline';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -88,6 +89,7 @@ export function buildApp(config: AppConfig): FastifyInstance {
 
   app.register(async (instance) => {
     registerTrackRoutes(instance);
+    registerSyncRoutes(instance);
     registerPlayerRoute(instance);
   });
 

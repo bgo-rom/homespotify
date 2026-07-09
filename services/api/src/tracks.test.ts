@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import FormData from 'form-data';
@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
 import type { AppConfig } from './config.js';
+import { trackEnrichment } from './db/schema.js';
 import { makeWav } from './test/wav.js';
 
 // --- App de test : DB mémoire + répertoires jetables ---
@@ -216,5 +217,42 @@ describe('GET /api/tracks/:id/download (cache hors ligne)', () => {
   it('piste inconnue → 404', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/tracks/999999/download' });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('GET /api/tracks/:id/cover (pochettes enrichies)', () => {
+  it('sert la pochette HD Cover Art Archive avant le fallback embarqué', async () => {
+    const releaseGroupId = '48140466-cff6-3222-bd55-63c27e43190d';
+    const cover = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]);
+    const res = await upload(makeWav({ title: 'Cover HD', seconds: 0.2 }), 'cover.wav', 'rip_cd');
+    const trackId = res.json().id as number;
+
+    app.dbHandle.db.insert(trackEnrichment).values({
+      trackId,
+      status: 'matched',
+      musicbrainzRecordingId: 'recording-1',
+      musicbrainzReleaseId: 'release-1',
+      musicbrainzReleaseGroupId: releaseGroupId,
+      musicbrainzArtistId: 'artist-1',
+      canonicalTitle: 'Cover HD',
+      canonicalArtist: 'Artist',
+      canonicalAlbum: 'Album',
+      albumArtist: 'Artist',
+      releaseDate: '2020-01-01',
+      trackNumber: 1,
+      discNumber: 1,
+      genre: null,
+      matchScore: 99,
+      candidatesJson: null,
+      errorMessage: null,
+      checkedAt: new Date().toISOString(),
+      enrichedAt: new Date().toISOString(),
+    }).run();
+    writeFileSync(join(testConfig.coversDir, `${releaseGroupId}.jpg`), cover);
+
+    const coverRes = await app.inject({ method: 'GET', url: `/api/tracks/${trackId}/cover` });
+    expect(coverRes.statusCode).toBe(200);
+    expect(coverRes.headers['content-type']).toBe('image/jpeg');
+    expect(coverRes.rawPayload).toEqual(cover);
   });
 });

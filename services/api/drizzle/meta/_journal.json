@@ -15,6 +15,13 @@
       "when": 1783532405781,
       "tag": "0001_tracks",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783580429410,
+      "tag": "0002_musicbrainz_enrichment",
+      "breakpoints": true
     }
   ]
 }

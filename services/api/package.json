@@ -11,7 +11,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/db/migrate-cli.ts",
-    "scan": "tsx src/scripts/scan-cli.ts"
+    "scan": "tsx src/scripts/scan-cli.ts",
+    "enrich:musicbrainz": "tsx src/scripts/enrich-musicbrainz-cli.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.3",
