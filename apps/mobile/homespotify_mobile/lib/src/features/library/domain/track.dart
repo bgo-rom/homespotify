@@ -4,17 +4,23 @@ class TrackQuality {
     required this.sampleRate,
     required this.bitDepth,
     required this.status,
+    this.channels,
+    this.bitrate,
   });
 
   final int sampleRate;
   final int bitDepth;
   final String status;
+  final int? channels;
+  final int? bitrate;
 
   factory TrackQuality.fromJson(Map<String, dynamic> json) {
     return TrackQuality(
       sampleRate: (json['sampleRate'] as num?)?.toInt() ?? 0,
       bitDepth: (json['bitDepth'] as num?)?.toInt() ?? 0,
       status: (json['status'] as String?) ?? 'inconnue',
+      channels: (json['channels'] as num?)?.toInt(),
+      bitrate: (json['bitrate'] as num?)?.toInt(),
     );
   }
 
@@ -42,6 +48,8 @@ class Track {
     this.quality,
     this.mimeType,
     this.extension,
+    this.sizeBytes,
+    this.etag,
   });
 
   final int id;
@@ -55,6 +63,8 @@ class Track {
   final TrackQuality? quality;
   final String? mimeType; // audio/wav | audio/flac
   final String? extension; // .wav | .flac
+  final int? sizeBytes;
+  final String? etag;
 
   factory Track.fromJson(Map<String, dynamic> json) {
     final rawTitle = (json['title'] as String?)?.trim();
@@ -77,6 +87,8 @@ class Track {
           : null,
       mimeType: json['mimeType'] as String?,
       extension: json['extension'] as String?,
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
+      etag: (json['etag'] as String?)?.trim(),
     );
   }
 

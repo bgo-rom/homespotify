@@ -20,15 +20,33 @@ const testConfig: AppConfig = {
   logLevel: 'error',
   musicDir: join(base, 'music'),
   incomingDir: join(base, 'imports'),
+  importRoot: join(base, 'imports'),
   coversDir: join(base, 'covers'),
   maxUploadBytes: 200 * 1024 * 1024,
+  authTokenSecret: 'test-secret-0123456789abcdef0123456789abcdef',
+  accessTokenTtlSeconds: 900,
+  refreshTokenTtlSeconds: 30 * 24 * 60 * 60,
 };
 
 let app: FastifyInstance;
+let ownerToken: string;
 
 beforeAll(async () => {
   app = buildApp(testConfig);
   await app.ready();
+  // Les routes bibliothèque exigent désormais une auth : on bootstrappe le
+  // OWNER, et les pistes importées lui sont attribuées automatiquement.
+  const bootstrap = await app.inject({
+    method: 'POST',
+    url: '/api/auth/bootstrap',
+    payload: {
+      username: 'owner',
+      displayName: 'Owner',
+      password: 'motdepasse-owner-1',
+      passwordConfirmation: 'motdepasse-owner-1',
+    },
+  });
+  ownerToken = bootstrap.json().accessToken;
 });
 
 afterAll(async () => {
@@ -36,12 +54,20 @@ afterAll(async () => {
   rmSync(base, { recursive: true, force: true });
 });
 
+/** Inject authentifié en tant que OWNER (le userId vient du token). */
+function inject(opts: Parameters<FastifyInstance['inject']>[0] & { headers?: Record<string, string> }) {
+  return app.inject({
+    ...opts,
+    headers: { ...(opts.headers ?? {}), authorization: `Bearer ${ownerToken}` },
+  });
+}
+
 async function upload(buf: Buffer, filename = 'test.wav', provenance?: string) {
   const form = new FormData();
   // provenance AVANT le fichier : les champs multipart sont lus séquentiellement
   if (provenance) form.append('provenance', provenance);
   form.append('file', buf, { filename, contentType: 'audio/wav' });
-  return app.inject({ method: 'POST', url: '/api/tracks', payload: form, headers: form.getHeaders() });
+  return inject({ method: 'POST', url: '/api/tracks', payload: form, headers: form.getHeaders() });
 }
 
 describe('POST /api/tracks (import WAV)', () => {
@@ -126,7 +152,7 @@ describe('POST /api/tracks (import FLAC)', () => {
 
 describe('GET /api/tracks', () => {
   it('liste paginée avec qualité et format', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/tracks' });
+    const res = await inject({ method: 'GET', url: '/api/tracks' });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.total).toBeGreaterThanOrEqual(1);
@@ -136,7 +162,7 @@ describe('GET /api/tracks', () => {
   });
 
   it('expose etag + lastModified par piste (comparaison de cache mobile)', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/tracks' });
+    const res = await inject({ method: 'GET', url: '/api/tracks' });
     const item = res.json().items[0];
     expect(item.etag).toMatch(/^[0-9a-f]{64}$/); // hash SHA-256
     expect(new Date(item.lastModified).getTime()).not.toBeNaN();
@@ -151,12 +177,12 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
     const res = await upload(makeWav({ title: 'Stream Test', seconds: 0.5 }), 's.wav', 'rip_cd');
     const body = res.json();
     trackId = body.id;
-    const list = await app.inject({ method: 'GET', url: '/api/tracks?limit=200' });
+    const list = await inject({ method: 'GET', url: '/api/tracks?limit=200' });
     size = list.json().items.find((t: { id: number }) => t.id === trackId).sizeBytes;
   });
 
   it('sans Range → 200 complet, audio/wav, accept-ranges', async () => {
-    const res = await app.inject({ method: 'GET', url: `/api/tracks/${trackId}/stream` });
+    const res = await inject({ method: 'GET', url: `/api/tracks/${trackId}/stream` });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('audio/wav');
     expect(res.headers['accept-ranges']).toBe('bytes');
@@ -165,7 +191,7 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   });
 
   it('bytes=0-3 → 206 avec les 4 premiers octets exactement', async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: 'GET',
       url: `/api/tracks/${trackId}/stream`,
       headers: { range: 'bytes=0-3' },
@@ -177,7 +203,7 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   });
 
   it('bytes=100- → 206 jusqu à la fin (reprise de lecture)', async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: 'GET',
       url: `/api/tracks/${trackId}/stream`,
       headers: { range: 'bytes=100-' },
@@ -188,7 +214,7 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   });
 
   it('bytes=-8 → 206 suffixe (8 derniers octets)', async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: 'GET',
       url: `/api/tracks/${trackId}/stream`,
       headers: { range: 'bytes=-8' },
@@ -199,7 +225,7 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   });
 
   it('Range hors fichier → 416 avec content-range */size', async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: 'GET',
       url: `/api/tracks/${trackId}/stream`,
       headers: { range: 'bytes=999999999-' },
@@ -209,7 +235,7 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   });
 
   it('Range invalide → 200 complet avec taille exacte', async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: 'GET',
       url: `/api/tracks/${trackId}/stream`,
       headers: { range: 'bytes=0-3,8-11' },
@@ -220,7 +246,7 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
   });
 
   it('piste inconnue → 404', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/tracks/424242/stream' });
+    const res = await inject({ method: 'GET', url: '/api/tracks/424242/stream' });
     expect(res.statusCode).toBe(404);
   });
 });
@@ -230,13 +256,13 @@ describe('GET /api/tracks/:id/stream (FLAC bit-perfect)', () => {
     const up = await upload(makeFlac({ seconds: 0.25 }), 'streamflac.flac', 'achat');
     const id = up.json().id as number;
 
-    const full = await app.inject({ method: 'GET', url: `/api/tracks/${id}/stream` });
+    const full = await inject({ method: 'GET', url: `/api/tracks/${id}/stream` });
     expect(full.statusCode).toBe(200);
     expect(full.headers['content-type']).toBe('audio/flac');
     expect(full.headers['accept-ranges']).toBe('bytes');
     expect(full.rawPayload.subarray(0, 4).toString('ascii')).toBe('fLaC');
 
-    const partial = await app.inject({
+    const partial = await inject({
       method: 'GET',
       url: `/api/tracks/${id}/stream`,
       headers: { range: 'bytes=0-3' },
@@ -262,7 +288,7 @@ describe('GET /api/tracks/:id/download (cache hors ligne)', () => {
   });
 
   it('force le téléchargement complet avec Content-Disposition + ETag + Last-Modified', async () => {
-    const res = await app.inject({ method: 'GET', url: `/api/tracks/${trackId}/download` });
+    const res = await inject({ method: 'GET', url: `/api/tracks/${trackId}/download` });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('audio/wav');
     const cd = res.headers['content-disposition'] as string;
@@ -275,7 +301,7 @@ describe('GET /api/tracks/:id/download (cache hors ligne)', () => {
   });
 
   it('supporte le Range pour la reprise de téléchargement (206)', async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: 'GET',
       url: `/api/tracks/${trackId}/download`,
       headers: { range: 'bytes=0-9' },
@@ -286,7 +312,7 @@ describe('GET /api/tracks/:id/download (cache hors ligne)', () => {
   });
 
   it('piste inconnue → 404', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/tracks/999999/download' });
+    const res = await inject({ method: 'GET', url: '/api/tracks/999999/download' });
     expect(res.statusCode).toBe(404);
   });
 });
@@ -321,7 +347,7 @@ describe('GET /api/tracks/:id/cover (pochettes enrichies)', () => {
     }).run();
     writeFileSync(join(testConfig.coversDir, `${releaseGroupId}.jpg`), cover);
 
-    const coverRes = await app.inject({ method: 'GET', url: `/api/tracks/${trackId}/cover` });
+    const coverRes = await inject({ method: 'GET', url: `/api/tracks/${trackId}/cover` });
     expect(coverRes.statusCode).toBe(200);
     expect(coverRes.headers['content-type']).toBe('image/jpeg');
     expect(coverRes.rawPayload).toEqual(cover);

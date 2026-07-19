@@ -1,4 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:homespotify_mobile/src/features/library/data/library_api.dart';
+import 'package:homespotify_mobile/src/features/library/domain/track.dart';
+import 'package:homespotify_mobile/src/features/library/presentation/library_playback_controller.dart';
 import 'package:homespotify_mobile/src/features/player/audio/homespotify_audio_handler.dart';
 
 void main() {
@@ -12,6 +16,10 @@ void main() {
       duration: Duration(minutes: 3, seconds: 20),
       mimeType: 'audio/flac',
       extension: '.flac',
+      sampleRate: 96000,
+      bitDepth: 24,
+      channels: 2,
+      fileSize: 52428800,
     );
 
     final mediaItem = item.toMediaItem();
@@ -23,6 +31,37 @@ void main() {
       'mimeType': 'audio/flac',
       'extension': '.flac',
       'format': 'FLAC',
+      'sampleRate': 96000,
+      'bitDepth': 24,
+      'channels': 2,
+      'fileSize': 52428800,
+      'origin': 'Bibliothèque',
+      'speedRatio': 1.0,
     });
   });
+
+  test(
+    'la source bibliothèque reçoit le Bearer courant sans token dans URL',
+    () {
+      final item = playerQueueItemForTrack(
+        track: const Track(
+          id: 67,
+          title: 'Hurt me anymore',
+          artist: 'purity.',
+          album: 'Hurt me anymore',
+          hasCover: true,
+          durationSeconds: 132,
+        ),
+        api: LibraryApi(Dio(), 'https://homespotify.test'),
+        userId: 3,
+        authorizationHeaders: const {
+          'Authorization': 'Bearer access-token-test',
+        },
+      );
+
+      expect(item.headers, const {'Authorization': 'Bearer access-token-test'});
+      expect(item.streamUri.query, isEmpty);
+      expect(item.streamUri.toString(), endsWith('/api/tracks/67/stream'));
+    },
+  );
 }

@@ -11,12 +11,14 @@ class SeekBar extends StatefulWidget {
     required this.position,
     required this.duration,
     this.bufferedPosition = Duration.zero,
+    this.speed = 1,
     this.onSeek,
   });
 
   final Duration position;
   final Duration duration;
   final Duration bufferedPosition;
+  final double speed;
   final ValueChanged<Duration>? onSeek;
 
   @override
@@ -38,6 +40,15 @@ class _SeekBarState extends State<SeekBar> {
     final displayed = _dragValueMs != null
         ? Duration(milliseconds: _dragValueMs!.round())
         : widget.position;
+    final rawRemaining = widget.duration > displayed
+        ? widget.duration - displayed
+        : Duration.zero;
+    final safeSpeed = widget.speed.isFinite && widget.speed > 0
+        ? widget.speed
+        : 1.0;
+    final remaining = Duration(
+      microseconds: (rawRemaining.inMicroseconds / safeSpeed).round(),
+    );
 
     return Column(
       children: [
@@ -73,7 +84,7 @@ class _SeekBarState extends State<SeekBar> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(_format(displayed), style: _timeStyle),
-              Text(_format(widget.duration), style: _timeStyle),
+              Text('-${_format(remaining)}', style: _timeStyle),
             ],
           ),
         ),

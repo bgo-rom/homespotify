@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "status": "template-hashes-must-be-generated",
+  "generatedAtUtc": null,
+  "components": [
+    {
+      "name": "Signalsmith Stretch",
+      "version": "1.3.2",
+      "license": "MIT",
+      "upstream": "https://signalsmith-audio.co.uk/code/stretch.git",
+      "commit": "57b93f4e9206a089a45387eaa39bdc9f310d3308",
+      "files": [
+        {
+          "path": "signalsmith-stretch.h",
+          "sha256": null
+        },
+        {
+          "path": "LICENSE.signalsmith-stretch.txt",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "name": "Signalsmith Linear",
+      "version": "0.3.1",
+      "license": "MIT",
+      "upstream": "https://git.signalsmith-audio.co.uk/Signalsmith-Audio/linear.git",
+      "commit": "5668673560146a9cfe38c25315071e3fd68c8317",
+      "files": [
+        {
+          "path": "signalsmith-linear/stft.h",
+          "sha256": null
+        },
+        {
+          "path": "signalsmith-linear/fft.h",
+          "sha256": null
+        },
+        {
+          "path": "LICENSE.signalsmith-linear.txt",
+          "sha256": null
+        }
+      ]
+    }
+  ]
+}

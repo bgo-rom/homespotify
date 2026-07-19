@@ -1,0 +1,45 @@
+{
+    "schemaVersion":  1,
+    "status":  "verified-local-checkout",
+    "generatedAtUtc":  "2026-07-14T18:13:27.8587308Z",
+    "components":  [
+                       {
+                           "name":  "Signalsmith Stretch",
+                           "version":  "1.3.2",
+                           "license":  "MIT",
+                           "upstream":  "https://github.com/Signalsmith-Audio/signalsmith-stretch.git",
+                           "commit":  "57b93f4e9206a089a45387eaa39bdc9f310d3308",
+                           "files":  [
+                                         {
+                                             "path":  "signalsmith-stretch.h",
+                                             "sha256":  "45a0b93b1e00257014d48e7ae494ec4e604f56b4ee15189a355cd9794653a37d"
+                                         },
+                                         {
+                                             "path":  "LICENSE.signalsmith-stretch.txt",
+                                             "sha256":  "16bf62d475af149d96a24853e77c9e0d939259a9d55b23b41da7f9939db85085"
+                                         }
+                                     ]
+                       },
+                       {
+                           "name":  "Signalsmith Linear",
+                           "version":  "0.3.1",
+                           "license":  "MIT",
+                           "upstream":  "https://github.com/Signalsmith-Audio/linear.git",
+                           "commit":  "5668673560146a9cfe38c25315071e3fd68c8317",
+                           "files":  [
+                                         {
+                                             "path":  "signalsmith-linear/stft.h",
+                                             "sha256":  "9a8e1100f3a08c60a399f7bee3c4761f80b8a028c11894e0a70dc0d3a072d356"
+                                         },
+                                         {
+                                             "path":  "signalsmith-linear/fft.h",
+                                             "sha256":  "0caff2341c0632d5a42a6dfe7a4bda1970d5160d75263ce91be50ac5cc9b1328"
+                                         },
+                                         {
+                                             "path":  "LICENSE.signalsmith-linear.txt",
+                                             "sha256":  "a91f5703b0f5fa22e8c14a8bd854559a7c512bbe58656ea8bdcd4964e923ab2f"
+                                         }
+                                     ]
+                       }
+                   ]
+}

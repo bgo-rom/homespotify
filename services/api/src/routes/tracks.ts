@@ -2,12 +2,15 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import type { FastifyReply, FastifyRequest, FastifyInstance } from 'fastify';
-import { desc, eq, sql } from 'drizzle-orm';
-import { tracks, trackEnrichment, trackQuality } from '../db/schema.js';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import { tracks, trackEnrichment, trackQuality, userTracks } from '../db/schema.js';
 import { parseRangeHeader } from '../lib/range.js';
 import { importWav, ImportError, PROVENANCES, type Provenance } from '../import/import-service.js';
 import { mimeTypeForPath } from '../import/audio-format.js';
 import { coverArtPath } from '../metadata/cover-art-archive-client.js';
+import type { AuthGuards } from '../auth/guards.js';
+import { grantTrack, userCanAccessTrack } from '../library/user-library-service.js';
+import { isTrackPublished } from '../library/catalog-service.js';
 
 const COVER_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
 const STREAM_HIGH_WATER_MARK = 256 * 1024;
@@ -64,7 +67,7 @@ async function serveTrackFile(
     .send(createReadStream(absPath, { start, end, highWaterMark: STREAM_HIGH_WATER_MARK }));
 }
 
-export function registerTrackRoutes(app: FastifyInstance): void {
+export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): void {
   const { db } = app.dbHandle;
   const dirs = {
     musicDir: app.config.musicDir,
@@ -72,11 +75,33 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     coversDir: app.config.coversDir,
   };
 
-  const findTrack = (id: string) =>
-    db.select().from(tracks).where(eq(tracks.id, Number(id))).get();
+  // Toutes les routes bibliothèque exigent une authentification (le userId
+  // vient du token, jamais du client) et filtrent par `user_tracks`.
+  const requireAuth = guards.requireAuth();
 
-  // Import d'un WAV (multipart, champ "file" + champ optionnel "provenance")
-  app.post('/api/tracks', async (request, reply) => {
+  /**
+   * Piste LISIBLE par l'utilisateur courant (stream/download/cover), ou
+   * undefined. Autorisée si AU MOINS UNE condition est vraie :
+   *  - la piste est dans sa bibliothèque personnelle (`user_tracks`) ;
+   *  - la piste est PUBLIÉE au catalogue global (tout compte authentifié peut
+   *    l'écouter depuis « Ajouts récents », même sans l'avoir ajoutée).
+   *
+   * Le rôle n'est JAMAIS un bypass : un OWNER n'a pas plus d'accès de lecture
+   * qu'un USER. Une piste orpheline (non publiée) reste inaccessible sans
+   * `user_tracks`. Ces routes exigent toujours un Bearer token (401 sinon) ;
+   * aucun token ne transite par l'URL.
+   */
+  const findAccessibleTrack = (userId: number, id: string) => {
+    const trackId = Number(id);
+    if (!Number.isInteger(trackId)) return undefined;
+    const personal = userCanAccessTrack(app.dbHandle, userId, trackId);
+    if (!personal && !isTrackPublished(app.dbHandle, trackId)) return undefined;
+    return db.select().from(tracks).where(eq(tracks.id, trackId)).get();
+  };
+
+  // Import d'un WAV (multipart, champ "file" + champ optionnel "provenance").
+  // L'importateur reçoit immédiatement l'accès à la piste (source MANUAL_IMPORT).
+  app.post('/api/tracks', { preHandler: requireAuth }, async (request, reply) => {
     const file = await request.file();
     if (!file) {
       return reply.code(400).send({ statusCode: 400, error: 'bad_request', message: 'Champ multipart "file" manquant' });
@@ -91,6 +116,12 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     }
     try {
       const track = await importWav(db, dirs, file.file, file.filename, provenanceRaw as Provenance);
+      grantTrack(app.dbHandle, {
+        userId: request.authUser.id,
+        trackId: track.id,
+        source: 'MANUAL_IMPORT',
+        addedByUserId: request.authUser.id,
+      });
       return reply.code(201).send(track);
     } catch (err) {
       if (err instanceof ImportError) {
@@ -100,14 +131,21 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     }
   });
 
-  // Liste paginée. `etag`/`lastModified` par piste → le client mobile compare son cache local.
-  app.get<{ Querystring: { page?: string; limit?: string } }>('/api/tracks', async (request) => {
+  // Liste paginée FILTRÉE par la bibliothèque de l'utilisateur courant.
+  // `etag`/`lastModified` par piste → le client mobile compare son cache local.
+  app.get<{ Querystring: { page?: string; limit?: string } }>(
+    '/api/tracks',
+    { preHandler: requireAuth },
+    async (request) => {
+    const userId = request.authUser.id;
     const page = Math.max(1, Number(request.query.page ?? 1) || 1);
     const limit = Math.min(200, Math.max(1, Number(request.query.limit ?? 50) || 50));
     const items = db
       .select()
-      .from(tracks)
+      .from(userTracks)
+      .innerJoin(tracks, eq(tracks.id, userTracks.trackId))
       .leftJoin(trackQuality, eq(trackQuality.trackId, tracks.id))
+      .where(and(eq(userTracks.userId, userId), eq(userTracks.isVisible, true)))
       .orderBy(desc(tracks.createdAt))
       .limit(limit)
       .offset((page - 1) * limit)
@@ -136,37 +174,59 @@ export function registerTrackRoutes(app: FastifyInstance): void {
           provenance: q.provenance,
         },
       }));
-    const total = db.select({ n: sql<number>`count(*)` }).from(tracks).get()?.n ?? 0;
+    const total =
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(userTracks)
+        .where(and(eq(userTracks.userId, userId), eq(userTracks.isVisible, true)))
+        .get()?.n ?? 0;
     return { page, limit, total, items };
   });
 
   // Streaming avec HTTP Range (seek/reprise sans télécharger les ~50 Mo).
   // Content-Type = format réel de la piste (audio/wav ou audio/flac), fichier envoyé tel quel.
-  app.get<{ Params: { id: string } }>('/api/tracks/:id/stream', async (request, reply) => {
-    const track = findTrack(request.params.id);
-    if (!track) {
-      return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
-    }
-    const contentType = track.mimeType ?? mimeTypeForPath(track.path);
-    return serveTrackFile(request, reply, join(app.config.musicDir, track.path), track.hash, contentType);
-  });
+  // Refusé si l'utilisateur n'a pas accès à la piste (404 générique, ne révèle
+  // pas l'existence d'une piste d'un autre compte).
+  app.get<{ Params: { id: string } }>(
+    '/api/tracks/:id/stream',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const track = findAccessibleTrack(request.authUser.id, request.params.id);
+      if (!track) {
+        return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
+      }
+      const contentType = track.mimeType ?? mimeTypeForPath(track.path);
+      return serveTrackFile(request, reply, join(app.config.musicDir, track.path), track.hash, contentType);
+    },
+  );
 
   // Téléchargement forcé (cache hors ligne mobile) : Content-Disposition attachment
-  app.get<{ Params: { id: string } }>('/api/tracks/:id/download', async (request, reply) => {
-    const track = findTrack(request.params.id);
-    if (!track) {
-      return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
-    }
-    const ext = extname(track.path) || track.originalExtension || '.wav';
-    const contentType = track.mimeType ?? mimeTypeForPath(track.path);
-    const filename = `${track.artist} - ${track.title}${ext}`;
-    return serveTrackFile(
-      request, reply, join(app.config.musicDir, track.path), track.hash, contentType, attachmentHeader(filename),
-    );
-  });
+  app.get<{ Params: { id: string } }>(
+    '/api/tracks/:id/download',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const track = findAccessibleTrack(request.authUser.id, request.params.id);
+      if (!track) {
+        return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
+      }
+      const ext = extname(track.path) || track.originalExtension || '.wav';
+      const contentType = track.mimeType ?? mimeTypeForPath(track.path);
+      const filename = `${track.artist} - ${track.title}${ext}`;
+      return serveTrackFile(
+        request, reply, join(app.config.musicDir, track.path), track.hash, contentType, attachmentHeader(filename),
+      );
+    },
+  );
 
   // Pochette HD Cover Art Archive si disponible, sinon pochette embarquée extraite à l'import.
-  app.get<{ Params: { id: string } }>('/api/tracks/:id/cover', async (request, reply) => {
+  // Pochette privée : filtrée par accès utilisateur.
+  app.get<{ Params: { id: string } }>(
+    '/api/tracks/:id/cover',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+    if (!findAccessibleTrack(request.authUser.id, request.params.id)) {
+      return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
+    }
     const row = db
       .select()
       .from(tracks)
@@ -196,5 +256,6 @@ export function registerTrackRoutes(app: FastifyInstance): void {
     }
     const ext = track.coverPath.split('.').pop() ?? 'jpg';
     return reply.type(COVER_MIME[ext] ?? 'application/octet-stream').send(createReadStream(join(app.config.coversDir, track.coverPath)));
-  });
+    },
+  );
 }

@@ -64,6 +64,24 @@ interface MusicBrainzRecordingSearchResponse {
   recordings?: MusicBrainzRecording[];
 }
 
+interface MusicBrainzArtist {
+  id?: string;
+  name?: string;
+  score?: string | number;
+  tags?: MusicBrainzTag[];
+}
+
+interface MusicBrainzArtistSearchResponse {
+  artists?: MusicBrainzArtist[];
+}
+
+export interface MusicBrainzArtistCandidate {
+  id: string;
+  name: string;
+  score: number;
+  tags: string[];
+}
+
 export interface MusicBrainzReleaseCandidate {
   id: string;
   title: string;
@@ -85,6 +103,102 @@ export interface MusicBrainzRecordingCandidate {
   artistId: string | null;
   releases: MusicBrainzReleaseCandidate[];
   tags: string[];
+}
+
+interface MusicBrainzUrlRelation {
+  type?: string;
+  url?: { resource?: string };
+}
+
+interface MusicBrainzArtistFull extends MusicBrainzArtist {
+  disambiguation?: string;
+  relations?: MusicBrainzUrlRelation[];
+}
+
+interface MusicBrainzReleaseGroupFull {
+  id?: string;
+  title?: string;
+  'primary-type'?: string;
+  'secondary-types'?: string[];
+  'first-release-date'?: string;
+  'artist-credit'?: MusicBrainzArtistCredit[];
+  score?: string | number;
+}
+
+interface MusicBrainzTrackFull extends MusicBrainzTrack {
+  'artist-credit'?: MusicBrainzArtistCredit[];
+  recording?: {
+    id?: string;
+    title?: string;
+    length?: number;
+    isrcs?: string[];
+    'artist-credit'?: MusicBrainzArtistCredit[];
+  };
+}
+
+interface MusicBrainzMediumFull extends MusicBrainzMedium {
+  tracks?: MusicBrainzTrackFull[];
+}
+
+interface MusicBrainzReleaseFull extends MusicBrainzRelease {
+  media?: MusicBrainzMediumFull[];
+  'label-info'?: Array<{ label?: { name?: string } }>;
+}
+
+export interface MusicBrainzReleaseGroupCandidate {
+  id: string;
+  title: string;
+  primaryType: string | null;
+  secondaryTypes: string[];
+  firstReleaseDate: string | null;
+  artistCreditPhrase: string | null;
+  artistId: string | null;
+  score: number;
+}
+
+export interface MusicBrainzArtistDetail {
+  id: string;
+  name: string;
+  disambiguation: string | null;
+  tags: string[];
+  urlRelations: Array<{ type: string; url: string }>;
+}
+
+export interface MusicBrainzReleaseTrack {
+  discNumber: number | null;
+  trackNumber: number | null;
+  title: string;
+  lengthMs: number | null;
+  recordingId: string | null;
+  artistCreditPhrase: string | null;
+  isrc: string | null;
+}
+
+export interface MusicBrainzReleaseDetail {
+  id: string;
+  title: string;
+  date: string | null;
+  artistCreditPhrase: string | null;
+  label: string | null;
+  releaseGroupId: string | null;
+  discCount: number | null;
+  tracks: MusicBrainzReleaseTrack[];
+}
+
+function normalizeReleaseGroup(
+  group: MusicBrainzReleaseGroupFull,
+): MusicBrainzReleaseGroupCandidate | null {
+  if (!group.id || !group.title) return null;
+  return {
+    id: group.id,
+    title: group.title,
+    primaryType: group['primary-type'] ?? null,
+    secondaryTypes: group['secondary-types'] ?? [],
+    firstReleaseDate: group['first-release-date'] ?? null,
+    artistCreditPhrase: artistCreditPhrase(group['artist-credit']),
+    artistId: firstArtistId(group['artist-credit']),
+    score: Number(group.score ?? 0),
+  };
 }
 
 export class MusicBrainzHttpError extends Error {
@@ -188,6 +302,21 @@ export interface RecordingSearchInput {
   limit?: number;
 }
 
+function normalizeArtist(artist: MusicBrainzArtist): MusicBrainzArtistCandidate | null {
+  if (!artist.id || !artist.name) return null;
+  return {
+    id: artist.id,
+    name: artist.name.trim(),
+    score: Number(artist.score ?? 0),
+    tags: artist.tags
+      ?.slice()
+      .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+      .map((tag) => tag.name?.trim() ?? '')
+      .filter((tag) => tag.length > 0)
+      .slice(0, 5) ?? [],
+  };
+}
+
 export class MusicBrainzClient {
   private readonly userAgent: string;
   private readonly baseUrl: string;
@@ -229,6 +358,197 @@ export class MusicBrainzClient {
       return response.recordings
         ?.map(normalizeRecording)
         .filter((recording): recording is MusicBrainzRecordingCandidate => recording !== null) ?? [];
+    });
+  }
+
+  async searchArtists(query: string, limit = 5): Promise<MusicBrainzArtistCandidate[]> {
+    const clean = query.trim();
+    if (!clean) return [];
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        query: `artist:"${quoteSearchValue(clean)}"`,
+        fmt: 'json',
+        limit: String(Math.min(10, Math.max(1, limit))),
+      });
+      const response = await this.fetchJson<MusicBrainzArtistSearchResponse>(
+        `/ws/2/artist?${params}`,
+      );
+      return response.artists
+        ?.map(normalizeArtist)
+        .filter((artist): artist is MusicBrainzArtistCandidate => artist !== null) ?? [];
+    });
+  }
+
+  /**
+   * Recordings associés à un ISRC (identité forte). 404 = ISRC inconnu → [].
+   */
+  async lookupIsrc(isrc: string): Promise<MusicBrainzRecordingCandidate[]> {
+    const clean = isrc.trim().toUpperCase();
+    if (!/^[A-Z0-9]{12}$/u.test(clean)) return [];
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        fmt: 'json',
+        inc: 'artist-credits+releases+release-groups+media',
+      });
+      try {
+        const response = await this.fetchJson<{ recordings?: MusicBrainzRecording[] }>(
+          `/ws/2/isrc/${clean}?${params}`,
+        );
+        return response.recordings
+          ?.map(normalizeRecording)
+          .filter((recording): recording is MusicBrainzRecordingCandidate => recording !== null) ?? [];
+      } catch (error) {
+        if (error instanceof MusicBrainzHttpError && error.statusCode === 404) return [];
+        throw error;
+      }
+    });
+  }
+
+  /** Recherche de release-groups (albums) par titre et artiste. */
+  async searchReleaseGroups(input: {
+    title: string;
+    artist?: string | null;
+    limit?: number;
+  }): Promise<MusicBrainzReleaseGroupCandidate[]> {
+    const titleTerm = searchTerm('releasegroup', input.title);
+    const artistTerm = searchTerm('artist', input.artist);
+    const query = [titleTerm, artistTerm].filter((term): term is string => term !== null).join(' AND ');
+    if (!query) return [];
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        query,
+        fmt: 'json',
+        limit: String(Math.min(25, Math.max(1, input.limit ?? 10))),
+      });
+      const response = await this.fetchJson<{ 'release-groups'?: MusicBrainzReleaseGroupFull[] }>(
+        `/ws/2/release-group?${params}`,
+      );
+      return response['release-groups']
+        ?.map(normalizeReleaseGroup)
+        .filter((group): group is MusicBrainzReleaseGroupCandidate => group !== null) ?? [];
+    });
+  }
+
+  /** Discographie d'un artiste (release-groups triés par date, paginés). */
+  async browseArtistReleaseGroups(
+    artistMbid: string,
+    options: { limit?: number; offset?: number } = {},
+  ): Promise<{ items: MusicBrainzReleaseGroupCandidate[]; total: number }> {
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        artist: artistMbid,
+        fmt: 'json',
+        limit: String(Math.min(100, Math.max(1, options.limit ?? 50))),
+        offset: String(Math.max(0, options.offset ?? 0)),
+      });
+      const response = await this.fetchJson<{
+        'release-groups'?: MusicBrainzReleaseGroupFull[];
+        'release-group-count'?: number;
+      }>(`/ws/2/release-group?${params}`);
+      return {
+        items:
+          response['release-groups']
+            ?.map(normalizeReleaseGroup)
+            .filter((group): group is MusicBrainzReleaseGroupCandidate => group !== null) ?? [],
+        total: response['release-group-count'] ?? 0,
+      };
+    });
+  }
+
+  /** Artiste + relations URL (sites officiels, Bandcamp, plateformes). */
+  async lookupArtistWithUrls(mbid: string): Promise<MusicBrainzArtistDetail | null> {
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({ fmt: 'json', inc: 'url-rels+tags' });
+      try {
+        const artist = await this.fetchJson<MusicBrainzArtistFull>(
+          `/ws/2/artist/${encodeURIComponent(mbid)}?${params}`,
+        );
+        if (!artist.id || !artist.name) return null;
+        return {
+          id: artist.id,
+          name: artist.name.trim(),
+          disambiguation: artist.disambiguation?.trim() || null,
+          tags:
+            artist.tags
+              ?.slice()
+              .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+              .map((tag) => tag.name?.trim() ?? '')
+              .filter((tag) => tag.length > 0)
+              .slice(0, 8) ?? [],
+          urlRelations:
+            artist.relations
+              ?.map((relation) => ({
+                type: relation.type ?? '',
+                url: relation.url?.resource ?? '',
+              }))
+              .filter((relation) => relation.url.length > 0) ?? [],
+        };
+      } catch (error) {
+        if (error instanceof MusicBrainzHttpError && error.statusCode === 404) return null;
+        throw error;
+      }
+    });
+  }
+
+  /** Release (média + pistes ordonnées) pour la tracklist canonique. */
+  async lookupReleaseWithTracks(mbid: string): Promise<MusicBrainzReleaseDetail | null> {
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        fmt: 'json',
+        inc: 'recordings+artist-credits+labels+media+isrcs',
+      });
+      try {
+        const release = await this.fetchJson<MusicBrainzReleaseFull>(
+          `/ws/2/release/${encodeURIComponent(mbid)}?${params}`,
+        );
+        if (!release.id || !release.title) return null;
+        const media = release.media ?? [];
+        const trackEntries: MusicBrainzReleaseTrack[] = [];
+        for (const medium of media) {
+          for (const track of medium.tracks ?? []) {
+            trackEntries.push({
+              discNumber: medium.position ?? null,
+              trackNumber: parseTrackNumber(track.number, track.position),
+              title: track.title ?? track.recording?.title ?? '',
+              lengthMs: track.length ?? track.recording?.length ?? null,
+              recordingId: track.recording?.id ?? null,
+              artistCreditPhrase: artistCreditPhrase(track.recording?.['artist-credit'] ?? track['artist-credit']),
+              isrc: track.recording?.isrcs?.[0] ?? null,
+            });
+          }
+        }
+        return {
+          id: release.id,
+          title: release.title,
+          date: release.date ?? null,
+          artistCreditPhrase: artistCreditPhrase(release['artist-credit']),
+          label: release['label-info']?.[0]?.label?.name ?? null,
+          releaseGroupId: release['release-group']?.id ?? null,
+          discCount: media.length || null,
+          tracks: trackEntries,
+        };
+      } catch (error) {
+        if (error instanceof MusicBrainzHttpError && error.statusCode === 404) return null;
+        throw error;
+      }
+    });
+  }
+
+  /** Releases d'un release-group : sert à choisir la release canonique. */
+  async browseReleaseGroupReleases(releaseGroupMbid: string): Promise<MusicBrainzReleaseCandidate[]> {
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        'release-group': releaseGroupMbid,
+        fmt: 'json',
+        status: 'official',
+        limit: '25',
+      });
+      const response = await this.fetchJson<{ releases?: MusicBrainzRelease[] }>(
+        `/ws/2/release?${params}`,
+      );
+      return response.releases
+        ?.map(normalizeRelease)
+        .filter((release): release is MusicBrainzReleaseCandidate => release !== null) ?? [];
     });
   }
 

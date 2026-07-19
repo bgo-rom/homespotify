@@ -1,0 +1,69 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-RelWithDebInfo-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.10.0"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"name" : "RelWithDebInfo",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "homespotify_stretch",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "homespotify_stretch::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-homespotify_stretch-RelWithDebInfo-15581d91027fa321407b.json",
+					"name" : "homespotify_stretch",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "homespotify_stretch_engine::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-homespotify_stretch_engine-RelWithDebInfo-3ee6dce52f13ff41681b.json",
+					"name" : "homespotify_stretch_engine",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "F:/dev/homespotify/packages/homespotify_just_audio/android/.cxx/RelWithDebInfo/1i6j3f95/x86_64",
+		"source" : "F:/dev/homespotify/packages/homespotify_just_audio/android/src/main/cpp"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

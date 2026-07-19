@@ -25,16 +25,18 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 ## Base de données
 
 - **SQLite** (fichier unique, mode WAL), accès via Drizzle ORM.
-- Tables principales : `artists`, `albums`, `tracks`, `track_quality`, `playlists`, `playlist_tracks`, `users`, `devices`, `cache_state` (pistes hors ligne par appareil), `import_jobs`, `scan_log`.
+- Tables principales : `artists`, `albums`, `tracks`, `track_quality`, `playlists`, `playlist_tracks`, `users`, `user_tracks`, `music_requests`, `music_request_items`, `user_import_directories`, `import_jobs`, `devices`, `cache_state` (pistes hors ligne par appareil), `scan_log`.
 - `tracks` stocke : chemin relatif, hash (BLAKE3 ou SHA-256 en flux), taille, durée, tags canoniques, IDs MusicBrainz.
 - `track_quality` stocke : codec, sample rate, bit depth, bitrate, canaux, statut (`lossless_verifie` / `lossless_probable` / `lossy` / `inconnue`), provenance, date d'analyse.
 
 ## Stockage des fichiers
 
 - Racine unique, ex. `/data/music`, arborescence `Artiste/Album/Titre.ext` (`.wav` ou `.flac`, composants assainis : caractères interdits Windows/Linux remplacés). En cas de collision de nom, suffixe `[hash8]`. Le numéro de piste et l'année (parfois peu fiables dans les tags) seront réintroduits dans le nom en Phase 3 si l'enrichissement les fournit.
-- Correspondance dépôt ↔ runtime : les dossiers `storage/music`, `storage/imports`, `storage/covers`, `storage/cache` du projet servent de racines locales de dev et sont montés en volumes Docker sur `/data/music`, `/data/incoming`, `/data/artwork`, `/data/cache`. Leur contenu est ignoré par git (`.gitkeep` seulement).
+- Correspondance dépôt ↔ runtime : les dossiers `storage/music`, `storage/imports`, `storage/covers`, `storage/cache` du projet servent de racines locales de dev et sont montés en volumes Docker sur `/data/music`, `/data/imports`, `/data/artwork`, `/data/cache`. Leur contenu est ignoré par git (`.gitkeep` seulement).
 - Le serveur **ne modifie jamais** un fichier audio sans action explicite ; l'import copie puis normalise le nom.
-- Zone de staging `/data/incoming` pour les uploads avant analyse/validation.
+- Zone de staging `HOMESPOTIFY_IMPORT_ROOT` (`/data/imports` en Docker) : un dossier immuable par compte `<userId>_<username>`, avec `inbox`, `processed` et `rejected`. Au boot, seuls les dossiers manquants sont créés ; aucun fichier ni chemin `tracks.path` existant n'est déplacé.
+- Récupération depuis un nœud privé : `POST /api/library/fetch-node` accepte une URL directe autorisée ; `GET /api/library/search-remote` et `POST /api/library/import-remote-track` ajoutent la recherche puis la résolution serveur d'un `trackId`. Le média résolu et chaque redirection doivent appartenir à une origine HTTPS exacte de `NODE_FETCH_MEDIA_ALLOWED_ORIGINS`. Le worker répond `202`, écrit le flux borné dans un `.part`, vérifie sa signature FLAC/WAV réelle puis le renomme atomiquement dans l'`inbox` immuable du compte. Un MP4 ne peut pas devenir un FLAC par simple extension. La file et les statuts sont en mémoire ; aucune donnée audio ne transite par SQLite.
+- Watcher d'import : WAV/FLAC seulement, taille+mtime stables, lecture des métadonnées sans réécriture, SHA-256 par flux, déduplication hash→ISRC→titre/artiste/durée. L'association automatique à une demande est confinée au même `userId` et exige un résultat unique à score élevé ; sinon le job attend une décision OWNER. L'accès bibliothèque créé est exclusivement `user_tracks(userId, trackId)` pour le propriétaire du dossier.
 - Pochettes et miniatures dans `/data/artwork`, nommées par ID d'album.
 - La base ne contient jamais d'audio : chemins + hashes uniquement.
 
@@ -69,6 +71,8 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 ## Application mobile
 
 - **Flutter Android-first**, lecteur via `just_audio` + `audio_service` (lecture arrière-plan, notifications média, lockscreen, files d'attente).
+- La vitesse par piste est persistée par compte côté API et appliquée uniquement par le `HomeSpotifyAudioHandler` entre 0,70x et 1,30x. Sur Android compatible, le lecteur Media3 unique passe par le package local `packages/homespotify_just_audio` et HomeSpotify Stretch (Signalsmith 1.3.2) avec **une seule configuration calibrée pour tout ratio actif** (120 ms / 30 ms ; bypass complet à 1,00x) — un profil dépendant du ratio ne peut pas être réappliqué en cours de flux (voir L-046) ; Sonic n'est utilisé qu'en fallback exclusif. Chaque changement de piste force d'abord 1,00x et vide le DSP, empêchant tout héritage entre titres ; aucun fichier audio n'est transformé.
+- Le BPM descriptif vient d'abord des tags existants ; à défaut, une tâche serveur asynchrone décode un flux PCM mono borné pour estimer le tempo sans fichier intermédiaire ni modification de la source. Une confiance faible est présentée comme approximative.
 - Écrans MVP : bibliothèque (artistes/albums/pistes), recherche, lecteur, file d'attente, gestion hors ligne, réglages (streaming/cache WAV).
 - Affiche systématiquement le badge de qualité mesurée de chaque piste.
 - Le client v1 est l'app Flutter décrite dans `MOBILE_ARCHITECTURE.md`.
@@ -117,6 +121,11 @@ AJOUT
 Utilisateur → Upload/dépôt fichier → Staging → Analyse (ffprobe + spectral)
 → Statut qualité + doublon check → Normalisation nom → /data/music
 → Métadonnées (tags + MusicBrainz) → Bibliothèque (SQLite) → Visible dans l'app
+
+NŒUD PRIVÉ
+App → URL HTTPS autorisée → POST fetch-node → 202 + suivi du job
+→ Flux borné vers `.part` → renommage atomique dans l'inbox du compte
+→ Watcher existant (hash + déduplication + import) → invalidation différée de la bibliothèque
 
 ÉCOUTE
 App mobile → Auth (JWT) → Parcourt bibliothèque (API paginée)

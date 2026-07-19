@@ -4,14 +4,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../audio/homespotify_audio_handler.dart';
 
 /// Piste courante (métadonnées) diffusée par le handler audio.
-final mediaItemProvider = StreamProvider<MediaItem?>((ref) {
+/// Nommé pour le [LoggingProviderObserver] (changement de piste loggé).
+final mediaItemProvider = StreamProvider<MediaItem?>(name: 'mediaItem', (ref) {
   return ref.watch(audioHandlerProvider).mediaItem;
 });
 
 /// État de lecture (play/pause, processing, position d'événement).
-final playbackStateProvider = StreamProvider<PlaybackState>((ref) {
-  return ref.watch(audioHandlerProvider).playbackState;
-});
+/// Nommé pour le [LoggingProviderObserver] (play/pause/état loggés).
+final playbackStateProvider = StreamProvider<PlaybackState>(
+  name: 'playbackState',
+  (ref) {
+    return ref.watch(audioHandlerProvider).playbackState;
+  },
+);
 
 /// File de lecture exposée par audio_service pour l'UI et les contrôles système.
 final queueProvider = StreamProvider<List<MediaItem>>((ref) {

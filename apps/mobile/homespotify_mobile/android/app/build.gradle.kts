@@ -4,6 +4,15 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val homeSpotifyStretchEngine = providers
+    .environmentVariable("HOMESPOTIFY_STRETCH_ENGINE")
+    .orElse(providers.gradleProperty("HOMESPOTIFY_STRETCH_ENGINE"))
+    .getOrElse("signalsmith")
+    .lowercase()
+require(homeSpotifyStretchEngine in setOf("signalsmith", "media3")) {
+    "HOMESPOTIFY_STRETCH_ENGINE must be 'signalsmith' or 'media3'."
+}
+
 android {
     namespace = "com.homespotify.homespotify_mobile"
     compileSdk = flutter.compileSdkVersion
@@ -23,6 +32,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["homespotifyStretchEngine"] = homeSpotifyStretchEngine
     }
 
     buildTypes {
@@ -46,4 +56,5 @@ flutter {
 
 dependencies {
     implementation("androidx.media:media:1.6.0")
+    implementation("androidx.appcompat:appcompat:1.7.1")
 }

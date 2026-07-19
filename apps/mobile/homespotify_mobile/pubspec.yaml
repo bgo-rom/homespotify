@@ -34,7 +34,11 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  just_audio: ^0.10.6
+  # Fork local strict de just_audio 0.10.6 : seul le pipeline Android Media3
+  # est étendu pour injecter HomeSpotify Stretch Engine. Les autres plateformes
+  # et l'API Dart restent identiques à l'amont.
+  just_audio:
+    path: ../../../packages/homespotify_just_audio
   audio_service: ^0.18.19
   audio_session: ^0.2.4
   dio: ^5.10.0
@@ -46,6 +50,12 @@ dependencies:
   freezed_annotation: ^3.1.0
   json_annotation: ^4.12.0
   connectivity_plus: ^7.2.0
+  flutter_secure_storage: ^10.3.1
+  local_auth: ^3.0.2
+  shared_preferences: ^2.5.5
+  # Ouverture des liens externes validés (Spotify/Apple/TIDAL/Bandcamp…) de la
+  # recherche catalogue — https uniquement, jamais d'URL arbitraire.
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

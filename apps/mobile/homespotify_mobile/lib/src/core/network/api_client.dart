@@ -2,10 +2,11 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-const String homespotifyApiBaseUrl = String.fromEnvironment(
-  'HOMESPOTIFY_API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:3000',
-);
+import '../config/app_config.dart';
+
+/// Alias conservé pour les appels existants ; la source de vérité est
+/// [AppConfig.apiBaseUrl] (configurable par --dart-define uniquement).
+const String homespotifyApiBaseUrl = AppConfig.apiBaseUrl;
 
 final Dio apiClient = createApiClient();
 
@@ -33,9 +34,18 @@ Dio createApiClient({String baseUrl = homespotifyApiBaseUrl}) {
 }
 
 class _DebugLogInterceptor extends Interceptor {
+  /// Endpoint sondé en boucle par la préparation des recommandations : ses
+  /// appels RÉUSSIS sont TROP bruyants. On ne les journalise pas ici — les
+  /// TRANSITIONS de statut sont loguées côté contrôleur (`Recommendation
+  /// refresh: … -> …`). Les erreurs (HTTP/backend/réseau) restent journalisées.
+  static bool _isNoisyPoll(RequestOptions options) =>
+      options.path.contains('/api/recommendations/status');
+
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    debugPrint('[API] --> ${options.method} ${options.uri}');
+    if (!_isNoisyPoll(options)) {
+      debugPrint('[API] --> ${options.method} ${options.uri}');
+    }
     handler.next(options);
   }
 
@@ -44,10 +54,16 @@ class _DebugLogInterceptor extends Interceptor {
     Response<dynamic> response,
     ResponseInterceptorHandler handler,
   ) {
-    debugPrint(
-      '[API] <-- ${response.statusCode} '
-      '${response.requestOptions.method} ${response.requestOptions.uri}',
-    );
+    final status = response.statusCode ?? 0;
+    final isSuccess = status >= 200 && status < 400;
+    // On tait UNIQUEMENT les sondes de statut RÉUSSIES ; toute réponse d'erreur
+    // (y compris sur cet endpoint) est journalisée.
+    if (!(_isNoisyPoll(response.requestOptions) && isSuccess)) {
+      debugPrint(
+        '[API] <-- $status '
+        '${response.requestOptions.method} ${response.requestOptions.uri}',
+      );
+    }
     handler.next(response);
   }
 

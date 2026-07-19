@@ -1,0 +1,22 @@
+name: homespotify_stretch_poc
+description: POC Android isolé du moteur HomeSpotify Stretch.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.homespotify.stretchpoc
+        pluginClass: HomeSpotifyStretchPocPlugin

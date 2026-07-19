@@ -1,0 +1,12 @@
+[
+{
+  "directory": "F:/dev/homespotify/packages/homespotify_just_audio/android/.cxx/Debug/n5j1x5xv/arm64-v8a",
+  "command": "F:\\Android\\Sdk\\ndk\\28.2.13676358\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android21 --sysroot=F:/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -DHOMESPOTIFY_STRETCH_HAS_SIGNALSMITH=1 -IF:/dev/homespotify/packages/homespotify_just_audio/android/src/main/cpp/homespotify_stretch -IF:/dev/homespotify/packages/homespotify_just_audio/android/src/main/cpp/third_party/signalsmith_stretch -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -O3 -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles\\homespotify_stretch_engine.dir\\homespotify_stretch\\HomeSpotifyStretchEngine.cpp.o -c F:\\dev\\homespotify\\packages\\homespotify_just_audio\\android\\src\\main\\cpp\\homespotify_stretch\\HomeSpotifyStretchEngine.cpp",
+  "file": "F:\\dev\\homespotify\\packages\\homespotify_just_audio\\android\\src\\main\\cpp\\homespotify_stretch\\HomeSpotifyStretchEngine.cpp"
+},
+{
+  "directory": "F:/dev/homespotify/packages/homespotify_just_audio/android/.cxx/Debug/n5j1x5xv/arm64-v8a",
+  "command": "F:\\Android\\Sdk\\ndk\\28.2.13676358\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android21 --sysroot=F:/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -DHOMESPOTIFY_STRETCH_HAS_SIGNALSMITH=1 -Dhomespotify_stretch_EXPORTS -IF:/dev/homespotify/packages/homespotify_just_audio/android/src/main/cpp/homespotify_stretch -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -O3 -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles\\homespotify_stretch.dir\\homespotify_stretch\\JniBridge.cpp.o -c F:\\dev\\homespotify\\packages\\homespotify_just_audio\\android\\src\\main\\cpp\\homespotify_stretch\\JniBridge.cpp",
+  "file": "F:\\dev\\homespotify\\packages\\homespotify_just_audio\\android\\src\\main\\cpp\\homespotify_stretch\\JniBridge.cpp"
+}
+]

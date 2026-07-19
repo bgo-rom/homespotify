@@ -4,8 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:homespotify_mobile/src/features/player/audio/homespotify_audio_handler.dart';
+import 'package:homespotify_mobile/src/features/library/application/track_library_membership.dart';
+import 'package:homespotify_mobile/src/features/library/presentation/library_favorites.dart';
 import 'package:homespotify_mobile/src/features/player/presentation/player_providers.dart';
 import 'package:homespotify_mobile/src/features/player/presentation/player_screen.dart';
+
+import 'support/fake_library_repositories.dart';
 
 void main() {
   // Surface de test type téléphone : la colonne du lecteur (pochette + contrôles
@@ -20,6 +24,12 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
+          // Le menu du lecteur lit l'appartenance serveur : sans override, un
+          // vrai GET Dio partirait et laisserait un timer en attente.
+          remoteTrackMembershipProvider.overrideWith(
+            (ref, trackId) async => true,
+          ),
           mediaItemProvider.overrideWith(
             (ref) => const Stream<MediaItem?>.empty(),
           ),
@@ -66,6 +76,12 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
+          // Le menu du lecteur lit l'appartenance serveur : sans override, un
+          // vrai GET Dio partirait et laisserait un timer en attente.
+          remoteTrackMembershipProvider.overrideWith(
+            (ref, trackId) async => true,
+          ),
           mediaItemProvider.overrideWith(
             (ref) => Stream.value(
               const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
@@ -99,7 +115,7 @@ void main() {
     expect(find.text('Justice'), findsOneWidget);
     expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
     expect(find.text('0:30'), findsOneWidget);
-    expect(find.text('3:00'), findsOneWidget);
+    expect(find.text('-2:30'), findsOneWidget);
     // 2 sliders : progression (SeekBar) + volume ; l'icône volume est unique.
     expect(find.byType(Slider), findsNWidgets(2));
     expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
@@ -113,6 +129,12 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
+          // Le menu du lecteur lit l'appartenance serveur : sans override, un
+          // vrai GET Dio partirait et laisserait un timer en attente.
+          remoteTrackMembershipProvider.overrideWith(
+            (ref, trackId) async => true,
+          ),
           mediaItemProvider.overrideWith(
             (ref) => Stream.value(
               const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
@@ -151,6 +173,78 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsWidgets);
   });
 
+  // Overrides d'une piste en lecture, réutilisés par les tests de taille.
+  loadedOverrides() => [
+    favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
+    // Le menu du lecteur lit l'appartenance serveur : sans override, un
+    // vrai GET Dio partirait et laisserait un timer en attente.
+    remoteTrackMembershipProvider.overrideWith((ref, trackId) async => true),
+    mediaItemProvider.overrideWith(
+      (ref) => Stream.value(
+        const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+      ),
+    ),
+    playbackStateProvider.overrideWith(
+      (ref) => Stream.value(
+        PlaybackState(
+          playing: true,
+          processingState: AudioProcessingState.ready,
+        ),
+      ),
+    ),
+    queueProvider.overrideWith(
+      (ref) => Stream.value(const <MediaItem>[
+        MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+      ]),
+    ),
+    positionDataProvider.overrideWith(
+      (ref) => Stream.value(PlayerPositionData.zero),
+    ),
+    volumeProvider.overrideWith((ref) => Stream.value(1.0)),
+  ];
+
+  Future<void> pumpAtSize(WidgetTester tester, Size size) async {
+    await tester.binding.setSurfaceSize(size);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: loadedOverrides(),
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+    await tester.pump();
+  }
+
+  testWidgets('petit écran portrait : aucun overflow, contrôles présents', (
+    tester,
+  ) async {
+    await pumpAtSize(tester, const Size(320, 480));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.replay_10_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.forward_10_rounded), findsOneWidget);
+  });
+
+  testWidgets('hauteur réduite (paysage) : aucun overflow, contenu défilant', (
+    tester,
+  ) async {
+    await pumpAtSize(tester, const Size(640, 300));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(SingleChildScrollView), findsOneWidget);
+    expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+  });
+
+  testWidgets('écran moyen : pochette réduite sans overflow', (tester) async {
+    await pumpAtSize(tester, const Size(400, 560));
+
+    expect(tester.takeException(), isNull);
+    // Branche avec pochette adaptative (pas de scroll nécessaire).
+    expect(find.byType(SingleChildScrollView), findsNothing);
+    expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+  });
+
   testWidgets('queue : précédent/suivant suivent les bornes de la file', (
     tester,
   ) async {
@@ -158,6 +252,12 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
+          // Le menu du lecteur lit l'appartenance serveur : sans override, un
+          // vrai GET Dio partirait et laisserait un timer en attente.
+          remoteTrackMembershipProvider.overrideWith(
+            (ref, trackId) async => true,
+          ),
           mediaItemProvider.overrideWith(
             (ref) => Stream.value(
               const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),

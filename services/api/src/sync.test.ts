@@ -11,6 +11,7 @@ import { makeWav } from './test/wav.js';
 
 let base: string;
 let app: FastifyInstance;
+let ownerToken: string;
 let testConfig: AppConfig;
 
 beforeEach(async () => {
@@ -23,17 +24,40 @@ beforeEach(async () => {
     logLevel: 'error',
     musicDir: join(base, 'music'),
     incomingDir: join(base, 'imports'),
+    importRoot: join(base, 'imports'),
     coversDir: join(base, 'covers'),
     maxUploadBytes: 200 * 1024 * 1024,
+    authTokenSecret: 'test-secret-0123456789abcdef0123456789abcdef',
+    accessTokenTtlSeconds: 900,
+    refreshTokenTtlSeconds: 30 * 24 * 60 * 60,
   };
   app = buildApp(testConfig);
   await app.ready();
+  const bootstrap = await app.inject({
+    method: 'POST',
+    url: '/api/auth/bootstrap',
+    payload: {
+      username: 'owner',
+      displayName: 'Owner',
+      password: 'motdepasse-owner-1',
+      passwordConfirmation: 'motdepasse-owner-1',
+    },
+  });
+  ownerToken = bootstrap.json().accessToken;
 });
 
 afterEach(async () => {
   await app.close();
   rmSync(base, { recursive: true, force: true });
 });
+
+/** Inject authentifié OWNER (routes bibliothèque désormais protégées). */
+function inject(opts: Parameters<FastifyInstance['inject']>[0] & { headers?: Record<string, string> }) {
+  return app.inject({
+    ...opts,
+    headers: { ...(opts.headers ?? {}), authorization: `Bearer ${ownerToken}` },
+  });
+}
 
 async function upload(title: string, seconds: number) {
   const form = new FormData();
@@ -42,7 +66,7 @@ async function upload(title: string, seconds: number) {
     filename: `${title}.wav`,
     contentType: 'audio/wav',
   });
-  const res = await app.inject({ method: 'POST', url: '/api/tracks', payload: form, headers: form.getHeaders() });
+  const res = await inject({ method: 'POST', url: '/api/tracks', payload: form, headers: form.getHeaders() });
   expect(res.statusCode).toBe(201);
   return res.json() as { id: number };
 }
@@ -78,7 +102,7 @@ describe('GET /api/sync/manifest', () => {
     const metadataTime = '2099-01-02T03:04:05.000Z';
     insertMatchedEnrichment(first.id, metadataTime);
 
-    const res = await app.inject({ method: 'GET', url: '/api/sync/manifest' });
+    const res = await inject({ method: "GET", url: "/api/sync/manifest" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers.etag).toMatch(/^"[0-9a-f]{64}"$/);
@@ -109,10 +133,10 @@ describe('GET /api/sync/manifest', () => {
 
   it('répond 304 quand If-None-Match correspond au manifeste courant', async () => {
     await upload('Manifest Cache', 0.14);
-    const first = await app.inject({ method: 'GET', url: '/api/sync/manifest' });
+    const first = await inject({ method: "GET", url: "/api/sync/manifest" });
     const etag = first.headers.etag as string;
 
-    const cached = await app.inject({
+    const cached = await inject({
       method: 'GET',
       url: '/api/sync/manifest',
       headers: { 'if-none-match': etag },
@@ -125,11 +149,11 @@ describe('GET /api/sync/manifest', () => {
 
   it('change d ETag global quand les métadonnées d enrichissement changent', async () => {
     const track = await upload('Manifest Update', 0.15);
-    const first = await app.inject({ method: 'GET', url: '/api/sync/manifest' });
+    const first = await inject({ method: "GET", url: "/api/sync/manifest" });
     const firstEtag = first.headers.etag;
 
     insertMatchedEnrichment(track.id, '2099-05-06T07:08:09.000Z');
-    const second = await app.inject({ method: 'GET', url: '/api/sync/manifest' });
+    const second = await inject({ method: "GET", url: "/api/sync/manifest" });
 
     expect(second.headers.etag).not.toBe(firstEtag);
     expect(second.json().tracks[0]).toMatchObject({

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { asc, eq } from 'drizzle-orm';
-import { tracks, trackEnrichment, trackQuality } from '../db/schema.js';
+import { and, asc, eq } from 'drizzle-orm';
+import { tracks, trackEnrichment, trackQuality, userTracks } from '../db/schema.js';
+import type { AuthGuards } from '../auth/guards.js';
 
 export interface SyncManifestTrack {
   track_id: number;
@@ -38,15 +39,23 @@ function requestHasMatchingEtag(request: FastifyRequest, etag: string): boolean 
     .some((value) => value === etag || value === '*');
 }
 
-export function registerSyncRoutes(app: FastifyInstance): void {
+export function registerSyncRoutes(app: FastifyInstance, guards: AuthGuards): void {
   const { db } = app.dbHandle;
 
-  app.get('/api/sync/manifest', async (request, reply): Promise<FastifyReply | SyncManifest> => {
+  // Manifeste de sync filtré par la bibliothèque de l'utilisateur : le cache
+  // hors ligne mobile ne référence que des pistes auxquelles il a accès.
+  app.get(
+    '/api/sync/manifest',
+    { preHandler: guards.requireAuth() },
+    async (request, reply): Promise<FastifyReply | SyncManifest> => {
+    const userId = request.authUser.id;
     const rows = db
       .select()
-      .from(tracks)
+      .from(userTracks)
+      .innerJoin(tracks, eq(tracks.id, userTracks.trackId))
       .leftJoin(trackQuality, eq(trackQuality.trackId, tracks.id))
       .leftJoin(trackEnrichment, eq(trackEnrichment.trackId, tracks.id))
+      .where(and(eq(userTracks.userId, userId), eq(userTracks.isVisible, true)))
       .orderBy(asc(tracks.id))
       .all();
 
@@ -70,5 +79,6 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     }
 
     return manifest;
-  });
+    },
+  );
 }

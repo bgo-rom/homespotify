@@ -1,3 +1,15 @@
+# Outils et caches locaux
+.pnpm-store/
+.tool-home/
+
+# Données privées et sauvegardes
+backups/
+services/api/data/
+
+# Captures réseau potentiellement sensibles
+*.pcap
+*.pcapng
+
 # --- Dépendances ---
 node_modules/
 
@@ -43,6 +55,9 @@ key.properties
 *.db
 *.db-wal
 *.db-shm
+# Sauvegardes horodatées de la base (jamais dans git)
+*.backup-*
+data/backups/
 
 # --- Bibliothèque musicale réelle et fichiers audio (jamais dans git) ---
 storage/music/*

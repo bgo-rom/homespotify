@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `acquisition_jobs_active_request_unique` ON `acquisition_jobs` (`requested_by_user_id`,`provider_id`) WHERE status IN ('queued', 'searching', 'awaiting_confirmation', 'downloading', 'importing');

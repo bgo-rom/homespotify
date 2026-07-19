@@ -11,10 +11,29 @@ services:
       HOST: 0.0.0.0
       PORT: "3000"
       DB_PATH: /data/db/homespotify.db
+      MUSIC_DIR: /data/music
+      INCOMING_DIR: /data/imports
+      HOMESPOTIFY_IMPORT_ROOT: /data/imports
       LOG_LEVEL: info
+      # Origines HTTPS exactes, séparées par des virgules. Vide = route désactivée.
+      NODE_FETCH_ALLOWED_ORIGINS: ${NODE_FETCH_ALLOWED_ORIGINS:-}
+      NODE_FETCH_SEARCH_PATH_TEMPLATE: ${NODE_FETCH_SEARCH_PATH_TEMPLATE:-}
+      NODE_FETCH_MEDIA_ALLOWED_ORIGINS: ${NODE_FETCH_MEDIA_ALLOWED_ORIGINS:-}
+      NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE: ${NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE:-}
+      NODE_FETCH_METADATA_TIMEOUT_MS: ${NODE_FETCH_METADATA_TIMEOUT_MS:-10000}
+      NODE_FETCH_MAX_MB: ${NODE_FETCH_MAX_MB:-200}
+      NODE_FETCH_TIMEOUT_MS: ${NODE_FETCH_TIMEOUT_MS:-600000}
+      NODE_FETCH_MAX_CONCURRENT: ${NODE_FETCH_MAX_CONCURRENT:-2}
+      NODE_FETCH_MAX_QUEUED: ${NODE_FETCH_MAX_QUEUED:-20}
+      # Secret de signature des access tokens (32+ caracteres) - OBLIGATOIRE en
+      # production. Fourni par l environnement hote ou un fichier .env local,
+      # JAMAIS commite (cf. CLAUDE.md > Interdictions).
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?AUTH_TOKEN_SECRET requis}
     volumes:
-      # Bibliothèque musicale (vide pour l'instant) — lecture seule côté conteneur
-      - ../storage/music:/data/music:ro
+      # Bibliothèque gérée — écriture requise uniquement par les imports validés
+      - ../storage/music:/data/music
+      # Inbox/rejected/processed propres à chaque compte.
+      - ../storage/imports:/data/imports
       # Base SQLite persistante hors du conteneur
       - api-db:/data/db
     restart: unless-stopped

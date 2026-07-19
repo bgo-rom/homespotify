@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, CURRENT_PHASE } from './app.js';
 import type { AppConfig } from './config.js';
+import { runMigrations } from './db/migrate.js';
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,8 +17,12 @@ const testConfig: AppConfig = {
   logLevel: 'error',
   musicDir: join(base, 'music'),
   incomingDir: join(base, 'imports'),
+  importRoot: join(base, 'imports'),
   coversDir: join(base, 'covers'),
   maxUploadBytes: 200 * 1024 * 1024,
+  authTokenSecret: 'test-secret-0123456789abcdef0123456789abcdef',
+  accessTokenTtlSeconds: 900,
+  refreshTokenTtlSeconds: 30 * 24 * 60 * 60,
 };
 
 let app: FastifyInstance;
@@ -62,6 +67,32 @@ describe('GET /api/status', () => {
     expect(body.phase).toBe(CURRENT_PHASE);
     expect(body.backendReady).toBe(true);
     expect(body.database).toBe('initialized');
+  });
+});
+
+describe('migrations manuscrites 0010/0011', () => {
+  it('bootstrap in-memory complet et réexécution idempotente', () => {
+    expect(() => runMigrations(app.dbHandle)).not.toThrow();
+    const tables = app.dbHandle.sqlite
+      .prepare("select name from sqlite_master where type = 'table'")
+      .all() as Array<{ name: string }>;
+    expect(tables.map((row) => row.name)).toContain('user_recommendation_queue');
+    expect(tables.map((row) => row.name)).toContain('recommendation_impressions');
+
+    const candidateColumns = app.dbHandle.sqlite
+      .prepare('pragma table_info(recommendation_candidates)')
+      .all() as Array<{ name: string }>;
+    expect(candidateColumns.map((row) => row.name)).toEqual(
+      expect.arrayContaining([
+        'item_type',
+        'external_url',
+        'is_active',
+        'preview_provider',
+        'preview_matched_at',
+        'preview_confidence',
+        'preview_expires_at',
+      ]),
+    );
   });
 });
 
