@@ -207,8 +207,7 @@ class _CatalogRequestSheetState extends ConsumerState<_CatalogRequestSheet> {
         left: HomeDesign.space20,
         right: HomeDesign.space20,
         top: HomeDesign.space20,
-        bottom:
-            MediaQuery.of(context).viewInsets.bottom + HomeDesign.space20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + HomeDesign.space20,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -323,9 +322,7 @@ class _CatalogRequestSheetState extends ConsumerState<_CatalogRequestSheet> {
             style: FilledButton.styleFrom(
               backgroundColor: HomeDesign.accent,
               foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(
-                vertical: HomeDesign.space12,
-              ),
+              padding: const EdgeInsets.symmetric(vertical: HomeDesign.space12),
             ),
             onPressed: _sending ? null : _send,
             icon: _sending

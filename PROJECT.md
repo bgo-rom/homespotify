@@ -30,7 +30,7 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 - Réseau domestique + accès distant : l'exposition à Internet doit être minimale et sécurisée.
 - Utilisateur principal unique (usage personnel/familial).
 - La qualité stockée en base = specs **mesurées** + statut dérivé de la **provenance déclarée**, jamais de l'extension.
-- **Formats natifs conservés** : l'ingestion accepte les WAV PCM 16 bit / 44,1–48 kHz et les FLAC lossless 16/24 bit / 44,1, 48, 88,2, 96, 176,4 ou 192 kHz ; HomeSpotify stocke et streame le fichier original, sans transcodage, conversion ni réécriture audio.
+- **Formats natifs conservés** : l'ingestion accepte les WAV PCM 16 bit / 44,1–48 kHz et les FLAC lossless 16/24 bit / 44,1, 48, 88,2, 96, 176,4 ou 192 kHz ; HomeSpotify stocke et streame en ligne le fichier original, sans transcodage, conversion ni réécriture audio. Pour chaque téléchargement hors connexion, l'utilisateur choisit entre Ogg/Opus 128 kb/s, Ogg/Opus 256 kb/s (recommandé) ou le WAV/FLAC original. Les Opus sont des copies dérivées explicitement lossy et ne remplacent jamais l'original.
 
 ## Priorités (ordre strict)
 
@@ -49,11 +49,11 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 - API de streaming avec HTTP Range. ✅ (Phase 2)
 - Client mobile Flutter : parcourir la bibliothèque, lire une piste WAV ou FLAC lourde via Range, préparer le hors ligne. 🚧 (lecteur dev `/player` livré ; vrai client mobile en Phase 4)
 - Scanner d'un dossier de musique existant (hors upload). ✅ (Phase 2, CLI `scan`)
-- Téléchargement pour cache hors ligne mobile. ✅ (route `download` + `etag`/`lastModified`, Phase 3 amorcée)
+- Téléchargement unitaire pour cache hors ligne mobile. 🚧 (verticale Phase 1A implémentée : Opus 128/256 ou original, reprise Range et SHA-256 ; qualification téléphone, albums/playlists et gestion du stockage encore à livrer)
 
 ## Version production
 
-- Application mobile installable avec cache hors ligne synchronisé.
+- Application mobile installable avec cache hors ligne Opus synchronisé, vérifié et automatiquement remplacé par le flux original lorsque le serveur redevient joignable.
 - Authentification, accès distant sécurisé (VPN d'abord).
 - Enrichissement de métadonnées (MusicBrainz) et pochettes haute résolution.
 - File d'import avec détection de doublons et rapport de qualité.
@@ -64,13 +64,13 @@ Application musicale personnelle type Spotify, 100 % auto-hébergée sur un serv
 
 - **Légal** : seuls les fichiers possédés ou légalement téléchargeables sont importés. Les flux des services de streaming (Spotify, Deezer, YouTube…) sont protégés par DRM/CGU : leur extraction est exclue du projet. Détail dans `AUDIO_SOURCING.md`.
 - **Technique** : une source compressée (YouTube, MP3) ne peut jamais redevenir lossless. Le projet affiche la qualité réelle, y compris quand elle est médiocre.
-- **Réseau** : le débit montant de la connexion domestique borne la stabilité du streaming à distance ; la Phase 4 privilégie le WAV/FLAC natif via HTTP Range, le cache offline et des politiques Wi-Fi/cellulaire côté client.
+- **Réseau** : le débit montant de la connexion domestique borne la stabilité du streaming à distance ; la lecture en ligne privilégie le WAV/FLAC natif via HTTP Range. Le hors-ligne sert la copie locale vérifiée choisie par l'utilisateur (Opus 128, Opus 256 ou original) ; les politiques Wi-Fi/cellulaire restent configurables côté client.
 
 ## Critères de réussite
 
 - 100 % des pistes en base ont une qualité mesurée (codec, échantillonnage, bits, débit) ou le statut `inconnue`.
 - Aucune piste marquée lossless sans preuve d'analyse.
 - Lecture instantanée (< 1 s) en local, reprise de lecture après coupure réseau.
-- Une piste mise en cache se lit en mode avion.
+- Une piste mise en cache se lit en mode avion depuis la copie choisie et vérifiée (Opus ou original) ; au retour du serveur, le prochain chargement utilise automatiquement l'original WAV/FLAC.
 - Le serveur tient 30 jours sans intervention manuelle.
 - Restauration complète testée depuis une sauvegarde.

@@ -22,11 +22,13 @@ copies de fichiers.
 | `track_id` | FK `tracks.id` | piste physique partagée |
 | `source` | text | comment l'accès est né : `acquisition`, `import`, `grant_owner`, `shared_library` |
 | `created_at` | text ISO | date d'attribution |
+| `is_visible` | boolean | `false` conserve un tombstone après retrait pour empêcher toute restauration automatique |
 
-Clé primaire composite (`user_id`, `track_id`). La suppression d'un compte supprime ses
-lignes `user_tracks`, **jamais** le fichier physique ni la ligne `tracks` : une piste
-sans plus aucun accès reste dans la bibliothèque (le OWNER décide séparément d'un
-éventuel nettoyage — action explicite, pas automatique).
+Clé primaire composite (`user_id`, `track_id`). Retirer une piste de sa bibliothèque
+conserve sa relation avec `is_visible=false` : ce tombstone persiste après redémarrage
+et interdit au backfill des pistes orphelines de la faire réapparaître. La suppression
+d'un compte supprime ses lignes `user_tracks`, **jamais** le fichier physique ni la
+ligne `tracks` : le OWNER décide séparément d'un éventuel nettoyage physique.
 
 ### `favorites` — favoris par utilisateur
 

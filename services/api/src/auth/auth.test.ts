@@ -341,9 +341,30 @@ describe('administration OWNER', () => {
     expect(body.library.trackCount).toBe(0);
     expect(body.users.total).toBe(1);
     expect(body.sessions.active).toBeGreaterThanOrEqual(1);
+    expect(body.operations.status).toBe('healthy');
+    expect(body.operations.audioErrors24h).toBe(0);
+    expect(body.operations.failedImports).toBe(0);
+    expect(body.operations.files).toEqual({
+      suspect: 0,
+      missing: 0,
+      inconsistentSize: 0,
+      invalidPath: 0,
+    });
+    expect(body.operations.scanner.running).toBe(false);
     const raw = res.body.toLowerCase();
     expect(raw).not.toContain('secret');
     expect(raw).not.toContain('passwordhash');
+  });
+
+  it('refuse le lancement manuel quand les sauvegardes sont désactivées', async () => {
+    const owner = await bootstrapOwner();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/backup/run',
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe('backup_disabled');
   });
 
   it('OWNER administre un autre compte : rôle, sessions, reset, suppression', async () => {

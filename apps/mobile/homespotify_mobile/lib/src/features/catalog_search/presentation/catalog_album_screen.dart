@@ -199,10 +199,7 @@ class _AlbumContent extends ConsumerWidget {
                       if (totalDuration > 0)
                         '${Duration(milliseconds: totalDuration).inMinutes} min',
                     ].join(' · '),
-                    style: const TextStyle(
-                      color: Colors.white54,
-                      fontSize: 12,
-                    ),
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ],
               ),
@@ -238,10 +235,7 @@ class _AlbumContent extends ConsumerWidget {
                   ),
                   label: Text(
                     link.platform,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   onPressed: () => _openExternal(link.url!),
                 ),

@@ -5,6 +5,7 @@ import {
   playlists,
   playlistTracks,
   tracks,
+  userHiddenTracks,
   userTracks,
   users,
   type UserTrackSource,
@@ -32,30 +33,66 @@ export function userCanAccessTrack(handle: DbHandle, userId: number, trackId: nu
   return row !== undefined;
 }
 
-/** Attribue une piste à un utilisateur (idempotent : ne recrée pas un accès existant). */
+/**
+ * Attribue une piste à un utilisateur. Une piste retirée est réactivée sur sa
+ * relation existante afin de conserver un tombstone durable entre les boots.
+ */
 export function grantTrack(
   handle: DbHandle,
   input: { userId: number; trackId: number; source: UserTrackSource; addedByUserId?: number | null },
 ): { granted: boolean } {
-  const result = handle.db
-    .insert(userTracks)
-    .values({
-      userId: input.userId,
-      trackId: input.trackId,
+  return handle.db.transaction((tx) => {
+    const existing = tx
+      .select({ isVisible: userTracks.isVisible })
+      .from(userTracks)
+      .where(
+        and(eq(userTracks.userId, input.userId), eq(userTracks.trackId, input.trackId)),
+      )
+      .get();
+    if (existing?.isVisible === true) return { granted: false };
+
+    const values = {
       addedAt: new Date().toISOString(),
       addedByUserId: input.addedByUserId ?? null,
       source: input.source,
       isVisible: true,
-    })
-    .onConflictDoNothing()
-    .run();
-  return { granted: result.changes > 0 };
+    } as const;
+
+    if (existing) {
+      tx.update(userTracks)
+        .set(values)
+        .where(
+          and(eq(userTracks.userId, input.userId), eq(userTracks.trackId, input.trackId)),
+        )
+        .run();
+      tx.delete(userHiddenTracks)
+        .where(
+          and(
+            eq(userHiddenTracks.userId, input.userId),
+            eq(userHiddenTracks.trackId, input.trackId),
+          ),
+        )
+        .run();
+      return { granted: true };
+    }
+
+    tx.insert(userTracks)
+      .values({
+        userId: input.userId,
+        trackId: input.trackId,
+        ...values,
+      })
+      .run();
+    return { granted: true };
+  });
 }
 
 /**
- * Retire l'accès d'un utilisateur à une piste. Ne supprime JAMAIS le fichier
- * physique ni la ligne `tracks` (bibliothèque partagée). Retire aussi la piste
- * des favoris et playlists de ce seul utilisateur pour rester cohérent.
+ * Retire l'accès visible d'un utilisateur à une piste. La relation
+ * `user_tracks` est conservée avec `isVisible=false` : ce tombstone empêche le
+ * backfill des pistes orphelines de faire réapparaître la piste au redémarrage.
+ * Ne supprime JAMAIS le fichier physique ni la ligne `tracks`. Retire aussi la
+ * piste des favoris et playlists de ce seul utilisateur pour rester cohérent.
  */
 export function revokeTrack(
   handle: DbHandle,
@@ -64,8 +101,15 @@ export function revokeTrack(
 ): { revoked: boolean } {
   return handle.db.transaction((tx) => {
     const result = tx
-      .delete(userTracks)
-      .where(and(eq(userTracks.userId, userId), eq(userTracks.trackId, trackId)))
+      .update(userTracks)
+      .set({ isVisible: false })
+      .where(
+        and(
+          eq(userTracks.userId, userId),
+          eq(userTracks.trackId, trackId),
+          eq(userTracks.isVisible, true),
+        ),
+      )
       .run();
     if (result.changes === 0) return { revoked: false };
 
@@ -120,7 +164,8 @@ export function summarizeUserLibrary(handle: DbHandle, userId: number): UserLibr
       trackId: userTracks.trackId,
       sizeBytes: tracks.sizeBytes,
       sharers: sql<number>`(
-        select count(*) from ${userTracks} ut2 where ut2.track_id = ${userTracks.trackId}
+        select count(*) from ${userTracks} ut2
+        where ut2.track_id = ${userTracks.trackId} and ut2.is_visible = 1
       )`,
     })
     .from(userTracks)
@@ -163,8 +208,9 @@ export function summarizeUserLibrary(handle: DbHandle, userId: number): UserLibr
  * elle tournait à CHAQUE démarrage, elle avalait aussi les imports des AUTRES
  * comptes (qui ont bien un `user_tracks`, mais pas pour le OWNER) : la
  * bibliothèque personnelle du OWNER devenait de fait la bibliothèque globale.
- * On ne prend désormais QUE les pistes sans aucun `user_tracks` : une piste
- * détenue par un autre compte n'est JAMAIS attribuée au OWNER.
+ * On ne prend désormais QUE les pistes sans aucun `user_tracks`, y compris
+ * masqué : une piste détenue par un autre compte ou retirée volontairement
+ * n'est JAMAIS attribuée au OWNER.
  *
  * Retourne le nombre de pistes nouvellement attribuées (0 si rien d'orphelin).
  */
@@ -222,12 +268,14 @@ export function repairOwnerBackfillLeak(handle: DbHandle): { revokedTracks: numb
     .where(
       and(
         eq(userTracks.userId, owner.id),
+        eq(userTracks.isVisible, true),
         eq(userTracks.source, 'EXISTING'),
         sql`exists (
           select 1 from ${userTracks} other
           where other.track_id = ${userTracks.trackId}
             and other.user_id != ${owner.id}
             and other.source = 'MANUAL_IMPORT'
+            and other.is_visible = 1
         )`,
       ),
     )

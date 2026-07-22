@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createDb } from '../../db/client.js';
 import { runMigrations } from '../../db/migrate.js';
 import { DiscoveryCache, DISCOVERY_CACHE_TTLS_MS } from './discovery-cache.js';
+import {
+  PREVIEW_SEARCH_CACHE_TTL_MS,
+  searchPageCacheTtlMs,
+} from './discovery-catalog-service.js';
 import { mergeSearchResults, rankSearchResults } from './merge.js';
 import { platformLinksFromUrlRelations } from './musicbrainz-catalog-provider.js';
 import { SpotifyCatalogProvider, decodeOffsetCursor, encodeOffsetCursor } from './spotify-catalog-provider.js';
@@ -70,10 +74,30 @@ describe('fusion multi-fournisseurs', () => {
     expect(mergeSearchResults([[studio], [live]])).toHaveLength(2);
   });
 
-  it('sépare deux enregistrements de durées éloignées sans clé forte', () => {
+  it('fusionne un même titre/artiste malgré une durée fournisseur incohérente', () => {
     const shortVersion = trackResult({ title: 'Chanson', durationMs: 180_000 });
-    const longVersion = trackResult({ title: 'Chanson', durationMs: 320_000 });
-    expect(mergeSearchResults([[shortVersion], [longVersion]])).toHaveLength(2);
+    const longVersion = trackResult({
+      title: 'Chanson',
+      durationMs: 320_000,
+      explicit: false,
+      preview: {
+        provider: 'deezer',
+        url: 'https://preview.test/chanson.mp3',
+        durationMs: 30_000,
+        expiresAt: null,
+        requiresOfficialSdk: false,
+        attribution: 'Deezer',
+      },
+    });
+    const merged = mergeSearchResults([[shortVersion], [longVersion]]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.preview?.url).toContain('chanson.mp3');
+  });
+
+  it('conserve deux chansons homonymes quand les artistes diffèrent', () => {
+    const first = trackResult({ title: 'Chanson', artists: [{ name: 'Artiste A', reference: null }] });
+    const second = trackResult({ title: 'Chanson', artists: [{ name: 'Artiste B', reference: null }] });
+    expect(mergeSearchResults([[first], [second]])).toHaveLength(2);
   });
 
   it('fusionne la même identité à durée proche sans clé forte', () => {
@@ -160,6 +184,24 @@ describe('cache discovery', () => {
     const hash = DiscoveryCache.hashQuery({ q: 'requête secrète', type: 'track' });
     expect(hash).toMatch(/^[a-f0-9]{64}$/u);
     expect(hash).not.toContain('secrète');
+  });
+
+  it('borne le cache d’une preview signée', () => {
+    const now = Date.parse('2026-07-20T20:40:00.000Z');
+    const preview = {
+      provider: 'deezer' as const,
+      url: 'https://preview.test/audio.mp3',
+      durationMs: 30_000,
+      expiresAt: '2026-07-20T20:43:00.000Z',
+      requiresOfficialSdk: false,
+      attribution: 'Deezer',
+    };
+    const page = { items: [trackResult({ preview })], nextCursor: null };
+    expect(searchPageCacheTtlMs(page, now)).toBe(2 * 60 * 1000);
+    expect(searchPageCacheTtlMs({
+      ...page,
+      items: [trackResult({ preview: { ...preview, expiresAt: null } })],
+    }, now)).toBe(PREVIEW_SEARCH_CACHE_TTL_MS);
   });
 });
 

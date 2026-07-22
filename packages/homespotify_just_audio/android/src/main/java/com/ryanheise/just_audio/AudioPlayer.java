@@ -49,6 +49,7 @@ import androidx.media3.exoplayer.trackselection.TrackSelectionArray;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Util;
 import com.homespotify.audio.stretch.HomeSpotifyAudioProcessorChain;
@@ -300,6 +301,11 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
             updateCurrentIndex();
             break;
         }
+        Log.i(TAG, "[AUDIO] EXOPLAYER_POSITION_DISCONTINUITY reason=" + reason
+                + " oldIndex=" + oldPosition.mediaItemIndex
+                + " newIndex=" + newPosition.mediaItemIndex
+                + " oldPositionMs=" + oldPosition.positionMs
+                + " newPositionMs=" + newPosition.positionMs);
         broadcastImmediatePlaybackEvent();
     }
 
@@ -311,6 +317,8 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
             resetStretchForTrackTransition();
         }
         stretchMediaItemIdentity = nextIdentity;
+        Log.i(TAG, "[AUDIO] EXOPLAYER_MEDIA_ITEM_TRANSITION reason=" + reason
+                + " index=" + (player != null ? player.getCurrentMediaItemIndex() : -1));
     }
 
     @Override
@@ -351,6 +359,9 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
 
     @Override
     public void onPlaybackStateChanged(int playbackState) {
+        Log.i(TAG, "[AUDIO] EXOPLAYER_STATE_CHANGED state=" + playbackState
+                + " index=" + (player != null ? player.getCurrentMediaItemIndex() : -1)
+                + " playWhenReady=" + (player != null && player.getPlayWhenReady()));
         switch (playbackState) {
         case Player.STATE_READY:
             if (player.getPlayWhenReady())
@@ -420,28 +431,31 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
             }
             switch (exoError.type) {
             case ExoPlaybackException.TYPE_SOURCE:
-                Log.e(TAG, "TYPE_SOURCE: " + exoError.getSourceException().getMessage());
+                Log.e(TAG, "TYPE_SOURCE: " + sanitizeErrorMessage(exoError.getSourceException().getMessage()));
                 break;
 
             case ExoPlaybackException.TYPE_RENDERER:
-                Log.e(TAG, "TYPE_RENDERER: " + exoError.getRendererException().getMessage());
+                Log.e(TAG, "TYPE_RENDERER: " + sanitizeErrorMessage(exoError.getRendererException().getMessage()));
                 break;
 
             case ExoPlaybackException.TYPE_UNEXPECTED:
-                Log.e(TAG, "TYPE_UNEXPECTED: " + exoError.getUnexpectedException().getMessage());
+                Log.e(TAG, "TYPE_UNEXPECTED: " + sanitizeErrorMessage(exoError.getUnexpectedException().getMessage()));
                 break;
 
             default:
-                Log.e(TAG, "default ExoPlaybackException: " + exoError.getUnexpectedException().getMessage());
+                Log.e(TAG, "default ExoPlaybackException: " + sanitizeErrorMessage(exoError.getMessage()));
             }
             // La cause réelle (ex. InvalidResponseCodeException « Response
             // code: 401 ») doit atteindre Dart : le message du wrapper seul
             // (« Source error ») empêchait le handler Flutter de reconnaître
             // une expiration d'autorisation et de rafraîchir le token.
-            sendError(exoError.type, describePlaybackError(exoError), mapOf("index", currentIndex));
+            Map<String, Object> details = buildPlaybackErrorDetails(exoError, exoError.type);
+            Log.e(TAG, "[AUDIO] EXOPLAYER_PLAYER_ERROR " + details);
+            sendError(exoError.type, describePlaybackError(exoError), details);
         } else {
-            Log.e(TAG, "default PlaybackException: " + error.getMessage());
-            sendError(error.errorCode, describePlaybackError(error), mapOf("index", currentIndex));
+            Map<String, Object> details = buildPlaybackErrorDetails(error, error.errorCode);
+            Log.e(TAG, "[AUDIO] EXOPLAYER_PLAYER_ERROR " + details);
+            sendError(error.errorCode, describePlaybackError(error), details);
         }
     }
 
@@ -450,20 +464,101 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
      * token : seuls les messages des exceptions transitent. Indispensable pour
      * que le côté Dart distingue un 401 (refresh) d'une source invalide (saut).
      */
-    private static String describePlaybackError(PlaybackException error) {
+    static String describePlaybackError(PlaybackException error) {
+        return describeErrorChain(
+                error.getMessage() != null ? error.getMessage() : error.getClass().getSimpleName(),
+                error.getCause());
+    }
+
+    static String describeErrorChain(String rootMessage, Throwable rootCause) {
         StringBuilder message = new StringBuilder();
-        message.append(error.getMessage() != null ? error.getMessage() : error.getClass().getSimpleName());
-        Throwable cause = error.getCause();
+        message.append(sanitizeErrorMessage(rootMessage));
+        Throwable cause = rootCause;
         int depth = 0;
         while (cause != null && depth < 4) {
             message.append(" <- ").append(cause.getClass().getSimpleName());
             if (cause.getMessage() != null) {
-                message.append(": ").append(cause.getMessage());
+                message.append(": ").append(sanitizeErrorMessage(cause.getMessage()));
             }
             cause = cause.getCause();
             depth++;
         }
         return message.toString();
+    }
+
+    private Map<String, Object> buildPlaybackErrorDetails(PlaybackException error, int dataType) {
+        Integer httpStatus = findHttpStatus(error);
+        boolean retryable = httpStatus == null
+                || httpStatus == 401
+                || httpStatus == 408
+                || httpStatus == 429
+                || httpStatus >= 500;
+        Map<String, Object> details = new HashMap<>();
+        details.put("index", currentIndex);
+        details.put("exceptionClass", error.getClass().getSimpleName());
+        details.put("errorCode", error.errorCode);
+        details.put("httpStatus", httpStatus);
+        details.put("dataType", dataType);
+        details.put("failingHost", findFailingHost(error));
+        details.put("message", describePlaybackError(error));
+        details.put("causeClasses", causeClasses(error));
+        details.put("recoverable", retryable);
+        details.put("retryable", retryable);
+        details.put("wasPlaying", player != null && player.getPlayWhenReady());
+        details.put("currentIndex", currentIndex);
+        details.put("positionMs", player != null ? Math.max(0L, player.getCurrentPosition()) : 0L);
+        details.put("bufferedPositionMs", player != null ? Math.max(0L, player.getBufferedPosition()) : 0L);
+        return details;
+    }
+
+    static Integer findHttpStatus(Throwable error) {
+        Throwable cause = error;
+        int depth = 0;
+        while (cause != null && depth < 8) {
+            if (cause instanceof HttpDataSource.InvalidResponseCodeException) {
+                return ((HttpDataSource.InvalidResponseCodeException)cause).responseCode;
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return null;
+    }
+
+    private static String findFailingHost(Throwable error) {
+        Throwable cause = error;
+        int depth = 0;
+        while (cause != null && depth < 8) {
+            if (cause instanceof HttpDataSource.HttpDataSourceException) {
+                Uri uri = ((HttpDataSource.HttpDataSourceException)cause).dataSpec.uri;
+                return uri != null ? uri.getHost() : null;
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return null;
+    }
+
+    private static List<String> causeClasses(Throwable error) {
+        List<String> classes = new ArrayList<>();
+        Throwable cause = error;
+        int depth = 0;
+        while (cause != null && depth < 8) {
+            classes.add(cause.getClass().getSimpleName());
+            cause = cause.getCause();
+            depth++;
+        }
+        return classes;
+    }
+
+    static String sanitizeErrorMessage(String message) {
+        if (message == null) return "";
+        String sanitized = message.replaceAll(
+                "(?i)Bearer\\s+[A-Za-z0-9._~+\\-/]+=*",
+                "Bearer [redacted]");
+        sanitized = sanitized.replaceAll(
+                "(?i)https?://[^\\s\\\"<>]+",
+                "[url-redacted]");
+        return sanitized.length() <= 1600 ? sanitized : sanitized.substring(0, 1600) + "...";
     }
 
     private void completeSeek() {

@@ -177,7 +177,13 @@ export function registerDiscoveryRoutes(
       const access = handle.db
         .select({ trackId: userTracks.trackId })
         .from(userTracks)
-        .where(and(eq(userTracks.userId, userId), eq(userTracks.trackId, trackId)))
+        .where(
+          and(
+            eq(userTracks.userId, userId),
+            eq(userTracks.trackId, trackId),
+            eq(userTracks.isVisible, true),
+          ),
+        )
         .get();
       if (!track || !access) {
         return reply.code(404).send({
@@ -187,10 +193,18 @@ export function registerDiscoveryRoutes(
         });
       }
 
-      // revokeTrack retire user_tracks + favoris + occurrences dans les
-      // playlists de CE seul utilisateur — le fichier physique et la ligne
-      // tracks restent intacts (orphelin éventuel = ménage manuel OWNER).
-      revokeTrack(handle, userId, trackId);
+      // revokeTrack masque durablement user_tracks et retire favoris +
+      // occurrences dans les playlists de CE seul utilisateur. Le tombstone
+      // empêche le backfill du boot de restaurer la piste ; le fichier physique
+      // et la ligne tracks restent intacts.
+      const { revoked } = revokeTrack(handle, userId, trackId);
+      if (!revoked) {
+        return reply.code(404).send({
+          statusCode: 404,
+          error: 'not_found',
+          message: 'Piste inconnue',
+        });
+      }
       handle.db
         .insert(userHiddenTracks)
         .values({

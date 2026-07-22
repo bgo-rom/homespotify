@@ -1,6 +1,8 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { Transform } from 'node:stream';
 import type { FastifyReply, FastifyRequest, FastifyInstance } from 'fastify';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { tracks, trackEnrichment, trackQuality, userTracks } from '../db/schema.js';
@@ -14,6 +16,23 @@ import { isTrackPublished } from '../library/catalog-service.js';
 
 const COVER_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
 const STREAM_HIGH_WATER_MARK = 256 * 1024;
+const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]{1,96}$/;
+
+function streamRequestId(request: FastifyRequest): string {
+  const raw = request.headers['x-request-id'];
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof candidate === 'string' && SAFE_REQUEST_ID.test(candidate)) return candidate;
+  return String(request.id);
+}
+
+function streamLog(
+  request: FastifyRequest,
+  event: string,
+  fields: Record<string, unknown> = {},
+  level: 'info' | 'warn' | 'error' = 'info',
+): void {
+  request.log[level]({ event, requestId: streamRequestId(request), ...fields }, event);
+}
 
 /** Valeur Content-Disposition : fallback ASCII + filename* UTF-8 (RFC 5987) pour tags accentués. */
 function attachmentHeader(name: string): string {
@@ -25,20 +44,44 @@ function attachmentHeader(name: string): string {
 /**
  * Sert un fichier local avec support HTTP Range (206/416/200), pour le streaming
  * et le téléchargement. `disposition` fixé → force le download.
+ * Exporté : la route de fichier des variantes hors ligne réutilise exactement
+ * le même chemin Range/ETag (une seule implémentation de streaming).
  */
-async function serveTrackFile(
+export async function serveTrackFile(
   request: FastifyRequest,
   reply: FastifyReply,
+  trackId: number,
   absPath: string,
   hash: string,
   contentType: string,
   disposition?: string,
 ): Promise<FastifyReply> {
-  const info = await stat(absPath).then((s) => s, () => null);
-  if (info === null) {
-    request.log.error({ path: absPath }, 'fichier audio absent du disque');
+  const requestStartedAt = performance.now();
+  const requestId = streamRequestId(request);
+  reply.header('x-request-id', requestId);
+  streamLog(request, 'STREAM_REQUEST_RECEIVED', {
+    trackId,
+    method: request.method,
+    route: disposition ? '/api/tracks/:id/download' : '/api/tracks/:id/stream',
+    rangeRequested: request.headers.range ?? null,
+  });
+
+  const statStartedAt = performance.now();
+  streamLog(request, 'STREAM_FILE_STAT_STARTED', { trackId });
+  let info;
+  try {
+    info = await stat(absPath);
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String(error.code) : 'STAT_FAILED';
+    streamLog(request, 'STREAM_FILE_ERROR', { trackId, errorCode: code }, 'error');
     return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Fichier audio introuvable' });
   }
+  const statDurationMs = performance.now() - statStartedAt;
+  streamLog(request, 'STREAM_FILE_STAT_COMPLETED', {
+    trackId,
+    fileSize: info.size,
+    statDurationMs,
+  });
   const size = info.size;
 
   reply
@@ -51,20 +94,126 @@ async function serveTrackFile(
 
   const range = parseRangeHeader(request.headers.range, size);
   if (range === 'unsatisfiable') {
+    streamLog(request, 'STREAM_RANGE_INVALID', {
+      trackId,
+      fileSize: size,
+      statusCode: 416,
+    }, 'warn');
     return reply.code(416).header('content-range', `bytes */${size}`).send();
   }
+  const start = range === 'full' ? 0 : range.start;
+  const end = range === 'full' ? size - 1 : range.end;
+  const statusCode = range === 'full' ? 200 : 206;
+  const contentLength = end - start + 1;
+  streamLog(request, 'STREAM_RANGE_PARSED', {
+    trackId,
+    statusCode,
+    rangeStart: start,
+    rangeEnd: end,
+    contentLength,
+    fileSize: size,
+  });
+
+  const fileOpenStartedAt = performance.now();
+  streamLog(request, 'STREAM_FILE_OPEN_STARTED', { trackId });
+  const source = createReadStream(absPath, {
+    ...(range === 'full' ? {} : { start, end }),
+    highWaterMark: STREAM_HIGH_WATER_MARK,
+  });
+  let bytesSent = 0;
+  let firstChunkAt: number | null = null;
+  let terminalEventLogged = false;
+  const metered = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytesSent += chunk.length;
+      if (firstChunkAt === null) {
+        firstChunkAt = performance.now();
+        streamLog(request, 'STREAM_FIRST_CHUNK_SENT', {
+          trackId,
+          statusCode,
+          bytes: chunk.length,
+          timeToFirstChunkMs: firstChunkAt - requestStartedAt,
+          openDurationMs: firstChunkAt - fileOpenStartedAt,
+        });
+      }
+      callback(null, chunk);
+    },
+  });
+  source.once('open', () => {
+    streamLog(request, 'STREAM_FILE_OPEN_COMPLETED', {
+      trackId,
+      openDurationMs: performance.now() - fileOpenStartedAt,
+    });
+  });
+  source.once('error', (error) => {
+    if (terminalEventLogged) return;
+    terminalEventLogged = true;
+    const code = 'code' in error ? String(error.code) : 'READ_FAILED';
+    streamLog(request, 'STREAM_FILE_ERROR', {
+      trackId,
+      statusCode,
+      errorCode: code,
+      bytesSent,
+      totalDurationMs: performance.now() - requestStartedAt,
+    }, 'error');
+    metered.destroy(error);
+  });
+  metered.once('end', () => {
+    if (terminalEventLogged) return;
+    terminalEventLogged = true;
+    streamLog(request, 'STREAM_COMPLETED', {
+      trackId,
+      statusCode,
+      contentLength,
+      bytesSent,
+      totalDurationMs: performance.now() - requestStartedAt,
+      aborted: false,
+    });
+  });
+  request.raw.once('aborted', () => {
+    if (terminalEventLogged) return;
+    terminalEventLogged = true;
+    streamLog(request, 'STREAM_ABORTED', {
+      trackId,
+      statusCode,
+      bytesSent,
+      totalDurationMs: performance.now() - requestStartedAt,
+      aborted: true,
+    }, 'warn');
+  });
+  reply.raw.once('close', () => {
+    if (terminalEventLogged) return;
+    terminalEventLogged = true;
+    streamLog(request, 'STREAM_CLIENT_DISCONNECTED', {
+      trackId,
+      statusCode,
+      bytesSent,
+      totalDurationMs: performance.now() - requestStartedAt,
+      aborted: true,
+    }, 'warn');
+  });
+  source.pipe(metered);
+
+  streamLog(request, 'STREAM_RESPONSE_HEADERS_SENT', {
+    trackId,
+    statusCode,
+    rangeStart: start,
+    rangeEnd: end,
+    contentLength,
+    fileSize: size,
+    statDurationMs,
+  });
   if (range === 'full') {
     return reply
       .code(200)
       .header('content-length', size)
-      .send(createReadStream(absPath, { highWaterMark: STREAM_HIGH_WATER_MARK }));
+      .send(metered);
   }
-  const { start, end } = range;
   return reply
     .code(206)
     .header('content-range', `bytes ${start}-${end}/${size}`)
     .header('content-length', end - start + 1)
-    .send(createReadStream(absPath, { start, end, highWaterMark: STREAM_HIGH_WATER_MARK }));
+    .send(metered);
 }
 
 export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): void {
@@ -78,6 +227,29 @@ export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): v
   // Toutes les routes bibliothèque exigent une authentification (le userId
   // vient du token, jamais du client) et filtrent par `user_tracks`.
   const requireAuth = guards.requireAuth();
+  const invokeRequireAuth = requireAuth as unknown as (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ) => Promise<void>;
+  const requireStreamAuth = async (request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = streamRequestId(request);
+    const startedAt = performance.now();
+    reply.header('x-request-id', requestId);
+    streamLog(request, 'STREAM_AUTH_STARTED');
+    await invokeRequireAuth(request, reply);
+    const authDurationMs = performance.now() - startedAt;
+    if (reply.sent || reply.statusCode >= 400) {
+      streamLog(request, 'STREAM_AUTH_FAILED', {
+        statusCode: reply.statusCode,
+        authDurationMs,
+      }, 'warn');
+      return;
+    }
+    streamLog(request, 'STREAM_AUTH_COMPLETED', {
+      userId: request.authUser.id,
+      authDurationMs,
+    });
+  };
 
   /**
    * Piste LISIBLE par l'utilisateur courant (stream/download/cover), ou
@@ -189,21 +361,28 @@ export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): v
   // pas l'existence d'une piste d'un autre compte).
   app.get<{ Params: { id: string } }>(
     '/api/tracks/:id/stream',
-    { preHandler: requireAuth },
+    { preHandler: requireStreamAuth },
     async (request, reply) => {
       const track = findAccessibleTrack(request.authUser.id, request.params.id);
       if (!track) {
         return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Piste inconnue' });
       }
       const contentType = track.mimeType ?? mimeTypeForPath(track.path);
-      return serveTrackFile(request, reply, join(app.config.musicDir, track.path), track.hash, contentType);
+      return serveTrackFile(
+        request,
+        reply,
+        track.id,
+        join(app.config.musicDir, track.path),
+        track.hash,
+        contentType,
+      );
     },
   );
 
   // Téléchargement forcé (cache hors ligne mobile) : Content-Disposition attachment
   app.get<{ Params: { id: string } }>(
     '/api/tracks/:id/download',
-    { preHandler: requireAuth },
+    { preHandler: requireStreamAuth },
     async (request, reply) => {
       const track = findAccessibleTrack(request.authUser.id, request.params.id);
       if (!track) {
@@ -213,7 +392,13 @@ export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): v
       const contentType = track.mimeType ?? mimeTypeForPath(track.path);
       const filename = `${track.artist} - ${track.title}${ext}`;
       return serveTrackFile(
-        request, reply, join(app.config.musicDir, track.path), track.hash, contentType, attachmentHeader(filename),
+        request,
+        reply,
+        track.id,
+        join(app.config.musicDir, track.path),
+        track.hash,
+        contentType,
+        attachmentHeader(filename),
       );
     },
   );

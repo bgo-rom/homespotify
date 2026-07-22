@@ -36,7 +36,12 @@ CatalogPreview preview(String url, {bool requiresSdk = false}) =>
       attribution: 'Contenu fourni par Apple Music',
     );
 
-(ProviderContainer, CatalogPreviewController, FakeAudioPlayer, _RecordingMainHandler)
+(
+  ProviderContainer,
+  CatalogPreviewController,
+  FakeAudioPlayer,
+  _RecordingMainHandler,
+)
 makeController({bool mainPlaying = false}) {
   final player = FakeAudioPlayer();
   final handler = _RecordingMainHandler();
@@ -125,16 +130,19 @@ void main() {
     container.dispose();
   });
 
-  test('preview TIDAL (SDK officiel requis) : jamais lue par just_audio', () async {
-    final (container, controller, player, _) = makeController();
-    await controller.toggle(
-      'k1',
-      preview('https://tidal.example/x', requiresSdk: true),
-    );
-    expect(player.loadedUrls, isEmpty);
-    expect(container.read(catalogPreviewProvider).activeKey, isNull);
-    container.dispose();
-  });
+  test(
+    'preview TIDAL (SDK officiel requis) : jamais lue par just_audio',
+    () async {
+      final (container, controller, player, _) = makeController();
+      await controller.toggle(
+        'k1',
+        preview('https://tidal.example/x', requiresSdk: true),
+      );
+      expect(player.loadedUrls, isEmpty);
+      expect(container.read(catalogPreviewProvider).activeKey, isNull);
+      container.dispose();
+    },
+  );
 
   test('stop puis dispose : lecteur arrêté et libéré, état propre', () async {
     final (container, controller, player, _) = makeController();

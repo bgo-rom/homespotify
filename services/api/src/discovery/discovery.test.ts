@@ -1651,14 +1651,14 @@ describe('suppression douce de bibliothèque', () => {
     });
     expect(res.statusCode).toBe(200);
 
-    // Accès et favori d'alice supprimés.
+    // Accès d'Alice masqué durablement et favori supprimé.
     expect(
       app.dbHandle.db
         .select()
         .from(userTracks)
         .where(and(eq(userTracks.userId, alice.id), eq(userTracks.trackId, trackId)))
         .get(),
-    ).toBeUndefined();
+    ).toMatchObject({ isVisible: false });
     expect(
       app.dbHandle.db
         .select()
@@ -1721,7 +1721,7 @@ describe('suppression douce de bibliothèque', () => {
     expect(streamAlice.statusCode).toBe(200);
   });
 
-  it('orphelin (0 propriétaire) : la piste et le fichier restent pour le ménage OWNER', async () => {
+  it('dernière relation visible retirée : le tombstone et le fichier restent', async () => {
     const ownerToken = await bootstrapOwner();
     const alice = await createUser(ownerToken, 'alice');
     const trackId = await importTrack(alice.token, 'Unique', 'Artiste');
@@ -1733,7 +1733,7 @@ describe('suppression douce de bibliothèque', () => {
     expect(app.dbHandle.db.select().from(tracks).where(eq(tracks.id, trackId)).get()).toBeDefined();
     expect(
       app.dbHandle.db.select().from(userTracks).where(eq(userTracks.trackId, trackId)).all(),
-    ).toHaveLength(0);
+    ).toEqual([expect.objectContaining({ userId: alice.id, isVisible: false })]);
   });
 
   it('une demande COMPLETED est réconciliée après suppression volontaire de la piste', async () => {

@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../data/playback_settings_api.dart';
+import '../data/playback_session_store.dart';
 import 'audio_diagnostics.dart';
 import 'time_stretch_engine.dart';
 
@@ -150,10 +151,10 @@ class PlayerQueueItem {
     );
   }
 
-  AudioSource toAudioSource() {
+  AudioSource toAudioSource({Map<String, String>? requestHeaders}) {
     return AudioSource.uri(
       streamUri,
-      headers: headers,
+      headers: requestHeaders ?? headers,
       tag: toMediaItem(includeArtwork: false),
     );
   }
@@ -301,12 +302,18 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     TimeStretchEngine? timeStretchEngine,
     this._authorizationRefresh,
     this._currentAuthorizationHeaders,
+    this._currentAuthorizationExpiresIn,
     this._artworkResolver,
     this._artworkCacheClear,
+    this._playbackSessionStore,
     DateTime Function()? clock,
     Duration recoveryCooldown = const Duration(seconds: 30),
+    Duration endOfTrackGracePeriod = const Duration(seconds: 2),
+    Duration playbackGuardInterval = const Duration(seconds: 1),
   }) : _clock = clock ?? DateTime.now,
        _authorizationRecoveryCooldown = recoveryCooldown,
+       _endOfTrackGracePeriod = endOfTrackGracePeriod,
+       _playbackGuardInterval = playbackGuardInterval,
        _player =
            player ??
            AudioPlayer(
@@ -316,10 +323,16 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
              useProxyForRequestHeaders: false,
              audioLoadConfiguration: const AudioLoadConfiguration(
                androidLoadControl: AndroidLoadControl(
-                 minBufferDuration: Duration(seconds: 30),
-                 maxBufferDuration: Duration(seconds: 120),
-                 bufferForPlaybackDuration: Duration(milliseconds: 2500),
-                 bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5),
+                 // L'ancien seuil imposait 2,5 s de media avant le premier
+                 // son, meme sur un reseau rapide. Le prechargement natif de
+                 // la piste suivante reste actif, avec un tampon de securite
+                 // borne pour les FLAC/WAV distants.
+                 minBufferDuration: Duration(seconds: 15),
+                 maxBufferDuration: Duration(seconds: 60),
+                 bufferForPlaybackDuration: Duration(milliseconds: 750),
+                 bufferForPlaybackAfterRebufferDuration: Duration(
+                   milliseconds: 1500,
+                 ),
                  prioritizeTimeOverSizeThresholds: true,
                ),
              ),
@@ -342,6 +355,21 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     _currentIndexSubscription = _player.currentIndexStream.listen(
       _onCurrentIndexChanged,
     );
+    _positionPersistenceSubscription = _player.positionStream.listen(
+      _onPositionForPersistence,
+    );
+    _playbackGuardTimer = Timer.periodic(
+      _playbackGuardInterval,
+      (_) => _runPlaybackGuard(),
+    );
+    AudioDiagnostics.instance.log('AUDIO_HANDLER_CREATED');
+    AudioDiagnostics.instance.log('PLAYER_CREATED', {
+      'useProxyForRequestHeaders': false,
+      'bufferForPlaybackMs': 750,
+      'bufferAfterRebufferMs': 1500,
+      'minBufferMs': 15000,
+      'maxBufferMs': 60000,
+    });
   }
 
   final AudioPlayer _player;
@@ -355,21 +383,38 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   final Future<void>? _providedAudioSessionSetup;
   final Future<bool> Function()? _authorizationRefresh;
   final Map<String, String> Function()? _currentAuthorizationHeaders;
+  final Duration? Function()? _currentAuthorizationExpiresIn;
   final Future<Uri?> Function(PlayerQueueItem item)? _artworkResolver;
   final Future<void> Function()? _artworkCacheClear;
+  final PlaybackSessionStore? _playbackSessionStore;
   Future<void>? _playbackSetup;
   late final StreamSubscription<PlaybackEvent> _playbackEventSubscription;
   late final StreamSubscription<PlayerState> _playerStateSubscription;
   late final StreamSubscription<int?> _currentIndexSubscription;
+  late final StreamSubscription<Duration> _positionPersistenceSubscription;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSubscription;
   StreamSubscription<void>? _becomingNoisySubscription;
 
   final DateTime Function() _clock;
   final Duration _authorizationRecoveryCooldown;
+  final Duration _endOfTrackGracePeriod;
+  final Duration _playbackGuardInterval;
 
   int _loadRequest = 0;
   DateTime? _lastAuthorizationRecoveryAttemptAt;
   Future<bool>? _authorizationRecoveryInFlight;
+  String? _loadedAuthorizationHeader;
+  Future<bool>? _trackErrorRecoveryInFlight;
+  bool _authorizationFailureHandling = false;
+  Future<void>? _autoAdvanceInFlight;
+  Timer? _endOfTrackWatchdog;
+  int? _endOfTrackWatchdogIndex;
+  late final Timer _playbackGuardTimer;
+  Duration? _lastEndGuardPosition;
+  int? _lastEndGuardIndex;
+  DateTime? _ignorePositionWrapUntil;
+  String? _lastHandledErrorFingerprint;
+  DateTime? _lastHandledErrorAt;
   int _consecutiveErrorSkips = 0;
   DateTime? _lastErrorSkipAt;
   int? _lastStartedIndex;
@@ -389,6 +434,33 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   AudioServiceRepeatMode _repeatMode = AudioServiceRepeatMode.none;
   ProcessingState? _lastLoggedProcessingState;
   String? _publishedMediaKey;
+  Stopwatch? _tapToPlaybackStopwatch;
+  Stopwatch? _bufferingStopwatch;
+  int _bufferingCount = 0;
+  int _totalBufferingMs = 0;
+  int _longestBufferingMs = 0;
+  int? _playbackSessionUserId;
+  int? _restoredPlaybackSessionUserId;
+  bool _restoringPlaybackSession = false;
+  Timer? _playbackPersistenceTimer;
+  int _lastPersistedPositionMs = -1;
+  Future<void>? _playbackPersistenceInFlight;
+  bool _networkAvailable = true;
+  bool _networkRecoveryPending = false;
+  int _networkRecoveryAttempt = 0;
+  int? _networkRecoveryIndex;
+  Duration _networkRecoveryPosition = Duration.zero;
+  Timer? _networkRecoveryTimer;
+  Future<bool>? _networkRecoveryInFlight;
+
+  static const Duration _positionPersistenceInterval = Duration(seconds: 5);
+  static const Duration _networkRecoveryMaximumDelay = Duration(seconds: 30);
+  static const Duration _endOfTrackPositionTolerance = Duration(
+    milliseconds: 250,
+  );
+  static const Duration _endOfTrackWrapDestinationTolerance = Duration(
+    seconds: 2,
+  );
 
   /// Prépare puis démarre atomiquement une file de lecture.
   ///
@@ -410,17 +482,29 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       throw RangeError.index(initialIndex, items, 'initialIndex');
     }
 
+    _cancelEndOfTrackWatchdog();
     final request = ++_loadRequest;
+    _tapToPlaybackStopwatch = Stopwatch()..start();
     _lastAuthorizationRecoveryAttemptAt = null;
     _authorizationRecoveryInFlight = null;
+    _trackErrorRecoveryInFlight = null;
+    _authorizationFailureHandling = false;
+    _autoAdvanceInFlight = null;
+    _lastHandledErrorFingerprint = null;
+    _lastHandledErrorAt = null;
     _consecutiveErrorSkips = 0;
     _lastErrorSkipAt = null;
     _lastStartedIndex = null;
     AudioDiagnostics.instance.newSession();
-    AudioDiagnostics.instance.log('AUDIO_QUEUE_CREATED', {
-      'size': items.length,
-      'index': initialIndex,
-      'track': items[initialIndex].id,
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_BUILD_STARTED', {
+      'queueLength': items.length,
+      'currentIndex': initialIndex,
+      'trackId': items[initialIndex].id,
+      'mediaItemId': items[initialIndex].id,
+      'repeatMode': _repeatMode.name,
+      'shuffleMode': _player.shuffleModeEnabled,
+      'processingState': _player.processingState.name,
+      'playing': _player.playing,
     });
     ++_artworkRequest;
     _resolvedArtworkTrackId = null;
@@ -428,20 +512,31 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     _speedScheduledTrackId = null;
     final immutableItems = List<PlayerQueueItem>.unmodifiable(items);
     final initialItem = immutableItems[initialIndex];
+    _playbackSessionUserId = _resolveQueueUserId(immutableItems);
+    _restoredPlaybackSessionUserId = _playbackSessionUserId;
 
     try {
       await _ensurePlaybackReady();
+      if (request != _loadRequest) return;
+      await _refreshAuthorizationBeforeLoadIfNeeded(request);
       if (request != _loadRequest) return;
 
       _queueItems
         ..clear()
         ..addAll(immutableItems);
+      _applyCurrentAuthorizationHeaders();
       _currentQueueIndex = initialIndex;
       _sourceReady = false;
       _publishedMediaKey = null;
 
       // audio_service expose la file complète au lockscreen/notification.
       _publishQueue();
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_BUILD_COMPLETED', {
+        'queueLength': _queueItems.length,
+        'currentIndex': initialIndex,
+        'trackId': initialItem.id,
+        'queueBuildMs': _tapToPlaybackStopwatch?.elapsedMilliseconds,
+      });
       queueTitle.add('File d’attente');
       _publishCurrentMediaItem(includeArtwork: false);
       _publishLoadingState(initialIndex);
@@ -462,10 +557,11 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         'buffered=${_player.bufferedPosition}',
       );
       AudioDiagnostics.instance.log('AUDIO_SOURCE_LOAD_STARTED', {
-        'track': initialItem.id,
-        'index': initialIndex,
-        'size': immutableItems.length,
+        'trackId': initialItem.id,
+        'currentIndex': initialIndex,
+        'queueLength': immutableItems.length,
       });
+      final sourcePrepareStopwatch = Stopwatch()..start();
       final loadedDuration = await _setAudioSourcesWithAuthorizationRecovery(
         request: request,
         initialIndex: initialIndex,
@@ -477,9 +573,10 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       _sourceReady = true;
       _currentQueueIndex = _player.currentIndex ?? initialIndex;
       AudioDiagnostics.instance.log('AUDIO_SOURCE_LOAD_COMPLETED', {
-        'track': initialItem.id,
-        'seq': _player.sequence.length,
+        'trackId': initialItem.id,
+        'sequenceLength': _player.sequence.length,
         'durationMs': loadedDuration?.inMilliseconds,
+        'sourcePrepareMs': sourcePrepareStopwatch.elapsedMilliseconds,
       });
       _publishCurrentMediaItem(
         includeArtwork: true,
@@ -494,6 +591,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       );
       _broadcastPlaybackState(_player.playbackEvent);
       _scheduleCurrentTrackSpeed();
+      _schedulePlaybackPersistence(immediate: true);
 
       // Le Future de `AudioPlayer.play()` ne se résout qu'à la pause, au stop
       // ou à la fin de la piste — jamais au démarrage. L'attendre ici
@@ -516,12 +614,287 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         return;
       }
       _recordPlaybackFailure(initialItem, error, stackTrace);
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_BUILD_FAILED', {
+        'trackId': initialItem.id,
+        'error': error,
+      });
       throw AudioPlaybackException(_friendlyAudioError(error));
     } catch (error, stackTrace) {
       if (request != _loadRequest) return;
+      if (_isTransientNetworkFailure(error)) {
+        _playbackRequested = true;
+        _enterNetworkRecovery(request, error, stackTrace: stackTrace);
+        return;
+      }
       _recordPlaybackFailure(initialItem, error, stackTrace);
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_BUILD_FAILED', {
+        'trackId': initialItem.id,
+        'error': error,
+      });
       if (error is AudioPlaybackException) rethrow;
       throw AudioPlaybackException(_friendlyAudioError(error));
+    }
+  }
+
+  /// Restaure la dernière file du compte après authentification.
+  ///
+  /// La lecture reste volontairement en pause : un redémarrage volontaire de
+  /// l'application ne doit jamais déclencher du son sans action utilisateur.
+  /// Les headers Bearer ne sont jamais persistés ; ils sont reconstruits avec
+  /// la session courante juste avant le chargement des sources.
+  Future<bool> restorePlaybackSessionForUser(int userId) async {
+    final store = _playbackSessionStore;
+    if (store == null || userId <= 0) return false;
+    if (_restoredPlaybackSessionUserId == userId && _queueItems.isNotEmpty) {
+      return true;
+    }
+    PersistedPlaybackSession? persisted;
+    try {
+      persisted = await store.read(userId);
+    } catch (error, stackTrace) {
+      _debugAudioLog(
+        'lecture de la session persistée impossible user=$userId',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      AudioDiagnostics.instance.log('AUDIO_SESSION_RESTORE_FAILED', {
+        'userId': userId,
+        'stage': 'read',
+        'error': error,
+      });
+      return false;
+    }
+    if (persisted == null) {
+      _restoredPlaybackSessionUserId = userId;
+      return false;
+    }
+
+    final items = persisted.queue
+        .map((item) => _queueItemFromPersisted(item, userId))
+        .toList(growable: false);
+    final request = ++_loadRequest;
+    _restoringPlaybackSession = true;
+    _playbackSessionUserId = userId;
+    _networkRecoveryPending = false;
+    _networkRecoveryTimer?.cancel();
+    try {
+      await _ensurePlaybackReady();
+      await _refreshAuthorizationBeforeLoadIfNeeded(request);
+      if (request != _loadRequest) return false;
+      _queueItems
+        ..clear()
+        ..addAll(items);
+      _applyCurrentAuthorizationHeaders();
+      _currentQueueIndex = persisted.currentIndex;
+      _sourceReady = false;
+      _playbackRequested = false;
+      _publishedMediaKey = null;
+      _publishQueue();
+      queueTitle.add('File d’attente');
+      _publishCurrentMediaItem(includeArtwork: false);
+      _publishLoadingState(persisted.currentIndex);
+      await _player.pause();
+      final loadedDuration = await _setAudioSourcesWithAuthorizationRecovery(
+        request: request,
+        initialIndex: persisted.currentIndex,
+        initialPosition: Duration(milliseconds: persisted.positionMs),
+        preload: true,
+      );
+      if (request != _loadRequest) return false;
+      _sourceReady = true;
+      _currentQueueIndex = _player.currentIndex ?? persisted.currentIndex;
+      await setRepeatMode(switch (persisted.repeatMode) {
+        'one' => AudioServiceRepeatMode.one,
+        'all' => AudioServiceRepeatMode.all,
+        _ => AudioServiceRepeatMode.none,
+      });
+      await setShuffleMode(
+        persisted.shuffleEnabled
+            ? AudioServiceShuffleMode.all
+            : AudioServiceShuffleMode.none,
+      );
+      final trackId = _currentTrackId;
+      if (trackId != null) {
+        _trackSpeedCache[trackId] = persisted.speedRatio;
+      }
+      await _applyConfirmedSpeed(persisted.speedRatio);
+      _publishCurrentMediaItem(
+        includeArtwork: true,
+        resolvedDuration: loadedDuration,
+      );
+      _broadcastPlaybackState(_player.playbackEvent);
+      _lastPersistedPositionMs = persisted.positionMs;
+      _restoredPlaybackSessionUserId = userId;
+      AudioDiagnostics.instance.log('AUDIO_SESSION_RESTORED', {
+        'userId': userId,
+        'queueLength': items.length,
+        'currentIndex': persisted.currentIndex,
+        'positionMs': persisted.positionMs,
+        'repeatMode': persisted.repeatMode,
+        'shuffleMode': persisted.shuffleEnabled,
+        'wasPlayingBeforeRestart': persisted.wasPlaying,
+      });
+      return true;
+    } catch (error, stackTrace) {
+      _sourceReady = false;
+      _playbackRequested = false;
+      _debugAudioLog(
+        'restauration lecteur impossible user=$userId',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      AudioDiagnostics.instance.log('AUDIO_SESSION_RESTORE_FAILED', {
+        'userId': userId,
+        'stage': 'load',
+        'error': error,
+      });
+      return false;
+    } finally {
+      _restoringPlaybackSession = false;
+    }
+  }
+
+  int? _resolveQueueUserId(List<PlayerQueueItem> items) {
+    final userIds = items
+        .map((item) => item.userId)
+        .whereType<int>()
+        .where((id) => id > 0)
+        .toSet();
+    return userIds.length == 1 ? userIds.single : null;
+  }
+
+  PlayerQueueItem _queueItemFromPersisted(
+    PersistedQueueItem item,
+    int userId,
+  ) => PlayerQueueItem(
+    id: item.id,
+    userId: item.userId ?? userId,
+    streamUri: item.streamUri,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    artUri: item.artUri,
+    duration: item.durationMs == null
+        ? null
+        : Duration(milliseconds: item.durationMs!),
+    mimeType: item.mimeType,
+    extension: item.extension,
+    sampleRate: item.sampleRate,
+    bitDepth: item.bitDepth,
+    channels: item.channels,
+    bitrate: item.bitrate,
+    fileSize: item.fileSize,
+    origin: item.origin,
+    artistKey: item.artistKey,
+    albumKey: item.albumKey,
+    headers: _currentAuthorizationHeaders?.call(),
+    artworkIdentity: item.artworkIdentity,
+  );
+
+  PersistedQueueItem _persistedQueueItem(PlayerQueueItem item) =>
+      PersistedQueueItem(
+        id: item.id,
+        userId: item.userId,
+        streamUri: item.streamUri,
+        title: item.title,
+        artist: item.artist,
+        album: item.album,
+        artUri: item.artUri,
+        durationMs: item.duration?.inMilliseconds,
+        mimeType: item.mimeType,
+        extension: item.extension,
+        sampleRate: item.sampleRate,
+        bitDepth: item.bitDepth,
+        channels: item.channels,
+        bitrate: item.bitrate,
+        fileSize: item.fileSize,
+        origin: item.origin,
+        artistKey: item.artistKey,
+        albumKey: item.albumKey,
+        artworkIdentity: item.artworkIdentity,
+      );
+
+  void _onPositionForPersistence(Duration position) {
+    _observePositionWrapAtEnd(position);
+    _observeEndOfTrack(position);
+    if (_queueItems.isEmpty || _restoringPlaybackSession) return;
+    if ((position.inMilliseconds - _lastPersistedPositionMs).abs() <
+        _positionPersistenceInterval.inMilliseconds) {
+      return;
+    }
+    _schedulePlaybackPersistence();
+  }
+
+  void _schedulePlaybackPersistence({bool immediate = false}) {
+    if (_playbackSessionStore == null ||
+        _restoringPlaybackSession ||
+        _playbackSessionUserId == null ||
+        _queueItems.isEmpty) {
+      return;
+    }
+    _playbackPersistenceTimer?.cancel();
+    if (immediate) {
+      unawaited(_persistPlaybackSession());
+      return;
+    }
+    _playbackPersistenceTimer = Timer(
+      const Duration(milliseconds: 750),
+      () => unawaited(_persistPlaybackSession()),
+    );
+  }
+
+  Future<void> _persistPlaybackSession() async {
+    final store = _playbackSessionStore;
+    final userId = _playbackSessionUserId;
+    final index = _activeQueueIndex;
+    if (store == null ||
+        userId == null ||
+        index == null ||
+        _queueItems.isEmpty ||
+        _queueItems.length > maximumPersistedQueueLength) {
+      return;
+    }
+    final previous = _playbackPersistenceInFlight;
+    if (previous != null) {
+      await previous;
+      if (_playbackPersistenceInFlight != null) return;
+    }
+    final session = PersistedPlaybackSession(
+      userId: userId,
+      queue: _queueItems.map(_persistedQueueItem).toList(growable: false),
+      currentIndex: index,
+      positionMs: _player.position.inMilliseconds.clamp(0, 1 << 53).toInt(),
+      repeatMode: _repeatMode.name,
+      shuffleEnabled: _player.shuffleModeEnabled,
+      speedRatio: _player.speed.clamp(0.7, 1.3).toDouble(),
+      wasPlaying: _playbackRequested || _player.playing,
+      updatedAt: _clock().toUtc(),
+    );
+    final operation = store.write(session);
+    _playbackPersistenceInFlight = operation;
+    try {
+      await operation;
+      _lastPersistedPositionMs = session.positionMs;
+      AudioDiagnostics.instance.log('AUDIO_SESSION_PERSISTED', {
+        'userId': userId,
+        'queueLength': session.queue.length,
+        'currentIndex': session.currentIndex,
+        'positionMs': session.positionMs,
+      });
+    } catch (error, stackTrace) {
+      _debugAudioLog(
+        'persistance lecteur impossible user=$userId',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      AudioDiagnostics.instance.log('AUDIO_SESSION_PERSIST_FAILED', {
+        'userId': userId,
+        'error': error,
+      });
+    } finally {
+      if (identical(_playbackPersistenceInFlight, operation)) {
+        _playbackPersistenceInFlight = null;
+      }
     }
   }
 
@@ -543,6 +916,36 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
   HomeSpotifyStretchStatus get currentTimeStretchStatus =>
       latestHomeSpotifyStretchStatus;
+
+  Duration? get currentAuthorizationExpiresIn =>
+      _currentAuthorizationExpiresIn?.call();
+
+  Map<String, Object?> get diagnosticState => <String, Object?>{
+    'playing': _player.playing,
+    'processingState': _player.processingState.name,
+    'currentIndex': _activeQueueIndex,
+    'queueLength': _queueItems.length,
+    'trackId': _currentItem?.id,
+    'positionMs': _player.position.inMilliseconds,
+    'bufferedPositionMs': _player.bufferedPosition.inMilliseconds,
+    'durationMs': _player.duration?.inMilliseconds,
+    'repeatMode': _repeatMode.name,
+    'shuffleMode': _player.shuffleModeEnabled,
+    'playbackRequested': _playbackRequested,
+    'sourceReady': _sourceReady,
+    'tokenExpiresInMs': currentAuthorizationExpiresIn?.inMilliseconds,
+    'bufferingCount': _bufferingCount,
+    'totalBufferingMs': _totalBufferingMs,
+    'longestBufferingMs': _longestBufferingMs,
+    'authorizationRecoveryInFlight': _authorizationRecoveryInFlight != null,
+    'trackRecoveryInFlight': _trackErrorRecoveryInFlight != null,
+    'networkAvailable': _networkAvailable,
+    'networkRecoveryPending': _networkRecoveryPending,
+    'networkRecoveryAttempt': _networkRecoveryAttempt,
+    'timeStretchEngine': currentTimeStretchEngineName,
+    'timeStretchRatio': currentTrackSpeed,
+    'timeStretchLatencyMs': currentTimeStretchLatencyMs,
+  };
 
   Future<void> setVolume(double volume) {
     return _player.setVolume(volume.clamp(0.0, 1.0).toDouble());
@@ -608,6 +1011,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         _trackSpeedCache[trackId] = persisted;
         _sessionOnlyTrackSpeeds.remove(trackId);
         _publishQueue();
+        _schedulePlaybackPersistence(immediate: true);
         _debugAudioLog(
           'vitesse enregistrée track=$trackId ratio=$persisted '
           'active=${_currentTrackId == trackId} '
@@ -671,6 +1075,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         _trackSpeedCache.remove(trackId);
         _sessionOnlyTrackSpeeds.remove(trackId);
         _publishQueue();
+        _schedulePlaybackPersistence(immediate: true);
       } catch (error) {
         if (isActive) _sessionOnlyTrackSpeeds[trackId] = 1;
         throw TrackSpeedPersistenceException(
@@ -742,6 +1147,23 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     if (_queueItems.isEmpty) return;
     await _ensurePlaybackReady();
     if (!_sourceReady) {
+      if (_networkRecoveryPending) {
+        _playbackRequested = true;
+        final recovered = await _attemptNetworkRecovery();
+        if (recovered) return;
+      }
+      // Une erreur native remet just_audio en idle. La file Dart existe
+      // encore, mais appeler play() sur l'ancienne source ne peut pas la
+      // ressusciter et peut réutiliser un Bearer périmé. Un appui sur Lecture
+      // reconstruit donc la file au même index avec les headers courants.
+      _playbackRequested = true;
+      final index = (_activeQueueIndex ?? _currentQueueIndex ?? 0).clamp(
+        0,
+        _queueItems.length - 1,
+      );
+      final recovered = await _resumeAtIndexAfterError(_loadRequest, index);
+      if (recovered) return;
+      _playbackRequested = false;
       throw const AudioPlaybackException('Source audio inaccessible.');
     }
     try {
@@ -755,13 +1177,32 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> pause() {
+  Future<void> pause() async {
     _playbackRequested = false;
-    return _player.pause();
+    _networkRecoveryTimer?.cancel();
+    _cancelEndOfTrackWatchdog();
+    AudioDiagnostics.instance.log(
+      'AUDIO_PLAY_PAUSED',
+      _queueDiagnosticFields(),
+    );
+    await _player.pause();
+    _schedulePlaybackPersistence(immediate: true);
   }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) async {
+    _ignorePositionWrapUntil = _clock().add(const Duration(seconds: 3));
+    AudioDiagnostics.instance.log('AUDIO_SEEK_REQUESTED', {
+      ..._queueDiagnosticFields(),
+      'positionMs': position.inMilliseconds,
+    });
+    await _player.seek(position);
+    AudioDiagnostics.instance.log('AUDIO_SEEK_COMPLETED', {
+      ..._queueDiagnosticFields(),
+      'positionMs': _player.position.inMilliseconds,
+    });
+    _schedulePlaybackPersistence(immediate: true);
+  }
 
   @override
   Future<void> skipToNext() async {
@@ -818,6 +1259,11 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
             : AudioServiceShuffleMode.none,
       ),
     );
+    AudioDiagnostics.instance.log('AUDIO_SHUFFLE_CHANGED', {
+      ..._queueDiagnosticFields(),
+      'enabled': enabled,
+    });
+    _schedulePlaybackPersistence(immediate: true);
   }
 
   /// Mode de répétition : aucune / toute la file / piste courante. Ne change
@@ -838,11 +1284,17 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       _ => LoopMode.off,
     });
     playbackState.add(playbackState.value.copyWith(repeatMode: normalized));
+    AudioDiagnostics.instance.log('AUDIO_REPEAT_CHANGED', {
+      ..._queueDiagnosticFields(),
+      'repeatMode': normalized.name,
+    });
+    _schedulePlaybackPersistence(immediate: true);
   }
 
   @override
   Future<void> skipToQueueItem(int index) async {
     if (!_sourceReady || index < 0 || index >= _queueItems.length) return;
+    _cancelEndOfTrackWatchdog();
     final item = _queueItems[index];
     _currentQueueIndex = index;
     _publishCurrentMediaItem(includeArtwork: false);
@@ -893,11 +1345,15 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     final safeIndex = index.clamp(0, _queueItems.length);
     await _ensurePlaybackReady();
     _queueItems.insert(safeIndex, item);
+    AudioDiagnostics.instance.newQueueRevision();
     if (_sourceReady) {
-      await _player.insertAudioSource(safeIndex, item.toAudioSource());
+      await _player.insertAudioSource(
+        safeIndex,
+        _createAudioSource(item, safeIndex, reason: 'insert'),
+      );
     } else {
       await _player.setAudioSources(
-        _queueItems.map((entry) => entry.toAudioSource()).toList(),
+        _createAudioSources(reason: 'insert-empty-player'),
         initialIndex: _currentQueueIndex ?? 0,
         preload: false,
       );
@@ -908,6 +1364,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       _currentQueueIndex = current + 1;
     }
     _publishQueue();
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_APPENDED', {
+      ..._queueDiagnosticFields(),
+      'insertedIndex': safeIndex,
+      'trackId': item.id,
+    });
+    _schedulePlaybackPersistence(immediate: true);
     _broadcastPlaybackState(_player.playbackEvent);
   }
 
@@ -920,6 +1382,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     final current = _activeQueueIndex;
     if (current != null && index == current) return;
     final removed = _queueItems.removeAt(index);
+    AudioDiagnostics.instance.newQueueRevision();
     if (current != null && index < current) {
       _currentQueueIndex = current - 1;
     }
@@ -937,6 +1400,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       );
     }
     _publishQueue();
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_REMOVED', {
+      ..._queueDiagnosticFields(),
+      'removedIndex': index,
+      'trackId': removed.id,
+    });
+    _schedulePlaybackPersistence(immediate: true);
     _broadcastPlaybackState(_player.playbackEvent);
   }
 
@@ -970,9 +1439,17 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     if (oldIndex == currentBefore || newIndex == currentBefore) return;
     final item = _queueItems.removeAt(oldIndex);
     _queueItems.insert(newIndex, item);
+    AudioDiagnostics.instance.newQueueRevision();
     await _player.moveAudioSource(oldIndex, newIndex);
     _currentQueueIndex = _player.currentIndex ?? currentBefore;
     _publishQueue();
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_REORDERED', {
+      ..._queueDiagnosticFields(),
+      'oldIndex': oldIndex,
+      'newIndex': newIndex,
+      'trackId': item.id,
+    });
+    _schedulePlaybackPersistence(immediate: true);
     _broadcastPlaybackState(_player.playbackEvent);
   }
 
@@ -1000,21 +1477,30 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> stop() async {
     _playbackRequested = false;
-    AudioDiagnostics.instance.log('AUDIO_PLAYER_STOPPED', {
-      'index': _activeQueueIndex,
-    });
+    _networkRecoveryTimer?.cancel();
+    _cancelEndOfTrackWatchdog();
+    AudioDiagnostics.instance.log(
+      'AUDIO_PLAY_STOPPED',
+      _queueDiagnosticFields(),
+    );
     await _player.stop();
     _broadcastPlaybackState(_player.playbackEvent);
+    _schedulePlaybackPersistence(immediate: true);
   }
 
   /// Purge à la déconnexion : arrête la lecture, vide la file et le MediaItem
   /// courant. Aucune donnée du compte précédent ne subsiste dans le lecteur.
-  Future<void> clearForLogout() => clearQueueAndStop();
+  Future<void> clearForLogout() => clearQueueAndStop(deletePersisted: true);
 
   /// Arrête la lecture et vide entièrement la file (déconnexion, suppression
   /// d'une piste de la bibliothèque). L'UI repart d'un lecteur vide, sans
   /// jamais réafficher un état périmé.
-  Future<void> clearQueueAndStop() async {
+  Future<void> clearQueueAndStop({bool deletePersisted = true}) async {
+    final persistedUserId = _playbackSessionUserId;
+    _playbackPersistenceTimer?.cancel();
+    _networkRecoveryTimer?.cancel();
+    _cancelEndOfTrackWatchdog();
+    _networkRecoveryPending = false;
     ++_loadRequest;
     ++_artworkRequest;
     _lastAuthorizationRecoveryAttemptAt = null;
@@ -1030,8 +1516,15 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       await _player.stop();
       await _applyConfirmedSpeed(1.0);
       await _player.setAudioSources(const [], preload: false);
-    } catch (error) {
-      _debugAudioLog('purge lecteur au logout: erreur ignorée ($error)');
+    } catch (error, stackTrace) {
+      _debugAudioLog(
+        'purge lecteur au logout: échec',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_CLEAR_FAILED', {
+        'error': error,
+      });
     }
     _queueItems.clear();
     _currentQueueIndex = 0;
@@ -1041,6 +1534,21 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     mediaItem.add(null);
     await _artworkCacheClear?.call();
     _broadcastPlaybackState(_player.playbackEvent);
+    AudioDiagnostics.instance.newQueueRevision();
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_EMPTY');
+    if (deletePersisted && persistedUserId != null) {
+      try {
+        await _playbackSessionStore?.delete(persistedUserId);
+      } catch (error) {
+        AudioDiagnostics.instance.log('AUDIO_SESSION_DELETE_FAILED', {
+          'userId': persistedUserId,
+          'error': error,
+        });
+      }
+    }
+    _playbackSessionUserId = null;
+    _restoredPlaybackSessionUserId = null;
+    _lastPersistedPositionMs = -1;
     _debugAudioLog('lecteur purgé au logout (file et piste vidées)');
   }
 
@@ -1057,14 +1565,22 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   );
 
   Future<void> dispose() async {
-    AudioDiagnostics.instance.log('AUDIO_PLAYER_DISPOSED');
+    AudioDiagnostics.instance.log('AUDIO_HANDLER_DISPOSED', diagnosticState);
+    _playbackPersistenceTimer?.cancel();
+    _networkRecoveryTimer?.cancel();
+    _cancelEndOfTrackWatchdog();
+    _playbackGuardTimer.cancel();
+    await _persistPlaybackSession();
     await _interruptionSubscription?.cancel();
     await _becomingNoisySubscription?.cancel();
     await _playbackEventSubscription.cancel();
     await _playerStateSubscription.cancel();
     await _currentIndexSubscription.cancel();
+    await _positionPersistenceSubscription.cancel();
     await _timeStretchEngine.dispose();
     await _player.dispose();
+    AudioDiagnostics.instance.log('PLAYER_DISPOSED');
+    await AudioDiagnostics.instance.flush();
   }
 
   /// Configure le focus Android avant tout chargement de source.
@@ -1111,7 +1627,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
   Future<void> _startPlayback() async {
     _playbackRequested = true;
+    _networkRecoveryTimer?.cancel();
     final item = _currentItem;
+    AudioDiagnostics.instance.log('AUDIO_PLAY_REQUESTED', {
+      ..._queueDiagnosticFields(),
+      'mediaItemId': item?.id,
+    });
     _debugAudioLog(
       'play track=${item?.id ?? 'inconnu'} '
       'streamUri=${item?.streamUri ?? 'inconnue'} '
@@ -1121,6 +1642,126 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       'buffered=${_player.bufferedPosition}',
     );
     await _player.play();
+    _schedulePlaybackPersistence(immediate: true);
+  }
+
+  List<AudioSource> _createAudioSources({required String reason}) {
+    final stopwatch = Stopwatch()..start();
+    _loadedAuthorizationHeader = _queueItems.isEmpty
+        ? null
+        : _queueItems.first.headers?['Authorization'];
+    final sources = <AudioSource>[
+      for (var index = 0; index < _queueItems.length; index++)
+        _createAudioSource(_queueItems[index], index, reason: reason),
+    ];
+    AudioDiagnostics.instance.log('AUDIO_SOURCE_BATCH_CREATED', {
+      ..._queueDiagnosticFields(),
+      'reason': reason,
+      'sourceCreationMs': stopwatch.elapsedMilliseconds,
+      'sourceCount': sources.length,
+    });
+    return sources;
+  }
+
+  AudioSource _createAudioSource(
+    PlayerQueueItem item,
+    int index, {
+    required String reason,
+  }) {
+    final diagnostics = AudioDiagnostics.instance;
+    final sourceInstanceId = diagnostics.nextId('source');
+    final requestId = diagnostics.nextId('request');
+    final headers = <String, String>{
+      ...?item.headers,
+      'X-Request-Id': requestId,
+      'X-App-Session-Id': diagnostics.appSessionId,
+      if (diagnostics.playbackSessionId != null)
+        'X-Playback-Session-Id': diagnostics.playbackSessionId!,
+      if (diagnostics.queueRevisionId != null)
+        'X-Queue-Revision-Id': diagnostics.queueRevisionId!,
+      'X-Source-Instance-Id': sourceInstanceId,
+    };
+    diagnostics.log('AUDIO_SOURCE_CREATED', {
+      ..._queueDiagnosticFields(currentIndex: index),
+      'trackId': item.id,
+      'mediaItemId': item.id,
+      'sourceInstanceId': sourceInstanceId,
+      'requestId': requestId,
+      'hostname': item.streamUri.host,
+      'route': '/api/tracks/:id/stream',
+      'reason': reason,
+      'tokenPresent':
+          item.headers?['Authorization']?.startsWith('Bearer ') ?? false,
+      'tokenExpiresInMs': currentAuthorizationExpiresIn?.inMilliseconds,
+    });
+    return item.toAudioSource(requestHeaders: headers);
+  }
+
+  Map<String, Object?> _queueDiagnosticFields({int? currentIndex}) =>
+      <String, Object?>{
+        'currentIndex': currentIndex ?? _activeQueueIndex,
+        'previousIndex': _currentQueueIndex,
+        'queueLength': _queueItems.length,
+        'trackId': _currentItem?.id,
+        'repeatMode': _repeatMode.name,
+        'shuffleMode': _player.shuffleModeEnabled,
+        'processingState': _player.processingState.name,
+        'playing': _player.playing,
+      };
+
+  Future<void> _refreshAuthorizationBeforeLoadIfNeeded(int request) async {
+    final expiresIn = currentAuthorizationExpiresIn;
+    AudioDiagnostics.instance.log('AUDIO_TOKEN_STATE_CHECKED', {
+      'tokenPresent':
+          _currentAuthorizationHeaders?.call()['Authorization']?.startsWith(
+            'Bearer ',
+          ) ??
+          false,
+      'tokenExpiresInMs': expiresIn?.inMilliseconds,
+    });
+    if (expiresIn == null ||
+        expiresIn > const Duration(seconds: 90) ||
+        _authorizationRefresh == null ||
+        request != _loadRequest) {
+      return;
+    }
+    final refreshId = AudioDiagnostics.instance.nextId('auth-refresh');
+    final stopwatch = Stopwatch()..start();
+    AudioDiagnostics.instance.log('AUDIO_TOKEN_EXPIRY_APPROACHING', {
+      'authRefreshId': refreshId,
+      'tokenExpiresInMs': expiresIn.inMilliseconds,
+    });
+    AudioDiagnostics.instance.log('AUDIO_TOKEN_REFRESH_REQUESTED', {
+      'authRefreshId': refreshId,
+      'reason': 'preload',
+    });
+    final refreshed = await _authorizationRefresh();
+    AudioDiagnostics.instance.log(
+      refreshed
+          ? 'AUDIO_TOKEN_REFRESH_COMPLETED'
+          : 'AUDIO_TOKEN_REFRESH_FAILED',
+      {
+        'authRefreshId': refreshId,
+        'refreshDurationMs': stopwatch.elapsedMilliseconds,
+        'refreshResult': refreshed,
+      },
+    );
+  }
+
+  void _applyCurrentAuthorizationHeaders() {
+    final headers = _currentAuthorizationHeaders?.call();
+    final authorization = headers?['Authorization'];
+    if (headers == null ||
+        authorization == null ||
+        !authorization.startsWith('Bearer ')) {
+      return;
+    }
+    final refreshedItems = _queueItems
+        .map((item) => item.copyWithHeaders(headers))
+        .toList(growable: false);
+    _queueItems
+      ..clear()
+      ..addAll(refreshedItems);
   }
 
   Future<Duration?> _setAudioSourcesWithAuthorizationRecovery({
@@ -1131,7 +1772,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   }) async {
     try {
       return await _player.setAudioSources(
-        _queueItems.map((item) => item.toAudioSource()).toList(growable: false),
+        _createAudioSources(reason: 'queue-load'),
         initialIndex: initialIndex,
         initialPosition: initialPosition,
         preload: preload,
@@ -1150,32 +1791,317 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  /// Répercute immédiatement une rotation de JWT dans les sources Media3.
+  ///
+  /// Les headers HTTP d'une [AudioSource] sont immuables. Renouveler le token
+  /// dans [AuthSessionManager] ne suffit donc pas : sans cette reconstruction,
+  /// les lectures Range suivantes repartent avec l'ancien Bearer jusqu'au 401.
+  Future<bool> handleAuthorizationChanged({
+    String reason = 'session-change',
+  }) async {
+    final authorization = _currentAuthorizationHeaders?.call()['Authorization'];
+    final hasUsableAuthorization =
+        authorization != null && authorization.startsWith('Bearer ');
+    final rotated =
+        hasUsableAuthorization && authorization != _loadedAuthorizationHeader;
+    AudioDiagnostics.instance.log('AUDIO_AUTHORIZATION_CHANGED', {
+      ..._queueDiagnosticFields(),
+      'reason': reason,
+      'sourceReady': _sourceReady,
+      'tokenPresent': hasUsableAuthorization,
+      'rotated': rotated,
+    });
+    // Même si Media3 est actuellement en erreur/idle, la file en mémoire doit
+    // immédiatement oublier l'ancien Bearer. La prochaine action Lecture la
+    // reconstruira alors avec le jeton courant au lieu de rejouer les 401.
+    if (hasUsableAuthorization) {
+      _applyCurrentAuthorizationHeaders();
+    }
+    if (!rotated ||
+        !_sourceReady ||
+        _queueItems.isEmpty ||
+        _activeQueueIndex == null) {
+      return false;
+    }
+    final request = _loadRequest;
+    final index = _activeQueueIndex!;
+    final position = _player.position;
+    final resumePlayback = _playbackRequested || _player.playing;
+    final recovered = await _recoverAuthorization(
+      request: request,
+      initialIndex: index,
+      initialPosition: position,
+      resumePlayback: resumePlayback,
+    );
+    AudioDiagnostics.instance.log(
+      recovered
+          ? 'AUDIO_AUTHORIZATION_PROPAGATED'
+          : 'AUDIO_AUTHORIZATION_PROPAGATION_FAILED',
+      {
+        ..._queueDiagnosticFields(),
+        'reason': reason,
+        'positionMs': position.inMilliseconds,
+      },
+    );
+    return recovered;
+  }
+
+  /// Reçoit les transitions réseau du processus principal. `connectivity_plus`
+  /// n'est qu'un signal : une interface disponible ne garantit pas que le
+  /// serveur réponde, les erreurs natives restent donc le second déclencheur.
+  Future<void> handleConnectivityChanged(bool hasNetwork) async {
+    final changed = _networkAvailable != hasNetwork;
+    _networkAvailable = hasNetwork;
+    if (changed) {
+      AudioDiagnostics.instance.log('AUDIO_NETWORK_STATE_CHANGED', {
+        ..._queueDiagnosticFields(),
+        'hasNetwork': hasNetwork,
+        'recoveryPending': _networkRecoveryPending,
+      });
+    }
+    if (!hasNetwork) {
+      if (_playbackRequested && _currentItem != null) {
+        _networkRecoveryPending = true;
+        _networkRecoveryIndex = _activeQueueIndex;
+        _networkRecoveryPosition = _player.position;
+        _networkRecoveryTimer?.cancel();
+        _schedulePlaybackPersistence(immediate: true);
+      }
+      return;
+    }
+    if (_networkRecoveryPending && _playbackRequested) {
+      _scheduleNetworkRecovery(immediate: true);
+    }
+  }
+
+  void _enterNetworkRecovery(
+    int request,
+    Object error, {
+    StackTrace? stackTrace,
+  }) {
+    if (request != _loadRequest || _currentItem == null) return;
+    _networkRecoveryPending = true;
+    _networkRecoveryIndex = _activeQueueIndex;
+    _networkRecoveryPosition = _player.position;
+    _sourceReady = false;
+    AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_QUEUED', {
+      ..._queueDiagnosticFields(),
+      'positionMs': _networkRecoveryPosition.inMilliseconds,
+      'httpStatus': _extractHttpStatus(error),
+      'error': error,
+    });
+    if (stackTrace != null) {
+      _debugAudioLog(
+        'lecture suspendue en attente du réseau',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+    playbackState.add(
+      playbackState.value.copyWith(
+        controls: const <MediaControl>[MediaControl.play, MediaControl.stop],
+        processingState: AudioProcessingState.buffering,
+        playing: false,
+        updatePosition: _networkRecoveryPosition,
+        queueIndex: _networkRecoveryIndex,
+        errorMessage: 'Connexion interrompue, reprise automatique en attente.',
+      ),
+    );
+    _schedulePlaybackPersistence(immediate: true);
+    _scheduleNetworkRecovery(immediate: _networkAvailable);
+  }
+
+  void _scheduleNetworkRecovery({bool immediate = false}) {
+    if (!_networkRecoveryPending || !_playbackRequested) return;
+    _networkRecoveryTimer?.cancel();
+    final exponent = _networkRecoveryAttempt.clamp(0, 4).toInt();
+    final exponentialSeconds = 2 << exponent;
+    final delay = immediate
+        ? Duration.zero
+        : Duration(
+            seconds: exponentialSeconds
+                .clamp(2, _networkRecoveryMaximumDelay.inSeconds)
+                .toInt(),
+          );
+    AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_SCHEDULED', {
+      ..._queueDiagnosticFields(),
+      'attempt': _networkRecoveryAttempt + 1,
+      'delayMs': delay.inMilliseconds,
+    });
+    _networkRecoveryTimer = Timer(
+      delay,
+      () => unawaited(_attemptNetworkRecovery()),
+    );
+  }
+
+  Future<bool> _attemptNetworkRecovery() {
+    final active = _networkRecoveryInFlight;
+    if (active != null) return active;
+    if (!_networkRecoveryPending ||
+        !_playbackRequested ||
+        _queueItems.isEmpty) {
+      return Future<bool>.value(false);
+    }
+    final operation = _performNetworkRecovery().whenComplete(() {
+      _networkRecoveryInFlight = null;
+    });
+    _networkRecoveryInFlight = operation;
+    return operation;
+  }
+
+  Future<bool> _performNetworkRecovery() async {
+    final request = _loadRequest;
+    final index = (_networkRecoveryIndex ?? _activeQueueIndex ?? 0).clamp(
+      0,
+      _queueItems.length - 1,
+    );
+    final position = _networkRecoveryPosition;
+    _networkRecoveryTimer?.cancel();
+    _networkRecoveryAttempt += 1;
+    AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_STARTED', {
+      ..._queueDiagnosticFields(currentIndex: index),
+      'attempt': _networkRecoveryAttempt,
+      'positionMs': position.inMilliseconds,
+    });
+    try {
+      await _refreshAuthorizationBeforeLoadIfNeeded(request);
+      if (request != _loadRequest || !_playbackRequested) return false;
+      _applyCurrentAuthorizationHeaders();
+      await _setAudioSourcesWithAuthorizationRecovery(
+        request: request,
+        initialIndex: index,
+        initialPosition: position,
+        preload: true,
+      );
+      if (request != _loadRequest || !_playbackRequested) return false;
+      _sourceReady = true;
+      _currentQueueIndex = _player.currentIndex ?? index;
+      _publishedMediaKey = null;
+      _networkRecoveryPending = false;
+      _networkRecoveryAttempt = 0;
+      _publishQueue();
+      _publishCurrentMediaItem(includeArtwork: true);
+      _broadcastPlaybackState(_player.playbackEvent);
+      _scheduleCurrentTrackSpeed();
+      await _startPlayback();
+      AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_COMPLETED', {
+        ..._queueDiagnosticFields(),
+        'positionMs': position.inMilliseconds,
+      });
+      return true;
+    } catch (error, stackTrace) {
+      _sourceReady = false;
+      _networkRecoveryPending = true;
+      _networkRecoveryIndex = index;
+      _networkRecoveryPosition = position;
+      AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_FAILED', {
+        ..._queueDiagnosticFields(currentIndex: index),
+        'attempt': _networkRecoveryAttempt,
+        'error': error,
+      });
+      _debugAudioLog(
+        'reprise réseau impossible, nouvelle tentative planifiée',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      _scheduleNetworkRecovery();
+      return false;
+    }
+  }
+
+  static bool _isTransientNetworkFailure(Object error) {
+    final status = _extractHttpStatus(error);
+    if (status == 408 || status == 425 || status == 429) return true;
+    if (status != null && status >= 500) return true;
+    final message = error.toString().toLowerCase();
+    return message.contains('timeout') ||
+        message.contains('socket') ||
+        message.contains('network') ||
+        message.contains('connection') ||
+        message.contains('unknown host') ||
+        message.contains('host lookup') ||
+        message.contains('temporarily unavailable');
+  }
+
   void _handleAsynchronousPlaybackFailure(
     int request,
     Object error,
     StackTrace stackTrace,
   ) {
-    if (_isAuthorizationFailure(error)) {
+    // Sur Android, Media3 masque parfois InvalidResponseCodeException(401)
+    // derrière le seul message "Source error". Si le gestionnaire de session
+    // possède déjà un Bearer plus récent que la source native, cette rotation
+    // est une preuve suffisante : reconstruire la même piste avant d'envisager
+    // de la sauter.
+    if (_isAuthorizationFailure(error) ||
+        _authorizationHasRotatedSinceSourceCreation()) {
+      if (_authorizationFailureHandling) {
+        AudioDiagnostics.instance.log(
+          'AUDIO_TOKEN_REFRESH_SINGLE_FLIGHT_JOINED',
+          _queueDiagnosticFields(),
+        );
+        return;
+      }
+      _authorizationFailureHandling = true;
+      final recoveryAttemptId = AudioDiagnostics.instance.nextId('recovery');
+      AudioDiagnostics.instance.log('AUDIO_AUTH_RECOVERY_STARTED', {
+        ..._queueDiagnosticFields(),
+        'recoveryAttemptId': recoveryAttemptId,
+        'httpStatus': _extractHttpStatus(error),
+      });
       unawaited(
         _recoverAuthorization(
-          request: request,
-          initialIndex: _activeQueueIndex ?? 0,
-          initialPosition: _player.position,
-          resumePlayback: _playbackRequested,
-        ).then((recovered) {
-          if (recovered || request != _loadRequest) return;
-          // Sans token valide, sauter de piste ne servirait à rien : l'échec
-          // est publié tel quel (l'utilisateur voit l'erreur, rien n'est caché).
-          final item = _currentItem;
-          if (item != null) {
-            _recordPlaybackFailure(item, error, stackTrace);
-          }
-        }),
+              request: request,
+              initialIndex: _activeQueueIndex ?? 0,
+              initialPosition: _player.position,
+              resumePlayback: _playbackRequested,
+            )
+            .then((recovered) {
+              AudioDiagnostics.instance.log(
+                recovered
+                    ? 'AUDIO_AUTH_RECOVERY_COMPLETED'
+                    : 'AUDIO_AUTH_RECOVERY_FAILED',
+                {
+                  ..._queueDiagnosticFields(),
+                  'recoveryAttemptId': recoveryAttemptId,
+                },
+              );
+              if (recovered || request != _loadRequest) return;
+              // Sans token valide, sauter de piste ne servirait à rien : l'échec
+              // est publié tel quel (l'utilisateur voit l'erreur, rien n'est caché).
+              final item = _currentItem;
+              if (item != null) {
+                _recordPlaybackFailure(item, error, stackTrace);
+              }
+            })
+            .whenComplete(() => _authorizationFailureHandling = false),
       );
+      return;
+    }
+    if (_isTransientNetworkFailure(error)) {
+      _enterNetworkRecovery(request, error, stackTrace: stackTrace);
       return;
     }
     final item = _currentItem;
     if (item == null) return;
+    final fingerprint =
+        '${_activeQueueIndex ?? -1}|'
+        '${_extractHttpStatus(error) ?? -1}|${error.runtimeType}|$error';
+    final now = _clock();
+    final duplicate =
+        _lastHandledErrorFingerprint == fingerprint &&
+        _lastHandledErrorAt != null &&
+        now.difference(_lastHandledErrorAt!) < const Duration(seconds: 2);
+    if (_trackErrorRecoveryInFlight != null || duplicate) {
+      AudioDiagnostics.instance.log('AUDIO_DUPLICATE_ERROR_SUPPRESSED', {
+        ..._queueDiagnosticFields(),
+        'httpStatus': _extractHttpStatus(error),
+        'recoveryInFlight': _trackErrorRecoveryInFlight != null,
+      });
+      return;
+    }
+    _lastHandledErrorFingerprint = fingerprint;
+    _lastHandledErrorAt = now;
     if (_tryScheduleErrorSkip(request, item, error)) return;
     _recordPlaybackFailure(item, error, stackTrace);
   }
@@ -1204,18 +2130,27 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     _consecutiveErrorSkips += 1;
     _lastErrorSkipAt = _clock();
     AudioDiagnostics.instance.log('AUDIO_TRACK_SKIPPED_AFTER_ERROR', {
-      'track': failedItem.id,
+      'trackId': failedItem.id,
       'from': _activeQueueIndex,
       'to': target,
       'attempt': _consecutiveErrorSkips,
       'error': error.runtimeType,
+      'recoveryAttemptId': AudioDiagnostics.instance.nextId('recovery'),
     });
+    final recovery = _resumeAtIndexAfterError(request, target);
+    _trackErrorRecoveryInFlight = recovery;
     unawaited(
-      _resumeAtIndexAfterError(request, target).then((resumed) {
-        if (!resumed && request == _loadRequest) {
-          _recordPlaybackFailure(failedItem, error, StackTrace.current);
-        }
-      }),
+      recovery
+          .then((resumed) {
+            if (!resumed && request == _loadRequest) {
+              _recordPlaybackFailure(failedItem, error, StackTrace.current);
+            }
+          })
+          .whenComplete(() {
+            if (identical(_trackErrorRecoveryInFlight, recovery)) {
+              _trackErrorRecoveryInFlight = null;
+            }
+          }),
     );
     return true;
   }
@@ -1238,7 +2173,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
           ..addAll(refreshedItems);
       }
       await _player.setAudioSources(
-        _queueItems.map((item) => item.toAudioSource()).toList(growable: false),
+        _createAudioSources(reason: 'track-error-recovery'),
         initialIndex: index.clamp(0, _queueItems.length - 1),
         initialPosition: Duration.zero,
         preload: true,
@@ -1288,9 +2223,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     // L'ancien verrou « une seule récupération par file » arrêtait la musique
     // à la deuxième expiration ; la fenêtre empêche seulement un martèlement
     // du refresh si le serveur répond 401 en continu.
+    final authorizationAlreadyRotated =
+        _authorizationHasRotatedSinceSourceCreation();
     final now = _clock();
     final lastAttempt = _lastAuthorizationRecoveryAttemptAt;
-    if (lastAttempt != null &&
+    if (!authorizationAlreadyRotated &&
+        lastAttempt != null &&
         now.difference(lastAttempt) < _authorizationRecoveryCooldown) {
       AudioDiagnostics.instance.log('AUDIO_TOKEN_REFRESH_REFUSED', {
         'reason': 'cooldown',
@@ -1325,7 +2263,15 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     });
     try {
       await _player.pause();
-      final refreshed = await _authorizationRefresh!();
+      // Le gestionnaire de session peut avoir renouvelé le JWT en amont alors
+      // que Media3 lisait encore une source construite avec l'ancien Bearer.
+      // Dans ce cas, reconstruire suffit : relancer /refresh consommerait à
+      // tort une deuxième fois un refresh token rotatif.
+      final authorizationAlreadyRotated =
+          _authorizationHasRotatedSinceSourceCreation();
+      final refreshed = authorizationAlreadyRotated
+          ? true
+          : await _authorizationRefresh!();
       if (!refreshed || request != _loadRequest) {
         AudioDiagnostics.instance.log('AUDIO_TOKEN_REFRESH_FAILED', {
           'refreshed': refreshed,
@@ -1344,9 +2290,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         ..clear()
         ..addAll(refreshedItems);
       await _player.setAudioSources(
-        refreshedItems
-            .map((item) => item.toAudioSource())
-            .toList(growable: false),
+        _createAudioSources(reason: 'authorization-recovery'),
         initialIndex: initialIndex.clamp(0, refreshedItems.length - 1),
         initialPosition: initialPosition,
         preload: true,
@@ -1359,6 +2303,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       AudioDiagnostics.instance.log('AUDIO_TOKEN_REFRESH_COMPLETED', {
         'index': _currentQueueIndex,
         'resume': resumePlayback,
+        'sourceRebuiltFromCurrentToken': authorizationAlreadyRotated,
       });
       _publishQueue();
       _publishCurrentMediaItem(includeArtwork: true);
@@ -1389,6 +2334,13 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  bool _authorizationHasRotatedSinceSourceCreation() {
+    final authorization = _currentAuthorizationHeaders?.call()['Authorization'];
+    return authorization != null &&
+        authorization.startsWith('Bearer ') &&
+        authorization != _loadedAuthorizationHeader;
+  }
+
   bool _isAuthorizationFailure(Object error) {
     final message = error.toString().toLowerCase();
     return message.contains('401') &&
@@ -1407,11 +2359,15 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
   void _onCurrentIndexChanged(int? index) {
     if (index == null || index < 0 || index >= _queueItems.length) return;
-    AudioDiagnostics.instance.log('AUDIO_INDEX_CHANGED', {
-      'index': index,
-      'track': _queueItems[index].id,
-      'queue': _queueItems.length,
-      'seq': _player.sequence.length,
+    _cancelEndOfTrackWatchdog();
+    _lastEndGuardIndex = index;
+    _lastEndGuardPosition = Duration.zero;
+    final previousIndex = _activeQueueIndex;
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_INDEX_CHANGED', {
+      ..._queueDiagnosticFields(currentIndex: index),
+      'previousIndex': previousIndex,
+      'trackId': _queueItems[index].id,
+      'sequenceLength': _player.sequence.length,
     });
     final previousTrackId = _currentTrackId;
     _currentQueueIndex = index;
@@ -1432,6 +2388,17 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     );
     _broadcastPlaybackState(_player.playbackEvent);
     _scheduleCurrentTrackSpeed();
+    _schedulePlaybackPersistence(immediate: true);
+    if (previousIndex != null && previousIndex != index) {
+      AudioDiagnostics.instance.log('AUDIO_TRACK_CHANGED', {
+        ..._queueDiagnosticFields(currentIndex: index),
+        'previousIndex': previousIndex,
+        'trackId': _queueItems[index].id,
+      });
+    }
+    if (_authorizationHasRotatedSinceSourceCreation()) {
+      unawaited(handleAuthorizationChanged(reason: 'track-change'));
+    }
   }
 
   void _scheduleCurrentTrackSpeed() {
@@ -1469,6 +2436,15 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     if (event.currentIndex != null) _currentQueueIndex = event.currentIndex;
     _logProcessingState();
     if (_player.processingState == ProcessingState.ready && _player.playing) {
+      final tapStopwatch = _tapToPlaybackStopwatch;
+      if (tapStopwatch != null) {
+        _tapToPlaybackStopwatch = null;
+        AudioDiagnostics.instance.log('AUDIO_PLAY_STARTED', {
+          ..._queueDiagnosticFields(),
+          'tapToPlaybackStartedMs': tapStopwatch.elapsedMilliseconds,
+          'tapToFirstAudioMs': tapStopwatch.elapsedMilliseconds,
+        });
+      }
       // Une piste joue réellement : la fenêtre de sauts d'erreur repart de
       // zéro, mais seulement après un délai de stabilité depuis le dernier
       // saut. L'événement de démarrage n'est journalisé qu'une fois par index.
@@ -1510,6 +2486,8 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         updatePosition: _player.position,
         bufferedPosition: _player.bufferedPosition,
         speed: _player.speed,
+        errorCode: null,
+        errorMessage: null,
         queueIndex: _activeQueueIndex,
       ),
     );
@@ -1762,23 +2740,228 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   void _logProcessingState() {
     final state = _player.processingState;
     if (_lastLoggedProcessingState == state) return;
+    final previousState = _lastLoggedProcessingState;
     _lastLoggedProcessingState = state;
     final item = _currentItem;
     _debugAudioLog(
       'processingState track=${item?.id ?? 'inconnu'} '
       'state=${state.name} buffered=${_player.bufferedPosition}',
     );
-    AudioDiagnostics.instance.log('AUDIO_STATE', {
+    AudioDiagnostics.instance.log('AUDIO_PROCESSING_STATE_CHANGED', {
+      'previousState': previousState?.name,
       'state': state.name,
       'playing': _player.playing,
-      'index': _activeQueueIndex,
-      'track': item?.id,
+      'currentIndex': _activeQueueIndex,
+      'trackId': item?.id,
+      'bufferedPositionMs': _player.bufferedPosition.inMilliseconds,
     });
-    if (state == ProcessingState.completed) {
-      AudioDiagnostics.instance.log('AUDIO_QUEUE_ENDED', {
-        'index': _activeQueueIndex,
-        'queue': _queueItems.length,
+    if (state == ProcessingState.buffering) {
+      _bufferingStopwatch ??= Stopwatch()..start();
+      _bufferingCount += 1;
+      AudioDiagnostics.instance.log('AUDIO_SOURCE_BUFFERING_STARTED', {
+        ..._queueDiagnosticFields(),
+        'bufferingCount': _bufferingCount,
       });
+    } else if (_bufferingStopwatch != null) {
+      final durationMs = _bufferingStopwatch!.elapsedMilliseconds;
+      _bufferingStopwatch = null;
+      _totalBufferingMs += durationMs;
+      if (durationMs > _longestBufferingMs) _longestBufferingMs = durationMs;
+      AudioDiagnostics.instance.log('AUDIO_SOURCE_BUFFERING_ENDED', {
+        ..._queueDiagnosticFields(),
+        'bufferingDurationMs': durationMs,
+        'totalBufferingMs': _totalBufferingMs,
+        'longestBufferingMs': _longestBufferingMs,
+      });
+    }
+    if (state == ProcessingState.completed) {
+      _handleCompletedState(reason: 'native-completed');
+    }
+  }
+
+  void _observeEndOfTrack(Duration position) {
+    final current = _activeQueueIndex;
+    final duration = _player.duration;
+    final atLogicalEnd =
+        duration != null &&
+        duration > Duration.zero &&
+        position >= duration - _endOfTrackPositionTolerance;
+    final shouldWatch =
+        _sourceReady &&
+        !_restoringPlaybackSession &&
+        _playbackRequested &&
+        _player.playing &&
+        _player.processingState == ProcessingState.ready &&
+        _repeatMode != AudioServiceRepeatMode.one &&
+        current != null &&
+        atLogicalEnd;
+    if (!shouldWatch) {
+      _cancelEndOfTrackWatchdog();
+      return;
+    }
+    if (_endOfTrackWatchdog != null && _endOfTrackWatchdogIndex == current) {
+      return;
+    }
+    _cancelEndOfTrackWatchdog();
+    _endOfTrackWatchdogIndex = current;
+    AudioDiagnostics.instance.log('AUDIO_END_OF_TRACK_WATCHDOG_ARMED', {
+      ..._queueDiagnosticFields(currentIndex: current),
+      'positionMs': position.inMilliseconds,
+      'durationMs': duration.inMilliseconds,
+      'gracePeriodMs': _endOfTrackGracePeriod.inMilliseconds,
+    });
+    _endOfTrackWatchdog = Timer(_endOfTrackGracePeriod, () {
+      _endOfTrackWatchdog = null;
+      _endOfTrackWatchdogIndex = null;
+      unawaited(_recoverStalledEndOfTrack(current, duration));
+    });
+  }
+
+  void _runPlaybackGuard() {
+    if (!_sourceReady || !_playbackRequested || _queueItems.isEmpty) return;
+    final position = _player.position;
+    _observePositionWrapAtEnd(position);
+    _observeEndOfTrack(position);
+  }
+
+  void _observePositionWrapAtEnd(Duration position) {
+    final current = _activeQueueIndex;
+    final duration = _player.duration;
+    final previous = _lastEndGuardIndex == current
+        ? _lastEndGuardPosition
+        : null;
+    _lastEndGuardIndex = current;
+    _lastEndGuardPosition = position;
+
+    final ignoredUntil = _ignorePositionWrapUntil;
+    if (ignoredUntil != null && _clock().isBefore(ignoredUntil)) return;
+    final wrapped =
+        current != null &&
+        previous != null &&
+        duration != null &&
+        duration > Duration.zero &&
+        previous.inMilliseconds >=
+            (duration.inMilliseconds * 0.9).round() &&
+        position <= _endOfTrackWrapDestinationTolerance;
+    if (!wrapped ||
+        !_sourceReady ||
+        !_playbackRequested ||
+        !_player.playing ||
+        _repeatMode == AudioServiceRepeatMode.one) {
+      return;
+    }
+    AudioDiagnostics.instance.log('AUDIO_END_OF_TRACK_POSITION_WRAPPED', {
+      ..._queueDiagnosticFields(currentIndex: current),
+      'previousPositionMs': previous.inMilliseconds,
+      'positionMs': position.inMilliseconds,
+      'durationMs': duration.inMilliseconds,
+    });
+    _handleCompletedState(reason: 'position-wrapped-at-logical-end');
+  }
+
+  void _cancelEndOfTrackWatchdog() {
+    _endOfTrackWatchdog?.cancel();
+    _endOfTrackWatchdog = null;
+    _endOfTrackWatchdogIndex = null;
+  }
+
+  Future<void> _recoverStalledEndOfTrack(
+    int expectedIndex,
+    Duration expectedDuration,
+  ) async {
+    final duration = _player.duration;
+    final stillAtEnd =
+        duration != null &&
+        duration > Duration.zero &&
+        _player.position >= duration - _endOfTrackPositionTolerance;
+    if (!_sourceReady ||
+        !_playbackRequested ||
+        !_player.playing ||
+        _player.processingState != ProcessingState.ready ||
+        _repeatMode == AudioServiceRepeatMode.one ||
+        _activeQueueIndex != expectedIndex ||
+        !stillAtEnd) {
+      return;
+    }
+
+    AudioDiagnostics.instance.log('AUDIO_END_OF_TRACK_STALL_DETECTED', {
+      ..._queueDiagnosticFields(currentIndex: expectedIndex),
+      'positionMs': _player.position.inMilliseconds,
+      'durationMs': duration.inMilliseconds,
+      'expectedDurationMs': expectedDuration.inMilliseconds,
+    });
+    final target = _relativeQueueIndex(1);
+    if (target == null) {
+      await pause();
+      _broadcastPlaybackState(_player.playbackEvent);
+      AudioDiagnostics.instance.log('AUDIO_END_OF_TRACK_STALL_RECOVERED', {
+        ..._queueDiagnosticFields(currentIndex: expectedIndex),
+        'action': 'queue-ended',
+      });
+      return;
+    }
+    _handleCompletedState(reason: 'position-stalled-at-logical-end');
+  }
+
+  void _handleCompletedState({required String reason}) {
+    _cancelEndOfTrackWatchdog();
+    final current = _activeQueueIndex;
+    final target = _repeatMode == AudioServiceRepeatMode.one
+        ? current
+        : _relativeQueueIndex(1);
+    if (!_playbackRequested || current == null || target == null) {
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_ENDED', {
+        ..._queueDiagnosticFields(),
+      });
+      return;
+    }
+    if (_autoAdvanceInFlight != null) {
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_AUTO_ADVANCE_EXPECTED', {
+        ..._queueDiagnosticFields(),
+        'targetIndex': target,
+        'deduplicated': true,
+      });
+      return;
+    }
+    final recoveryAttemptId = AudioDiagnostics.instance.nextId('advance');
+    AudioDiagnostics.instance.log('AUDIO_QUEUE_AUTO_ADVANCE_STARTED', {
+      ..._queueDiagnosticFields(),
+      'targetIndex': target,
+      'recoveryAttemptId': recoveryAttemptId,
+      'reason': reason,
+    });
+    final operation = _fallbackAutoAdvance(target, recoveryAttemptId);
+    _autoAdvanceInFlight = operation;
+    unawaited(
+      operation.whenComplete(() {
+        if (identical(_autoAdvanceInFlight, operation)) {
+          _autoAdvanceInFlight = null;
+        }
+      }),
+    );
+  }
+
+  Future<void> _fallbackAutoAdvance(
+    int target,
+    String recoveryAttemptId,
+  ) async {
+    try {
+      await skipToQueueItem(target);
+      await _startPlayback();
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_AUTO_ADVANCE_COMPLETED', {
+        ..._queueDiagnosticFields(),
+        'targetIndex': target,
+        'recoveryAttemptId': recoveryAttemptId,
+      });
+    } catch (error, stackTrace) {
+      AudioDiagnostics.instance.log('AUDIO_QUEUE_AUTO_ADVANCE_FAILED', {
+        ..._queueDiagnosticFields(),
+        'targetIndex': target,
+        'recoveryAttemptId': recoveryAttemptId,
+        'error': error,
+      });
+      final item = _currentItem;
+      if (item != null) _recordPlaybackFailure(item, error, stackTrace);
     }
   }
 

@@ -58,6 +58,7 @@ class ListeningActivityTracker with WidgetsBindingObserver {
     required this.store,
     MonotonicMilliseconds? monotonicMilliseconds,
     DateTime Function()? clock,
+    this.trackTransitionSettleDelay = const Duration(milliseconds: 150),
   }) : _monotonicMilliseconds =
            monotonicMilliseconds ?? (() => _stopwatch.elapsedMilliseconds),
        _clock = clock ?? DateTime.now;
@@ -68,14 +69,17 @@ class ListeningActivityTracker with WidgetsBindingObserver {
   final ListeningEventStore store;
   final MonotonicMilliseconds _monotonicMilliseconds;
   final DateTime Function() _clock;
+  final Duration trackTransitionSettleDelay;
 
   static final Stopwatch _stopwatch = Stopwatch()..start();
   static const _installationKey = 'homespotify_installation_id';
   static const _heartbeatMs = 30_000;
+  static const _logicalEndToleranceMs = 1_000;
 
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Timer? _tickTimer;
   Timer? _retryTimer;
+  Timer? _trackTransitionTimer;
   Future<void>? _sendInFlight;
   bool _disposed = false;
   bool _playing = false;
@@ -118,7 +122,7 @@ class ListeningActivityTracker with WidgetsBindingObserver {
     }
     if (_disposed) return;
     _installationId = installationId;
-    if (_playing) _openSessionIfNeeded();
+    if (_playing) _scheduleSessionOpen();
     await _flushPending();
   }
 
@@ -126,14 +130,17 @@ class ListeningActivityTracker with WidgetsBindingObserver {
     final nextTrackId = item == null ? null : int.tryParse(item.id);
     if (_trackId != null && nextTrackId != _trackId && _sessionId != null) {
       _accrue();
-      _queueEvent('PLAY_SKIPPED', terminal: true);
+      _queueEvent(
+        _isAtLogicalEnd ? 'PLAY_COMPLETED' : 'PLAY_SKIPPED',
+        terminal: true,
+      );
     }
     _trackId = nextTrackId;
     _positionMs = 0;
     _durationMs = item?.duration?.inMilliseconds ?? 0;
     _lastObservedPositionMs = null;
     _lastObservedAt = null;
-    if (nextTrackId != null && _playing) _openSessionIfNeeded();
+    if (nextTrackId != null && _playing) _scheduleSessionOpen();
   }
 
   void _onPlaybackState(PlaybackState state) {
@@ -155,13 +162,16 @@ class ListeningActivityTracker with WidgetsBindingObserver {
     if (_playing) {
       _lastAccrualAt = _monotonicMilliseconds();
       if (_sessionId == null) {
-        _openSessionIfNeeded();
+        _scheduleSessionOpen();
       } else {
         _queueEvent('PLAY_RESUMED');
       }
     } else if (_sessionId != null && !completed && !failed) {
+      _trackTransitionTimer?.cancel();
       _accrue();
       _queueEvent('PLAY_PAUSED');
+    } else if (!_playing) {
+      _trackTransitionTimer?.cancel();
     }
   }
 
@@ -206,6 +216,23 @@ class ListeningActivityTracker with WidgetsBindingObserver {
     logAudioAction('LISTENING_SESSION_STARTED track=$trackId');
   }
 
+  void _scheduleSessionOpen() {
+    _trackTransitionTimer?.cancel();
+    final expectedTrackId = _trackId;
+    if (!_playing || expectedTrackId == null || _installationId == null) {
+      return;
+    }
+    if (trackTransitionSettleDelay == Duration.zero) {
+      _openSessionIfNeeded();
+      return;
+    }
+    _trackTransitionTimer = Timer(trackTransitionSettleDelay, () {
+      _trackTransitionTimer = null;
+      if (_disposed || !_playing || _trackId != expectedTrackId) return;
+      _openSessionIfNeeded();
+    });
+  }
+
   void _tick() {
     if (!_playing || _sessionId == null) return;
     _accrue();
@@ -217,12 +244,19 @@ class ListeningActivityTracker with WidgetsBindingObserver {
 
   void _accrue() {
     final now = _monotonicMilliseconds();
-    if (_playing && _sessionId != null && _lastAccrualAt >= 0) {
+    if (_playing &&
+        _sessionId != null &&
+        _lastAccrualAt >= 0 &&
+        !_isAtLogicalEnd) {
       final delta = now - _lastAccrualAt;
       if (delta > 0 && delta < 10_000) _listenedMs += delta;
     }
     _lastAccrualAt = now;
   }
+
+  bool get _isAtLogicalEnd =>
+      _durationMs > 0 &&
+      _positionMs >= max(0, _durationMs - _logicalEndToleranceMs);
 
   void _queueEvent(String type, {bool terminal = false}) {
     final sessionId = _sessionId;
@@ -315,6 +349,7 @@ class ListeningActivityTracker with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _tickTimer?.cancel();
     _retryTimer?.cancel();
+    _trackTransitionTimer?.cancel();
     _accrue();
     _queueEvent('PLAY_STOPPED', terminal: true);
     _disposed = true;

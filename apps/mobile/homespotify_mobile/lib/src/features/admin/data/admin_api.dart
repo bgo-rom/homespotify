@@ -31,6 +31,24 @@ class AdminOverview {
     required this.activeUsers,
     required this.blockedUsers,
     required this.activeSessions,
+    required this.operationsStatus,
+    required this.audioErrors24h,
+    required this.failedImports,
+    required this.suspectFiles,
+    required this.missingFiles,
+    required this.inconsistentSizeFiles,
+    required this.invalidPathFiles,
+    required this.backupEnabled,
+    required this.backupRunning,
+    required this.backupRetentionCount,
+    required this.scannerRunning,
+    required this.scannerQueuedImports,
+    required this.scannerActiveImports,
+    this.backupLastSuccessAt,
+    this.backupNextRunAt,
+    this.backupLastError,
+    this.scannerLastCompletedAt,
+    this.scannerLastError,
   });
 
   factory AdminOverview.fromJson(Map<String, dynamic> json) {
@@ -39,6 +57,11 @@ class AdminOverview {
     final library = json['library'] as Map<String, dynamic>? ?? const {};
     final users = json['users'] as Map<String, dynamic>? ?? const {};
     final sessions = json['sessions'] as Map<String, dynamic>? ?? const {};
+    final operations =
+        json['operations'] as Map<String, dynamic>? ?? const {};
+    final files = operations['files'] as Map<String, dynamic>? ?? const {};
+    final backup = operations['backup'] as Map<String, dynamic>? ?? const {};
+    final scanner = operations['scanner'] as Map<String, dynamic>? ?? const {};
     return AdminOverview(
       backendStatus: backend['status'] as String? ?? 'inconnu',
       uptimeSeconds: (backend['uptimeSeconds'] as num?)?.toInt() ?? 0,
@@ -53,6 +76,28 @@ class AdminOverview {
       activeUsers: (users['active'] as num?)?.toInt() ?? 0,
       blockedUsers: (users['blocked'] as num?)?.toInt() ?? 0,
       activeSessions: (sessions['active'] as num?)?.toInt() ?? 0,
+      operationsStatus: operations['status'] as String? ?? 'unknown',
+      audioErrors24h: (operations['audioErrors24h'] as num?)?.toInt() ?? 0,
+      failedImports: (operations['failedImports'] as num?)?.toInt() ?? 0,
+      suspectFiles: (files['suspect'] as num?)?.toInt() ?? 0,
+      missingFiles: (files['missing'] as num?)?.toInt() ?? 0,
+      inconsistentSizeFiles:
+          (files['inconsistentSize'] as num?)?.toInt() ?? 0,
+      invalidPathFiles: (files['invalidPath'] as num?)?.toInt() ?? 0,
+      backupEnabled: backup['enabled'] as bool? ?? false,
+      backupRunning: backup['running'] as bool? ?? false,
+      backupRetentionCount:
+          (backup['retentionCount'] as num?)?.toInt() ?? 0,
+      backupLastSuccessAt: backup['lastSuccessAt'] as String?,
+      backupNextRunAt: backup['nextRunAt'] as String?,
+      backupLastError: backup['lastError'] as String?,
+      scannerRunning: scanner['running'] as bool? ?? false,
+      scannerQueuedImports:
+          (scanner['queuedImports'] as num?)?.toInt() ?? 0,
+      scannerActiveImports:
+          (scanner['activeImports'] as num?)?.toInt() ?? 0,
+      scannerLastCompletedAt: scanner['lastCompletedAt'] as String?,
+      scannerLastError: scanner['lastError'] as String?,
     );
   }
 
@@ -69,6 +114,24 @@ class AdminOverview {
   final int activeUsers;
   final int blockedUsers;
   final int activeSessions;
+  final String operationsStatus;
+  final int audioErrors24h;
+  final int failedImports;
+  final int suspectFiles;
+  final int missingFiles;
+  final int inconsistentSizeFiles;
+  final int invalidPathFiles;
+  final bool backupEnabled;
+  final bool backupRunning;
+  final int backupRetentionCount;
+  final String? backupLastSuccessAt;
+  final String? backupNextRunAt;
+  final String? backupLastError;
+  final bool scannerRunning;
+  final int scannerQueuedImports;
+  final int scannerActiveImports;
+  final String? scannerLastCompletedAt;
+  final String? scannerLastError;
 }
 
 class AdminUser {
@@ -137,6 +200,7 @@ class AdminMusicRequest {
     required this.unavailableItemCount,
     required this.items,
     this.album,
+    this.artworkUrl,
     this.userNote,
     this.ownerNote,
     this.externalUrl,
@@ -154,6 +218,7 @@ class AdminMusicRequest {
       title: json['title'] as String? ?? '',
       artist: json['artist'] as String? ?? '',
       album: json['album'] as String?,
+      artworkUrl: json['artworkUrl'] as String? ?? json['coverUrl'] as String?,
       itemType:
           json['requestType'] as String? ??
           json['itemType'] as String? ??
@@ -185,6 +250,7 @@ class AdminMusicRequest {
   final String title;
   final String artist;
   final String? album;
+  final String? artworkUrl;
   final String itemType;
   final String status;
   final String? userNote;
@@ -258,6 +324,31 @@ class AdminTrackSearchResult {
   final String artist;
   final String album;
   final double? durationSeconds;
+}
+
+class AdminSpotifyLink {
+  const AdminSpotifyLink({
+    required this.url,
+    required this.exact,
+    required this.source,
+    required this.title,
+    required this.artist,
+  });
+
+  factory AdminSpotifyLink.fromJson(Map<String, dynamic> json) =>
+      AdminSpotifyLink(
+        url: json['url'] as String? ?? '',
+        exact: json['exact'] as bool? ?? false,
+        source: json['source'] as String? ?? 'SPOTIFY_SEARCH',
+        title: json['title'] as String? ?? '',
+        artist: json['artist'] as String? ?? '',
+      );
+
+  final String url;
+  final bool exact;
+  final String source;
+  final String title;
+  final String artist;
 }
 
 class AdminImportJob {
@@ -447,6 +538,20 @@ class AdminApi {
     return AdminOverview.fromJson(json);
   }
 
+  Future<void> runBackup() async {
+    await _request(
+      () => _dio.post('/api/admin/backup/run'),
+      allowedStatuses: const {201},
+    );
+  }
+
+  Future<void> scanStorage() async {
+    await _request(
+      () => _dio.post('/api/admin/imports/scan'),
+      allowedStatuses: const {202},
+    );
+  }
+
   Future<List<AdminUser>> listUsers() async {
     final json = await _request(() => _dio.get('/api/admin/users'));
     final items = json['items'] as List<dynamic>? ?? const [];
@@ -573,6 +678,13 @@ class AdminApi {
         .whereType<Map<String, dynamic>>()
         .map(AdminTrackSearchResult.fromJson)
         .toList(growable: false);
+  }
+
+  Future<AdminSpotifyLink> resolveSpotifyLink(int requestId) async {
+    final json = await _request(
+      () => _dio.get('/api/admin/music-requests/$requestId/spotify-link'),
+    );
+    return AdminSpotifyLink.fromJson(json);
   }
 
   Future<List<AdminImportJob>> listImports({

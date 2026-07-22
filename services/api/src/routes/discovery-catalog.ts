@@ -15,6 +15,8 @@ import {
   type CatalogEntityType,
   type DiscoveryProviderId,
 } from '../discovery/catalog/types.js';
+import { listAllMusicRequests } from '../discovery/music-request-service.js';
+import { normalizeForMatch } from '../discovery/preview-provider.js';
 
 const ENTITY_TYPES: readonly CatalogEntityType[] = ['track', 'artist', 'album', 'playlist'];
 const MIN_QUERY_LENGTH = 2;
@@ -296,6 +298,76 @@ export function registerDiscoveryCatalogRoutes(
         });
       }
       return entity;
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/admin/music-requests/:id/spotify-link',
+    { preHandler: guards.requireAdmin('music_request.review') },
+    async (request, reply) => {
+      const requestId = Number(request.params.id);
+      if (!Number.isSafeInteger(requestId) || requestId < 1) {
+        return badRequest(reply, 'Identifiant de demande invalide.');
+      }
+      const musicRequest = listAllMusicRequests(app.dbHandle).find(
+        (entry) => entry.id === requestId,
+      );
+      if (!musicRequest) {
+        return reply.code(404).send({
+          statusCode: 404,
+          error: 'request_not_found',
+          message: 'Demande inconnue.',
+        });
+      }
+      const query = [musicRequest.title, musicRequest.artist]
+        .filter((part) => part.trim().length > 0)
+        .join(' ');
+      const fallbackUrl = `https://open.spotify.com/search/${encodeURIComponent(query)}`;
+      const entityType: CatalogEntityType = musicRequest.requestType === 'ALBUM'
+        ? 'album'
+        : musicRequest.requestType === 'PLAYLIST'
+          ? 'playlist'
+          : 'track';
+
+      if (deps.discoveryEnabled) {
+        const page = await deps.service.search({
+          query,
+          type: entityType,
+          limit: 10,
+          cursor: null,
+          providerFilter: ['spotify'],
+        });
+        const expectedTitle = normalizeForMatch(musicRequest.title);
+        const expectedArtist = normalizeForMatch(musicRequest.artist);
+        const match = page.items.find((item) => {
+          if (normalizeForMatch(item.title) !== expectedTitle) return false;
+          if (entityType === 'playlist' || expectedArtist.length === 0) return true;
+          return item.artists.some(
+            (artist) => normalizeForMatch(artist.name) === expectedArtist,
+          );
+        });
+        const reference = match?.providerReferences.find(
+          (entry) => entry.provider === 'spotify' && entry.externalUrl !== null,
+        );
+        if (reference?.externalUrl) {
+          return {
+            url: reference.externalUrl,
+            exact: true,
+            source: 'SPOTIFY_WEB_API',
+            title: match?.title ?? musicRequest.title,
+            artist: match?.artists.map((artist) => artist.name).join(', ') ?? musicRequest.artist,
+          };
+        }
+      }
+      // Secours sans scraping ni API privée : ouvre la recherche Spotify déjà
+      // remplie. Le OWNER ne retape rien, même sans credentials développeur.
+      return {
+        url: fallbackUrl,
+        exact: false,
+        source: 'SPOTIFY_SEARCH',
+        title: musicRequest.title,
+        artist: musicRequest.artist,
+      };
     },
   );
 

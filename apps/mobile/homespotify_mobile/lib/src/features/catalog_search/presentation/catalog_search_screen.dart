@@ -139,8 +139,9 @@ class _CatalogSearchScreenState extends ConsumerState<CatalogSearchScreen> {
                 autofocus: true,
                 style: const TextStyle(color: Colors.white),
                 textInputAction: TextInputAction.search,
-                onChanged: (value) =>
-                    ref.read(catalogSearchProvider.notifier).onQueryChanged(value),
+                onChanged: (value) => ref
+                    .read(catalogSearchProvider.notifier)
+                    .onQueryChanged(value),
                 decoration: InputDecoration(
                   hintText: 'Titre, artiste, album ou ISRC…',
                   hintStyle: const TextStyle(color: Colors.white38),
@@ -449,18 +450,13 @@ class CatalogResultCard extends ConsumerWidget {
                     child: result.imageUrl == null
                         ? ColoredBox(
                             color: HomeDesign.surfaceMuted,
-                            child: Icon(
-                              switch (result.entityType) {
-                                CatalogEntityType.artist =>
-                                  Icons.person_rounded,
-                                CatalogEntityType.album =>
-                                  Icons.album_rounded,
-                                CatalogEntityType.playlist =>
-                                  Icons.queue_music_rounded,
-                                _ => Icons.music_note_rounded,
-                              },
-                              color: Colors.white38,
-                            ),
+                            child: Icon(switch (result.entityType) {
+                              CatalogEntityType.artist => Icons.person_rounded,
+                              CatalogEntityType.album => Icons.album_rounded,
+                              CatalogEntityType.playlist =>
+                                Icons.queue_music_rounded,
+                              _ => Icons.music_note_rounded,
+                            }, color: Colors.white38),
                           )
                         : Image.network(
                             result.imageUrl!,
@@ -495,9 +491,7 @@ class CatalogResultCard extends ConsumerWidget {
                           ),
                           if (result.explicit == true)
                             const Padding(
-                              padding: EdgeInsets.only(
-                                left: HomeDesign.space4,
-                              ),
+                              padding: EdgeInsets.only(left: HomeDesign.space4),
                               child: Icon(
                                 Icons.explicit_rounded,
                                 size: 16,
@@ -506,8 +500,7 @@ class CatalogResultCard extends ConsumerWidget {
                             ),
                         ],
                       ),
-                      if (result.artistLabel.isNotEmpty ||
-                          result.album != null)
+                      if (result.artistLabel.isNotEmpty || result.album != null)
                         Text(
                           [
                             if (result.artistLabel.isNotEmpty)
@@ -535,9 +528,7 @@ class CatalogResultCard extends ConsumerWidget {
                           // UNKNOWN n'est jamais affiché comme indisponible.
                           for (final link in result.positiveLinks)
                             _Badge(
-                              key: ValueKey(
-                                'platform-badge-${link.platform}',
-                              ),
+                              key: ValueKey('platform-badge-${link.platform}'),
                               label:
                                   _platformLabels[link.platform] ??
                                   link.platform,

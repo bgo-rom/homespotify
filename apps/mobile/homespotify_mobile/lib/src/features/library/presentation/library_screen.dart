@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../../core/theme/home_design.dart';
 import '../../../core/widgets/home_ui_states.dart';
+import '../../offline/application/offline_index.dart';
+import '../../offline/application/offline_artwork_cache.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../data/library_api.dart';
 import '../domain/track.dart';
@@ -27,6 +29,8 @@ class LibraryScreen extends ConsumerStatefulWidget {
 
 class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   int? _loadingTrackId;
+  bool _artworkSyncRunning = false;
+  String? _artworkSyncSignature;
 
   void _toggleSearch() {
     ref.read(librarySearchVisibleProvider.notifier).toggle();
@@ -40,8 +44,16 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(libraryProvider);
+    final mergedTracks = ref.watch(mergedLibraryTracksProvider);
     final searchVisible = ref.watch(librarySearchVisibleProvider);
-    final trackCount = library.asData?.value.length;
+    final trackCount = mergedTracks.isEmpty ? null : mergedTracks.length;
+    final hasOfflineTracks = ref.watch(
+      offlineAvailableTrackIdsProvider.select((ids) => ids.isNotEmpty),
+    );
+    final offlineIndex = ref.watch(offlineIndexProvider).asData?.value;
+    if (library.hasValue && offlineIndex != null) {
+      _scheduleArtworkSync(offlineIndex);
+    }
 
     return Scaffold(
       backgroundColor: HomeDesign.background,
@@ -87,9 +99,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
               actions: [
                 IconButton(
-                  key: const ValueKey('remote-search-button'),
-                  tooltip: 'Rechercher sur un nœud privé',
-                  onPressed: () => context.push('/remote-search'),
+                  key: const ValueKey('library-downloads-button'),
+                  tooltip: 'Téléchargements',
+                  onPressed: () => context.push('/downloads'),
+                  icon: const Icon(Icons.download_for_offline_outlined),
+                ),
+                IconButton(
+                  key: const ValueKey('catalog-request-search-button'),
+                  tooltip: 'Rechercher et demander une musique',
+                  onPressed: () => context.push('/catalog-search'),
                   icon: const Icon(Icons.travel_explore_rounded),
                 ),
                 IconButton(
@@ -114,6 +132,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ],
             ),
             const SliverToBoxAdapter(child: LibrarySectionNavigation()),
+            const SliverToBoxAdapter(child: _DownloadedFilterChip()),
             SliverToBoxAdapter(
               child: AnimatedSize(
                 duration: HomeDesign.animationDuration(
@@ -128,33 +147,47 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
             ),
             ...library.when(
-              loading: () => <Widget>[
-                SliverToBoxAdapter(
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxWidth: HomeDesign.maxContentWidth,
+              loading: () => hasOfflineTracks
+                  ? <Widget>[
+                      _VisibleTrackList(
+                        loadingTrackId: _loadingTrackId,
+                        onPlay: _playQueue,
                       ),
-                      child: SizedBox(
-                        height: 520,
-                        child: HomeLoadingSkeleton(rows: 7),
+                    ]
+                  : <Widget>[
+                      SliverToBoxAdapter(
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: HomeDesign.maxContentWidth,
+                            ),
+                            child: SizedBox(
+                              height: 520,
+                              child: HomeLoadingSkeleton(rows: 7),
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ),
-              ],
-              error: (error, _) => <Widget>[
-                SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: HomeErrorState(
-                    message: error is LibraryApiException
-                        ? error.message
-                        : 'Une erreur inattendue est survenue.',
-                    onRetry: () => ref.invalidate(libraryProvider),
-                  ),
-                ),
-              ],
-              data: (tracks) => tracks.isEmpty
+                    ],
+              error: (error, _) => hasOfflineTracks
+                  ? <Widget>[
+                      _VisibleTrackList(
+                        loadingTrackId: _loadingTrackId,
+                        onPlay: _playQueue,
+                      ),
+                    ]
+                  : <Widget>[
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: HomeErrorState(
+                          message: error is LibraryApiException
+                              ? error.message
+                              : 'Une erreur inattendue est survenue.',
+                          onRetry: () => ref.invalidate(libraryProvider),
+                        ),
+                      ),
+                    ],
+              data: (_) => mergedTracks.isEmpty
                   ? const <Widget>[
                       SliverFillRemaining(
                         hasScrollBody: false,
@@ -178,6 +211,32 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         ),
       ),
     );
+  }
+
+  void _scheduleArtworkSync(OfflineIndex index) {
+    final missing =
+        index.availableTrackIds
+            .where((trackId) => index.coverUriForTrack(trackId) == null)
+            .toList()
+          ..sort();
+    final signature = missing.join(',');
+    if (_artworkSyncRunning ||
+        missing.isEmpty ||
+        signature == _artworkSyncSignature) {
+      return;
+    }
+    _artworkSyncSignature = signature;
+    _artworkSyncRunning = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final changed = await ref
+          .read(offlineArtworkCacheProvider)
+          .ensureMissingCovers(index);
+      if (!mounted) return;
+      _artworkSyncRunning = false;
+      if (changed) {
+        ref.invalidate(offlineIndexProvider);
+      }
+    });
   }
 
   Future<void> _playQueue(
@@ -214,6 +273,38 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         setState(() => _loadingTrackId = null);
       }
     }
+  }
+}
+
+/// Filtre « Téléchargées » : visible seulement quand au moins une piste est
+/// disponible hors ligne (aucun bruit pour un compte sans téléchargement).
+class _DownloadedFilterChip extends ConsumerWidget {
+  const _DownloadedFilterChip();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final downloadedIds = ref.watch(offlineAvailableTrackIdsProvider);
+    final selected = ref.watch(libraryDownloadedOnlyProvider);
+    if (downloadedIds.isEmpty && !selected) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: FilterChip(
+          key: const ValueKey('library-filter-downloaded'),
+          avatar: Icon(
+            Icons.download_done_rounded,
+            size: 16,
+            color: selected ? HomeDesign.accent : Colors.white54,
+          ),
+          label: Text('Téléchargées (${downloadedIds.length})'),
+          selected: selected,
+          selectedColor: HomeDesign.accent.withValues(alpha: 0.22),
+          onSelected: (_) =>
+              ref.read(libraryDownloadedOnlyProvider.notifier).toggle(),
+        ),
+      ),
+    );
   }
 }
 

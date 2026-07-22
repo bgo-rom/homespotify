@@ -1,6 +1,6 @@
 # DISCOVERY_CATALOG.md — Recherche catalogue multi-fournisseurs
 
-Dernière mise à jour : 2026-07-19.
+Dernière mise à jour : 2026-07-20.
 
 Système de découverte de métadonnées musicales et de création de demandes.
 Périmètre STRICT : DISCOVERY (métadonnées) → PREVIEW (extrait officiel) →
@@ -21,7 +21,7 @@ Flutter (features/catalog_search)
 ```
 
 Fichiers backend : `services/api/src/discovery/catalog/`
-(`types.ts`, `spotify-catalog-provider.ts`, `musicbrainz-catalog-provider.ts`,
+(`types.ts`, `itunes-discovery-provider.ts`, `spotify-catalog-provider.ts`, `musicbrainz-catalog-provider.ts`,
 `apple-music-discovery-provider.ts`, `merge.ts`, `discovery-cache.ts`,
 `discovery-catalog-service.ts`) + `routes/discovery-catalog.ts`.
 Le registre des providers est construit dans `app.ts`
@@ -31,16 +31,26 @@ Le registre des providers est construit dans `app.ts`
 
 | Provider | État | Condition d'activation | Capacités |
 |---|---|---|---|
+| `deezer` | **Actif, enrichissement principal gratuit** | aucune clé ; désactivable par `DEEZER_DISCOVERY_ENABLED=false` | search track/artist/album, ISRC, discographie, tracklist, photos artiste, pochettes HD, preview officielle |
+| `itunes` | **Actif, source gratuite de secours** | aucune clé ni compte | search track/artist/album, discographie, tracklist, liens, pochettes, preview officielle |
 | `spotify` | Prêt, **désactivé sans credentials** | `SPOTIFY_DISCOVERY_ENABLED=true` + client id/secret | search track/artist/album/playlist, ISRC, discographie, tracklist, playlist, liens, marché |
 | `musicbrainz` | Prêt, actif si User-Agent | `MUSICBRAINZ_USER_AGENT` renseigné | search track/artist/album, ISRC, discographie, tracklist, relations URL |
 | `apple_music` | Prêt, actif si secrets MusicKit | `APPLE_MUSIC_*` + flag discovery | search, ISRC, discographie, tracklist, liens, **preview officielle** |
-| `deezer` | **Désactivé** (`tos_unverified`) | — | aucune (nouveaux tokens développeur non confirmables en 2026) |
 | `tidal` | **Désactivé** (`credentials_missing`) | app TIDAL enregistrée + credentials + flag | non implémenté ; les previews TIDAL exigeraient le SDK officiel |
 | Bandcamp | Jamais d'appel direct | — | lien uniquement via relation URL MusicBrainz → `LINK_FOUND` |
 | Qobuz | Jamais d'appel direct | — | idem Bandcamp ; sinon `UNKNOWN` |
 
 Vérifications Phase 0 (documentation officielle, juillet 2026) :
 
+- **Deezer** : le point d'accès public `api.deezer.com`, sans clé, est utilisé
+  en lecture seule pour la découverte, les images et les extraits officiels.
+  Aucune piste complète, aucun flux d'abonnement et aucun DRM n'est appelé.
+  Vérification réelle du 2026-07-20 : `PARAFFINE — Ajna` fournit titre, album
+  `L’HERMITE`, pochette, photo artiste et preview ; les 10 premiers artistes
+  `Ajna` et albums `Antidote` testés possèdent tous une image.
+- **iTunes Search** : API publique sans clé, storefront par pays, utilisée
+  comme deuxième source pour les résultats illustrés. Les réponses sont
+  normalisées puis mises en cache dans SQLite ; aucun fichier audio n'est acquis.
 - **Spotify** : search/artists/albums/tracks restent ouverts aux nouvelles
   applications ; recommendations, related-artists, audio-features et
   playlists éditoriales/algorithmiques sont restreints (blog officiel du
@@ -48,14 +58,15 @@ Vérifications Phase 0 (documentation officielle, juillet 2026) :
   jamais utilisé comme source de preview. Flux Client Credentials, secret
   côté serveur uniquement, single-flight sur le refresh de token,
   `Retry-After` respecté sur 429.
+  Depuis mars 2026, le Development Mode exige un compte Spotify Premium et
+  borne `GET /search` à 10 résultats. Le panel OWNER utilise l'API officielle
+  seulement quand les credentials sont configurés ; sinon il génère une URL
+  `open.spotify.com/search/…` préremplie, sans scraping ni endpoint privé.
 - **MusicBrainz** : queue globale 1 req/s (client existant réutilisé),
   User-Agent identifiable obligatoire, retry borné sur 503.
 - **Apple Music** : réutilise le provider MusicKit existant (JWT ES256) —
   aucun second client de signature. L'attribut documenté `previews` fournit
   l'extrait officiel.
-- **Deezer** : API historique accessible mais l'attribution de nouveaux
-  tokens développeur n'est pas confirmable → connecteur conservé désactivé,
-  disponibilité `UNKNOWN`.
 - **TIDAL** : plateforme développeur officielle existante (openapi.tidal.com,
   OAuth client credentials pour le catalogue) ; nécessite un enregistrement
   d'application → désactivé par défaut, interface conservée.
@@ -78,14 +89,23 @@ Un provider coupé donne `PROVIDER_DISABLED` ; l'absence de preuve donne
 ## Déduplication et ranking
 
 Ordre déterministe : 1. ISRC exact ; 2. MBID exact ; 3. UPC ;
-4. identité normalisée (titre + artiste principal) + même empreinte de
-version + durée proche (±7 s documenté). Jamais de fusion
+4. identité visible normalisée (titre + artiste principal) + même empreinte de
+version. Une divergence de durée ou un `explicit=false` isolé ne crée jamais
+une seconde carte : la carte fusionnée conserve la preview, les images et les
+références les plus riches. Jamais de fusion
 original/remix, studio/live, explicite/censuré (regex de version partagée
-avec le pipeline média). Chaque fusion conserve toutes les références.
-Ranking reproductible par signaux structurels (exactitude titre/artiste,
-ISRC, multi-catalogue, image, liens, priorité provider) — jamais une
+avec le pipeline média). Les artistes de nom normalisé identique sont regroupés
+pour éliminer les doublons MusicBrainz et agréger la photo ; les albums ne sont
+regroupés que sur titre + artiste. Chaque fusion conserve toutes les références
+et les images HTTPS distinctes. Ranking reproductible par signaux structurels
+(exactitude titre/artiste, ISRC, multi-catalogue, image, preview, liens,
+priorité provider) — jamais une
 popularité propriétaire seule. Niveaux : EXACT / STRONG / POSSIBLE /
 AMBIGUOUS (les ambigus restent séparés).
+Pour une recherche `type=artist`, dès qu'un nom exact existe après fusion, les
+variantes fuzzy sont retirées. Deezer corrobore en plus ses homonymes exacts
+avec les titres retournés par la même requête : `Ajna` ID `1197134`, auteur de
+`AJCENSION` et `PARAFFINE`, passe avant les homonymes sans preuve de titre.
 
 ## Cache
 
@@ -94,6 +114,11 @@ unicité (provider, operation, query_hash, market), JSON **normalisé**
 uniquement (jamais la réponse brute, jamais de secret/token, jamais d'URL de
 preview persistée seule, jamais d'audio). TTL : recherche 4 h, ISRC 7 j,
 fiches 3 j, playlist 30 min, erreur temporaire 45 s (negative cache).
+Une page contenant une preview est limitée à 5 min ; si le fournisseur expose
+une expiration signée (paramètre Deezer `hdnea`), le TTL s'arrête 60 s avant
+cette expiration. La version V3 du schéma de cache invalide les anciennes pages
+qui contenaient des URLs Deezer déjà périmées ou des cartes dupliquées par une
+durée/statut explicite contradictoire.
 Purge : entrées expirées + bornage `DISCOVERY_CACHE_MAX_ENTRIES`.
 
 ## Routes
@@ -105,6 +130,8 @@ Purge : entrées expirées + bornage `DISCOVERY_CACHE_MAX_ENTRIES`.
 - `GET /api/discovery/playlists/:provider/:id`
 - `POST /api/discovery/resolve` (isrc | title+artist → entité fusionnée)
 - `GET /api/admin/discovery/health` (OWNER : latences, erreurs catégorisées, cache)
+- `GET /api/admin/music-requests/:id/spotify-link` (OWNER : lien Spotify exact
+  via Web API officielle, ou recherche Spotify préremplie en secours)
 
 Toutes exigent l'authentification. Rate limit : 40 req/min/utilisateur.
 Un provider en panne n'annule jamais les autres (statuts `OK/DEGRADED/
@@ -155,7 +182,9 @@ Le userId vient exclusivement du Bearer ; tout `userId` de payload est ignoré.
 `catalog_preview_controller.dart`, `request_from_catalog_sheet.dart`).
 Routes : `/catalog-search`, `/catalog-search/artists/:provider/:id`,
 `/catalog-search/albums/:provider/:id`. Entrée : icône loupe de l'écran
-Découvrir. Dépendance ajoutée : `url_launcher` (liens externes https).
+Découvrir et bouton catalogue de la Bibliothèque. Les anciens écrans
+`/node-fetch` et `/remote-search` ont été supprimés. Dépendance ajoutée :
+`url_launcher` (liens externes https).
 
 ## Procédures
 
@@ -177,9 +206,11 @@ dernière erreur catégorisée, hit ratio du cache) ; logs structurés
 
 ## Tests
 
-- Backend : `src/discovery/catalog/discovery-catalog.test.ts` (23 tests :
+- Backend : contrats iTunes/Deezer (mapping recherche, image, preview, album,
+  erreurs), fusion enrichie (photo artiste, déduplication des homonymes,
+  priorité aux résultats écoutables) + `discovery-catalog.test.ts` (25 tests :
   fusion, versions, cache, Spotify mocké 401/429/503, secrets) +
-  `src/routes/discovery-catalog.test.ts` (13 tests : auth, validation,
+  `src/routes/discovery-catalog.test.ts` (16 tests : auth, validation,
   résultats partiels, rate limit, santé OWNER, demandes ALBUM/userId).
 - Flutter : `catalog_search_controller_test.dart`,
   `catalog_preview_controller_test.dart`, `catalog_search_screen_test.dart`
@@ -190,6 +221,9 @@ dernière erreur catégorisée, hit ratio du cache) ; logs structurés
 
 - Spotify et Apple Music non testés contre les API réelles (aucun credential
   configuré) : à valider au premier branchement via le health OWNER.
+- L'API publique Deezer a été validée en réel sans clé le 2026-07-20, mais sa
+  disponibilité future n'est pas garantie contractuellement : iTunes et
+  MusicBrainz restent des secours indépendants et le flag permet de la couper.
 - Les playlists ne sont servies que par Spotify (si activé) ; MusicBrainz et
   Apple n'exposent pas de playlists consommateur ici.
 - La pagination fusionnée reprend le curseur du premier provider paginable ;

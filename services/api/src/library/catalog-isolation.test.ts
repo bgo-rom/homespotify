@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import FormData from 'form-data';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { buildApp } from '../app.js';
 import type { AppConfig } from '../config.js';
-import { userTracks } from '../db/schema.js';
+import { userHiddenTracks, userTracks } from '../db/schema.js';
 import { makeWav } from '../test/wav.js';
 
 /**
@@ -274,6 +274,63 @@ describe('ajouter / retirer de sa bibliothèque', () => {
       headers: auth(other.token),
     });
     expect(catalog.json().items.map((t: { id: number }) => t.id)).toContain(trackId);
+
+    // Un ajout ultérieur réactive la relation existante au lieu de créer une
+    // seconde ligne, et retire le masquage des recommandations.
+    const restored = await app.inject({
+      method: 'POST',
+      url: `/api/library/tracks/${trackId}`,
+      headers: auth(other.token),
+    });
+    expect(restored.statusCode).toBe(201);
+    expect(restored.json()).toMatchObject({ trackId, inMyLibrary: true, added: true });
+    const restoredAccesses = app.dbHandle.db
+      .select()
+      .from(userTracks)
+      .where(and(eq(userTracks.userId, other.id), eq(userTracks.trackId, trackId)))
+      .all();
+    expect(restoredAccesses).toHaveLength(1);
+    expect(restoredAccesses[0]!.isVisible).toBe(true);
+    expect(
+      app.dbHandle.db
+        .select()
+        .from(userHiddenTracks)
+        .where(
+          and(eq(userHiddenTracks.userId, other.id), eq(userHiddenTracks.trackId, trackId)),
+        )
+        .all(),
+    ).toHaveLength(0);
+  });
+
+  it('le retrait de la dernière copie logique survit au backfill du redémarrage', async () => {
+    const ownerToken = await bootstrapOwner();
+    const trackId = await importTrack(ownerToken, 'Import corrompu');
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: `/api/library/tracks/${trackId}`,
+      headers: auth(ownerToken),
+    });
+    expect(removed.statusCode).toBe(200);
+
+    const tombstone = app.dbHandle.db
+      .select({ isVisible: userTracks.isVisible })
+      .from(userTracks)
+      .where(eq(userTracks.trackId, trackId))
+      .get();
+    expect(tombstone?.isVisible).toBe(false);
+
+    const { backfillOwnerLibrary } = await import('./user-library-service.js');
+    expect(backfillOwnerLibrary(app.dbHandle)).toEqual({ assignedTracks: 0 });
+    expect(await libraryIds(ownerToken)).not.toContain(trackId);
+
+    // Idempotence côté API : une piste déjà masquée n'est plus supprimable.
+    const removedAgain = await app.inject({
+      method: 'DELETE',
+      url: `/api/library/tracks/${trackId}`,
+      headers: auth(ownerToken),
+    });
+    expect(removedAgain.statusCode).toBe(404);
   });
 });
 

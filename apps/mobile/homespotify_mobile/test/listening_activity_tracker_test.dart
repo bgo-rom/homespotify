@@ -33,6 +33,7 @@ void main() {
       store: store,
       monotonicMilliseconds: () => monotonicMs,
       clock: () => DateTime.utc(2026, 7, 16, 12),
+      trackTransitionSettleDelay: Duration.zero,
     )..start();
     await tester.pump();
 
@@ -90,6 +91,7 @@ void main() {
       api: _FakeApi(),
       store: store,
       monotonicMilliseconds: () => 0,
+      trackTransitionSettleDelay: Duration.zero,
     )..start();
     await tester.pump();
     playback.media.add(const MediaItem(id: '68', title: 'Titre'));
@@ -130,6 +132,7 @@ void main() {
         playback: playback,
         api: api,
         store: store,
+        trackTransitionSettleDelay: Duration.zero,
       )..start();
       await tester.pump();
       playback.media.add(const MediaItem(id: '69', title: 'Titre'));
@@ -143,6 +146,121 @@ void main() {
       expect(store.pendingRows, isNotEmpty);
       tracker.dispose();
       await tester.pump(const Duration(seconds: 10));
+    },
+  );
+
+  testWidgets(
+    'une oscillation Media3 pendant une transition ne crée aucune session fantôme',
+    (tester) async {
+      final playback = _FakePlaybackSource();
+      final store = _FakeStore();
+      final tracker = ListeningActivityTracker(
+        userId: 10,
+        playback: playback,
+        api: _FakeApi(),
+        store: store,
+        trackTransitionSettleDelay: const Duration(milliseconds: 150),
+      )..start();
+      await tester.pump();
+
+      playback.media.add(const MediaItem(id: '45', title: 'Ancienne'));
+      playback.states.add(
+        PlaybackState(
+          playing: true,
+          processingState: AudioProcessingState.ready,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 151));
+      expect(
+        store.allPayloads.where((event) => event['type'] == 'PLAY_STARTED'),
+        hasLength(1),
+      );
+
+      playback.media.add(const MediaItem(id: '17', title: 'Suivante'));
+      playback.media.add(const MediaItem(id: '45', title: 'Ancienne'));
+      playback.media.add(const MediaItem(id: '17', title: 'Suivante'));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        store.allPayloads.where((event) => event['type'] == 'PLAY_STARTED'),
+        hasLength(1),
+      );
+      await tester.pump(const Duration(milliseconds: 51));
+
+      final starts = store.allPayloads
+          .where((event) => event['type'] == 'PLAY_STARTED')
+          .toList(growable: false);
+      expect(starts, hasLength(2));
+      expect(starts.last['trackId'], 17);
+      expect(
+        store.allPayloads.where(
+          (event) => event['type'] == 'PLAY_STARTED' && event['trackId'] == 45,
+        ),
+        hasLength(1),
+      );
+      tracker.dispose();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'une transition à la fin est complétée sans cumuler le temps bloqué',
+    (tester) async {
+      final playback = _FakePlaybackSource();
+      final store = _FakeStore();
+      var monotonicMs = 0;
+      final tracker = ListeningActivityTracker(
+        userId: 11,
+        playback: playback,
+        api: _FakeApi(),
+        store: store,
+        monotonicMilliseconds: () => monotonicMs,
+        trackTransitionSettleDelay: Duration.zero,
+      )..start();
+      await tester.pump();
+
+      playback.media.add(
+        const MediaItem(
+          id: '12',
+          title: 'Fin naturelle',
+          duration: Duration(seconds: 120),
+        ),
+      );
+      playback.states.add(
+        PlaybackState(
+          playing: true,
+          processingState: AudioProcessingState.ready,
+        ),
+      );
+      await tester.pump();
+      monotonicMs = 1_000;
+      await tester.pump(const Duration(seconds: 1));
+
+      playback.position.add(
+        const PlayerPositionData(
+          position: Duration(seconds: 120),
+          bufferedPosition: Duration(seconds: 120),
+          duration: Duration(seconds: 120),
+        ),
+      );
+      monotonicMs = 31_000;
+      await tester.pump(const Duration(seconds: 30));
+      playback.media.add(const MediaItem(id: '13', title: 'Suivante'));
+      await tester.pump();
+
+      final terminal = store.allPayloads.lastWhere(
+        (event) => event['trackId'] == 12 && event['type'] == 'PLAY_COMPLETED',
+      );
+      expect(terminal['listenedMs'], lessThan(5_000));
+      expect(
+        store.allPayloads.where(
+          (event) =>
+              event['trackId'] == 12 && event['type'] == 'PLAY_SKIPPED',
+        ),
+        isEmpty,
+      );
+      tracker.dispose();
+      await tester.pump();
     },
   );
 }

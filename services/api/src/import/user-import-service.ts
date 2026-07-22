@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from 'node:fs';
+import { watch, type Dirent, type FSWatcher } from 'node:fs';
 import { mkdir, readdir, rename, stat } from 'node:fs/promises';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -45,6 +45,26 @@ export interface ImportServiceOptions {
   stableIntervalMs?: number;
   stableChecks?: number;
   maxStableChecks?: number;
+  maxConcurrentImports?: number;
+  reconciliationIntervalMs?: number;
+}
+
+export interface UserStorageScanSummary {
+  profiles: number;
+  discoveredFiles: number;
+  queuedFiles: number;
+  durationMs: number;
+}
+
+export interface UserStorageScanStatus {
+  running: boolean;
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  lastResult: UserStorageScanSummary | null;
+  lastErrorAt: string | null;
+  lastError: string | null;
+  queuedImports: number;
+  activeImports: number;
 }
 
 export class UserImportError extends Error {
@@ -130,7 +150,16 @@ function metadataJson(metadata: ParsedImportMetadata): string {
 export class UserImportService {
   private readonly watchers = new Map<number, FSWatcher>();
   private readonly scheduled = new Map<string, NodeJS.Timeout>();
+  private readonly queued = new Map<string, { paths: UserImportPaths; path: string }>();
   private readonly processing = new Map<string, Promise<number>>();
+  private activeQueuedImports = 0;
+  private reconciliationTimer: NodeJS.Timeout | null = null;
+  private scanInFlight: Promise<UserStorageScanSummary> | null = null;
+  private lastScanStartedAt: string | null = null;
+  private lastScanCompletedAt: string | null = null;
+  private lastScanResult: UserStorageScanSummary | null = null;
+  private lastScanErrorAt: string | null = null;
+  private lastScanError: string | null = null;
   private stopped = false;
 
   constructor(
@@ -185,6 +214,16 @@ export class UserImportService {
     this.stopped = false;
     const paths = await this.ensureAllUserDirectories();
     for (const userPaths of paths) await this.watchUserPaths(userPaths);
+    await this.scanAllUserInboxes();
+    const interval = Math.max(10_000, this.options.reconciliationIntervalMs ?? 60_000);
+    this.reconciliationTimer = setInterval(() => {
+      void this.scanAllUserInboxes().catch((error: unknown) => {
+        console.error('échec réconciliation stockage', {
+          error: error instanceof Error ? error.message : 'Erreur inconnue.',
+        });
+      });
+    }, interval);
+    this.reconciliationTimer.unref();
   }
 
   async ensureAndWatchUser(userId: number, username: string): Promise<UserImportPaths> {
@@ -195,43 +234,163 @@ export class UserImportService {
 
   stop(): void {
     this.stopped = true;
+    if (this.reconciliationTimer !== null) clearInterval(this.reconciliationTimer);
+    this.reconciliationTimer = null;
     for (const timer of this.scheduled.values()) clearTimeout(timer);
     this.scheduled.clear();
+    this.queued.clear();
     for (const watcher of this.watchers.values()) watcher.close();
     this.watchers.clear();
   }
 
   private async watchUserPaths(paths: UserImportPaths): Promise<void> {
     if (this.watchers.has(paths.userId)) return;
-    const entries = await readdir(paths.inbox, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile()) this.schedule(paths, join(paths.inbox, entry.name));
-    }
-    const watcher = watch(paths.inbox, { persistent: false }, (_event, filename) => {
-      if (filename === null) return;
-      this.schedule(paths, join(paths.inbox, filename.toString()));
-    });
+    const watcher = watch(
+      paths.inbox,
+      { persistent: false, recursive: true },
+      (_event, filename) => {
+        if (filename === null) {
+          void this.scanUserInbox(paths);
+          return;
+        }
+        const candidate = join(paths.inbox, filename.toString());
+        if (!this.schedule(paths, candidate)) void this.scanUserInbox(paths);
+      },
+    );
     watcher.on('error', () => watcher.close());
     this.watchers.set(paths.userId, watcher);
   }
 
-  private schedule(paths: UserImportPaths, path: string): void {
-    if (this.stopped || !isAcceptedFilename(basename(path))) return;
-    const safePath = confined(paths.inbox, path);
-    if (this.scheduled.has(safePath)) return;
-    const timer = setTimeout(() => {
-      this.scheduled.delete(safePath);
-      void this.processInboxFile(paths.userId, safePath).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : 'Erreur d’import planifié inconnue.';
-        console.error('échec import planifié', {
-          userId: paths.userId,
-          filename: basename(safePath),
-          error: message,
+  async scanAllUserInboxes(actorUserId?: number): Promise<UserStorageScanSummary> {
+    const current = this.scanInFlight;
+    if (current !== null) return current;
+    this.lastScanStartedAt = new Date().toISOString();
+    const scan = this.ensureAllUserDirectories().then((paths) => this.scanPaths(paths));
+    this.scanInFlight = scan;
+    try {
+      const summary = await scan;
+      this.lastScanCompletedAt = new Date().toISOString();
+      this.lastScanResult = summary;
+      this.lastScanErrorAt = null;
+      this.lastScanError = null;
+      if (actorUserId !== undefined) {
+        recordAudit(this.handle, {
+          action: 'storage.scan_requested',
+          actorUserId,
+          targetUserId: null,
+          metadata: { ...summary },
         });
-      });
+      }
+      return summary;
+    } catch (error) {
+      this.lastScanErrorAt = new Date().toISOString();
+      this.lastScanError =
+        error instanceof Error ? error.message.slice(0, 300) : 'Erreur inconnue.';
+      throw error;
+    } finally {
+      if (this.scanInFlight === scan) this.scanInFlight = null;
+    }
+  }
+
+  status(): UserStorageScanStatus {
+    return {
+      running: this.scanInFlight !== null,
+      lastStartedAt: this.lastScanStartedAt,
+      lastCompletedAt: this.lastScanCompletedAt,
+      lastResult: this.lastScanResult,
+      lastErrorAt: this.lastScanErrorAt,
+      lastError: this.lastScanError,
+      queuedImports: this.scheduled.size + this.queued.size,
+      activeImports: this.activeQueuedImports,
+    };
+  }
+
+  private async scanPaths(paths: UserImportPaths[]): Promise<UserStorageScanSummary> {
+    const startedAt = Date.now();
+    let discoveredFiles = 0;
+    let queuedFiles = 0;
+    for (const userPaths of paths) {
+      const result = await this.scanUserInbox(userPaths);
+      discoveredFiles += result.discoveredFiles;
+      queuedFiles += result.queuedFiles;
+    }
+    return {
+      profiles: paths.length,
+      discoveredFiles,
+      queuedFiles,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  private async scanUserInbox(
+    paths: UserImportPaths,
+  ): Promise<{ discoveredFiles: number; queuedFiles: number }> {
+    let discoveredFiles = 0;
+    let queuedFiles = 0;
+    const pendingDirectories = [paths.inbox];
+    while (pendingDirectories.length > 0 && !this.stopped) {
+      const directory = pendingDirectories.pop()!;
+      let entries: Dirent[];
+      try {
+        entries = await readdir(directory, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const candidate = confined(paths.inbox, join(directory, entry.name));
+        if (entry.isDirectory()) {
+          pendingDirectories.push(candidate);
+        } else if (entry.isFile() && isAcceptedFilename(entry.name)) {
+          discoveredFiles += 1;
+          if (this.schedule(paths, candidate)) queuedFiles += 1;
+        }
+      }
+    }
+    return { discoveredFiles, queuedFiles };
+  }
+
+  private schedule(paths: UserImportPaths, path: string): boolean {
+    if (this.stopped || !isAcceptedFilename(basename(path))) return false;
+    const safePath = confined(paths.inbox, path);
+    const key = `${paths.userId}:${safePath.toLowerCase()}`;
+    if (
+      this.scheduled.has(key) ||
+      this.queued.has(key) ||
+      this.processing.has(key)
+    ) {
+      return false;
+    }
+    const timer = setTimeout(() => {
+      this.scheduled.delete(key);
+      this.queued.set(key, { paths, path: safePath });
+      this.drainQueue();
     }, 150);
     timer.unref();
-    this.scheduled.set(safePath, timer);
+    this.scheduled.set(key, timer);
+    return true;
+  }
+
+  private drainQueue(): void {
+    const concurrency = Math.max(1, this.options.maxConcurrentImports ?? 2);
+    while (!this.stopped && this.activeQueuedImports < concurrency) {
+      const next = this.queued.entries().next();
+      if (next.done) return;
+      const [key, entry] = next.value;
+      this.queued.delete(key);
+      this.activeQueuedImports += 1;
+      void this.processInboxFile(entry.paths.userId, entry.path)
+        .catch((error: unknown) => {
+          console.error('échec import planifié', {
+            userId: entry.paths.userId,
+            filename: basename(entry.path),
+            error: error instanceof Error ? error.message : 'Erreur inconnue.',
+          });
+        })
+        .finally(() => {
+          this.activeQueuedImports -= 1;
+          this.drainQueue();
+        });
+    }
   }
 
   async processInboxFile(userId: number, path: string): Promise<number> {

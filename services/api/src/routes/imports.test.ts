@@ -110,5 +110,18 @@ describe('routes imports OWNER', () => {
       headers: { authorization: `Bearer ${ownerToken}` },
     });
     expect(ownerResponse.statusCode).toBe(200);
+
+    const scanResponse = await app.inject({
+      method: 'POST',
+      url: '/api/admin/imports/scan',
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(scanResponse.statusCode).toBe(202);
+    expect(scanResponse.json()).toMatchObject({
+      accepted: true,
+      profiles: 4,
+      discoveredFiles: 0,
+      queuedFiles: 0,
+    });
   });
 });

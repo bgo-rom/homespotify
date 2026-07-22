@@ -55,6 +55,16 @@ export function registerImportRoutes(
     },
   );
 
+  app.post(
+    '/api/admin/imports/scan',
+    { preHandler: ownerOnly },
+    async (request, reply) => {
+      const summary = await service.scanAllUserInboxes(request.authUser.id);
+      request.log.info(summary, 'STORAGE_PROFILE_SCAN_COMPLETED');
+      return reply.code(202).send({ accepted: true, ...summary });
+    },
+  );
+
   app.post<{ Params: { id: string } }>(
     '/api/admin/imports/:id/retry',
     { preHandler: ownerOnly },

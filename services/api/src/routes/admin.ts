@@ -1,8 +1,15 @@
-import { statfsSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statfsSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { desc, eq, sql } from 'drizzle-orm';
-import { auditLogs, sessions, tracks, users } from '../db/schema.js';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import {
+  auditLogs,
+  importJobs,
+  listeningEvents,
+  sessions,
+  tracks,
+  users,
+} from '../db/schema.js';
 import {
   countActiveSessions,
   findUserById,
@@ -17,6 +24,8 @@ import type { AuthGuards } from '../auth/guards.js';
 import { decide, type AdminAction } from '../auth/permissions.js';
 import { isAssignableRole, type Role } from '../auth/roles.js';
 import { hashPassword, validatePassword, PASSWORD_MIN_LENGTH } from '../auth/passwords.js';
+import type { BackupSchedulerStatus } from '../operations/backup-scheduler.js';
+import type { UserStorageScanStatus } from '../import/user-import-service.js';
 
 const pkg = JSON.parse(
   readFileSync(new URL('../../package.json', import.meta.url), 'utf-8'),
@@ -35,7 +44,12 @@ function userNotFound(reply: FastifyReply): FastifyReply {
 export function registerAdminRoutes(
   app: FastifyInstance,
   guards: AuthGuards,
-  hooks: { onUserCreated?: (userId: number, username: string) => Promise<void> } = {},
+  hooks: {
+    onUserCreated?: (userId: number, username: string) => Promise<void>;
+    backupStatus?: () => BackupSchedulerStatus;
+    runBackup?: () => Promise<{ createdAt: string; database: { bytes: number } }>;
+    importScanStatus?: () => UserStorageScanStatus;
+  } = {},
 ): void {
   const handle = app.dbHandle;
   const { db } = handle;
@@ -106,6 +120,70 @@ export function registerAdminRoutes(
       .from(users)
       .get() ?? { total: 0, active: 0, blocked: 0 };
 
+    const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+    const audioErrors24h =
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(listeningEvents)
+        .where(
+          and(
+            eq(listeningEvents.eventType, 'PLAY_ERROR'),
+            gte(listeningEvents.serverReceivedAt, cutoff24h),
+          ),
+        )
+        .get()?.n ?? 0;
+    const failedImports =
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(importJobs)
+        .where(eq(importJobs.status, 'FAILED'))
+        .get()?.n ?? 0;
+
+    const musicRoot = resolve(app.config.musicDir);
+    let missingFiles = 0;
+    let inconsistentSizeFiles = 0;
+    let invalidPathFiles = 0;
+    for (const track of db.select({ path: tracks.path, sizeBytes: tracks.sizeBytes }).from(tracks).all()) {
+      const candidate = resolve(musicRoot, track.path);
+      const rel = relative(musicRoot, candidate);
+      if (isAbsolute(track.path) || rel.startsWith('..') || isAbsolute(rel)) {
+        invalidPathFiles += 1;
+        continue;
+      }
+      if (!existsSync(candidate)) {
+        missingFiles += 1;
+        continue;
+      }
+      try {
+        const file = statSync(candidate);
+        if (!file.isFile()) missingFiles += 1;
+        else if (file.size !== track.sizeBytes) inconsistentSizeFiles += 1;
+      } catch {
+        missingFiles += 1;
+      }
+    }
+
+    const backup = hooks.backupStatus?.() ?? {
+      enabled: false,
+      running: false,
+      nextRunAt: null,
+      lastSuccessAt: null,
+      lastDestination: null,
+      lastErrorAt: null,
+      lastError: null,
+      retentionCount: 0,
+    };
+    const scanner = hooks.importScanStatus?.() ?? null;
+    const suspectFiles = missingFiles + inconsistentSizeFiles + invalidPathFiles;
+    const diskCritical = disk !== null && disk.freeBytes < Math.max(2 * 1024 ** 3, disk.totalBytes * 0.05);
+    const degraded =
+      diskCritical ||
+      suspectFiles > 0 ||
+      failedImports > 0 ||
+      audioErrors24h > 0 ||
+      backup.lastErrorAt !== null ||
+      scanner?.lastErrorAt !== null && scanner?.lastErrorAt !== undefined;
+
     return {
       backend: {
         status: 'ok',
@@ -122,8 +200,42 @@ export function registerAdminRoutes(
         blocked: userCounts.blocked ?? 0,
       },
       sessions: { active: countActiveSessions(handle) },
+      operations: {
+        status: diskCritical ? 'critical' : degraded ? 'degraded' : 'healthy',
+        backup,
+        scanner,
+        audioErrors24h,
+        failedImports,
+        files: {
+          suspect: suspectFiles,
+          missing: missingFiles,
+          inconsistentSize: inconsistentSizeFiles,
+          invalidPath: invalidPathFiles,
+        },
+      },
     };
   });
+
+  app.post(
+    '/api/admin/backup/run',
+    { preHandler: guards.requireAdmin('admin.view') },
+    async (request, reply) => {
+      if (!hooks.runBackup) {
+        return reply.code(503).send({
+          statusCode: 503,
+          error: 'backup_disabled',
+          message: 'La sauvegarde automatique est désactivée.',
+        });
+      }
+      const manifest = await hooks.runBackup();
+      recordAudit(handle, {
+        action: 'backup.manual_requested',
+        actorUserId: request.authUser.id,
+        metadata: { createdAt: manifest.createdAt, databaseBytes: manifest.database.bytes },
+      });
+      return reply.code(201).send({ createdAt: manifest.createdAt });
+    },
+  );
 
   app.get('/api/admin/users', { preHandler: guards.requireAdmin('admin.view') }, async () => {
     const rows = db.select().from(users).orderBy(users.id).all();

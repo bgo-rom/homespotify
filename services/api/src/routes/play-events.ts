@@ -294,6 +294,37 @@ export function registerPlayEventRoutes(app: FastifyInstance, guards: AuthGuards
             continue;
           }
           if (session === undefined) {
+            const supersededSessions = tx
+              .select()
+              .from(listeningSessions)
+              .where(
+                and(
+                  eq(listeningSessions.userId, userId),
+                  eq(listeningSessions.installationId, event.installationId),
+                  or(
+                    eq(listeningSessions.status, 'ACTIVE'),
+                    eq(listeningSessions.status, 'PAUSED'),
+                  ),
+                  lt(listeningSessions.latestClientEventAt, event.clientCreatedAt),
+                ),
+              )
+              .all();
+            for (const superseded of supersededSessions) {
+              const durationMs = superseded.durationMs;
+              const completedAtPosition =
+                durationMs !== null && superseded.lastPositionMs / durationMs >= 0.9;
+              tx.update(listeningSessions)
+                .set({
+                  status: 'ENDED',
+                  endReason: completedAtPosition ? 'COMPLETED_POSITION' : 'SUPERSEDED',
+                  endedAt: event.clientCreatedAt,
+                  completed: superseded.completed || completedAtPosition,
+                  lastActivityAt: now,
+                  updatedAt: now,
+                })
+                .where(eq(listeningSessions.id, superseded.id))
+                .run();
+            }
             const result = tx
               .insert(listeningSessions)
               .values({

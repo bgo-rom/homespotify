@@ -88,7 +88,9 @@ void main() {
       await settle();
       final state = container.read(authControllerProvider);
       expect(state.status, AuthStatus.error);
-      expect(state.message, 'Serveur HomeSpotify inaccessible.');
+      // Aucun compte jamais connecté sur cet appareil : le message guide vers
+      // une première connexion en ligne (Phase 1A.1, mode hors connexion).
+      expect(state.message, contains('première connexion'));
 
       api.networkDown = false;
       await container.read(authControllerProvider.notifier).retry();

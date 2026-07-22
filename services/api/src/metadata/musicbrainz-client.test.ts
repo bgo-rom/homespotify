@@ -68,4 +68,24 @@ describe('MusicBrainzClient', () => {
       discNumber: 1,
     });
   });
+
+  it('recherche titre et artiste en texte libre sans transmettre la syntaxe Lucene', async () => {
+    let requestedUrl = '';
+    const client = new MusicBrainzClient({
+      userAgent: 'HomeSpotifyTest/0.1 (test@example.local)',
+      minIntervalMs: 0,
+      fetchImpl: async (input) => {
+        requestedUrl = String(input);
+        return new Response(JSON.stringify({ recordings: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+
+    await client.searchRecordingsText('PARAFFINE AJNA OR *:*', 5);
+    const query = new URL(requestedUrl).searchParams.get('query');
+    expect(query).toBe('"PARAFFINE" AND "AJNA" AND "OR"');
+    expect(query).not.toContain('*');
+  });
 });

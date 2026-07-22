@@ -8,7 +8,7 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## Statut actuel
 
-**Backend Phase 1–3 ✅ → Phase 4 mobile Flutter démarrée** — dans `services/api` : upload/scanner WAV/FLAC, dédup par hash, extraction tags/pochette, qualité mesurée + statut par provenance, streaming HTTP Range robuste, téléchargement offline, enrichissement MusicBrainz, pochettes HD Cover Art Archive, manifeste `/api/sync/manifest`. Serveur hôte **Windows 11**. **Ingestion native : WAV PCM 16 bit / 44,1–48 kHz et FLAC lossless 16/24 bit / 44,1–192 kHz, sans transcodage.**
+**Phase 0 produit en qualification → Phase 1 hors connexion ensuite.** Le backend et l'app Flutter couvrent déjà import/scanner WAV/FLAC, bibliothèque multi-utilisateur, streaming HTTP Range, lecture Android de fond, demandes musicales, diagnostics, sauvegardes et santé OWNER. Le dernier correctif de fin de piste doit encore réussir une session réelle de 4 h avant l'ouverture du code Phase 1. Voir [ROADMAP.md](ROADMAP.md). **Ingestion native : WAV PCM 16 bit / 44,1–48 kHz et FLAC lossless 16/24 bit / 44,1–192 kHz, sans transformation de la source.**
 
 ## Stack pressentie
 
@@ -20,7 +20,7 @@ Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe �
 2. [PROJECT.md](PROJECT.md) — vision, objectifs, MVP, critères de réussite
 3. [TECH_DECISIONS.md](TECH_DECISIONS.md) — choix techniques
 4. [ARCHITECTURE.md](ARCHITECTURE.md) — architecture cible
-5. [ROADMAP.md](ROADMAP.md) — phases 0 → 7
+5. [ROADMAP.md](ROADMAP.md) — phases produit 0 → 5 et gate actif
 6. [AUDIO_SOURCING.md](AUDIO_SOURCING.md) — acquisition et qualité audio
 7. [AGENTS.md](AGENTS.md) — règles pour les sous-agents
 8. [LESSONS.md](LESSONS.md) — leçons apprises
@@ -29,9 +29,9 @@ Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe �
 
 ```
 docs/               Documentation complémentaire
-apps/mobile/        Future app Flutter Android-first (Phase 4)
+apps/mobile/        App Flutter Android-first
 apps/web/           Future web client éventuel
-services/api/       Futur backend Fastify (Phase 1)
+services/api/       Backend Fastify opérationnel
 packages/shared/    Types et logique partagés
 storage/            Données locales (music, imports, covers, cache) — non versionnées
 scripts/            Scripts d'exploitation
@@ -110,7 +110,7 @@ Non testé sur cette machine (Docker absent) — à valider sur le serveur cible
 
 ## Prochaine étape
 
-Phase 4 — initialiser l'application Flutter mobile selon [MOBILE_ARCHITECTURE.md](MOBILE_ARCHITECTURE.md).
+Fermer le gate de stabilisation décrit dans [ROADMAP.md](ROADMAP.md), puis livrer la Phase 1A : téléchargement unitaire avec choix Opus 128, Opus 256 ou original, reprise Range et vérification SHA-256.
 
 ## Commandes Git utiles
 

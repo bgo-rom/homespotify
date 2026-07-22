@@ -5,12 +5,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/config/app_config.dart';
 import '../../../core/logging/app_logger.dart';
+import '../../../core/platform/app_package_info.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../auth/data/biometric_service.dart';
 import '../../discovery/application/discovery_settings.dart';
 import '../../library/presentation/library_favorites.dart';
 import '../../library/presentation/library_playlists.dart';
 import '../../library/presentation/library_summary.dart';
+import '../../player/audio/homespotify_audio_handler.dart';
 import '../data/settings_server_checker.dart';
 
 /// Formatage compact octets → Go/Mo/Ko pour la section Compte.
@@ -30,8 +32,6 @@ String _formatBytes(int bytes) {
 const Color _background = Color(0xFF0D0D10);
 const Color _card = Color(0xFF1A1A22);
 const Color _accent = Color(0xFF1DB954);
-// Version actuelle du pubspec, affichée sans ajouter de dépendance native.
-const String _appVersion = '1.0.0+1';
 
 enum _ServerStatus { idle, testing, connected, inaccessible }
 
@@ -49,12 +49,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _biometricEnabled = false;
   bool _biometricBusy = false;
   BiometricAvailability? _biometricAvailability;
+  String _appVersion = 'Chargement…';
 
   @override
   void initState() {
     super.initState();
     logUi('ouverture Paramètres');
     _loadBiometricState();
+    _loadPackageInfo();
+  }
+
+  Future<void> _loadPackageInfo() async {
+    try {
+      final package = await AppPackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() {
+        _appVersion = package.displayVersion;
+      });
+    } catch (error, stackTrace) {
+      logError(
+        'lecture version application impossible',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (mounted) setState(() => _appVersion = 'Indisponible');
+    }
   }
 
   Future<void> _loadBiometricState() async {
@@ -137,6 +156,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       authControllerProvider.select((state) => state.user),
     );
     final discoverySettings = ref.watch(discoverySettingsProvider);
+    final audioHandler = ref.watch(audioHandlerProvider);
 
     return Scaffold(
       backgroundColor: _background,
@@ -426,33 +446,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   label: const Text('Tester la connexion'),
                 ),
               ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.cloud_download_rounded,
-                  color: _accent,
-                ),
-                title: const Text(
-                  'Importer depuis un nœud',
-                  style: TextStyle(color: Colors.white),
-                ),
-                subtitle: const Text(
-                  'Déposer un WAV ou FLAC depuis un serveur HTTPS autorisé.',
-                  style: TextStyle(color: Colors.white54),
-                ),
-                trailing: const Icon(
-                  Icons.chevron_right_rounded,
-                  color: Colors.white38,
-                ),
-                onTap: () => context.push('/node-fetch'),
-              ),
             ],
           ),
           _SettingsSection(
             title: 'Informations de l’application',
             children: [
               const _InfoRow(label: 'Nom', value: 'HomeSpotify'),
-              const _InfoRow(label: 'Version', value: _appVersion),
+              _InfoRow(label: 'Version', value: _appVersion),
               _InfoRow(label: 'Mode', value: _buildMode),
               const _InfoRow(label: 'Plateforme', value: 'Android'),
             ],
@@ -467,21 +467,62 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
-          const _SettingsSection(
+          if (authUser?.isOwner == true || kDebugMode)
+            _SettingsSection(
+              title: 'Diagnostic',
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.monitor_heart_rounded,
+                    color: _accent,
+                  ),
+                  title: const Text(
+                    'Diagnostic audio',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  subtitle: const Text(
+                    'État temps réel, trace, marqueur de problème et export.',
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                  trailing: const Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.white38,
+                  ),
+                  onTap: () => context.push('/dev/audio-diagnostics'),
+                ),
+              ],
+            ),
+          _SettingsSection(
             title: 'Audio',
             children: [
-              _InfoRow(label: 'Formats pris en charge', value: 'WAV / FLAC'),
-              _InfoRow(label: 'Normalisation', value: 'Aucune'),
-              _InfoRow(label: 'DSP', value: 'Aucun'),
-              _InfoRow(label: 'Transcodage', value: 'Aucun'),
+              const _InfoRow(
+                label: 'Formats pris en charge',
+                value: 'WAV / FLAC',
+              ),
+              const _InfoRow(label: 'Normalisation', value: 'Désactivée'),
+              _InfoRow(
+                label: 'Time-stretch',
+                value: audioHandler.currentTimeStretchEngineName,
+              ),
+              const _InfoRow(
+                label: 'Transcodage',
+                value: 'Aucun — fichier original',
+              ),
             ],
           ),
-          const _SettingsSection(
+          _SettingsSection(
             title: 'Accès distant',
             children: [
-              _InfoRow(label: 'Domaine prévu', value: 'music.romainbegot.fr'),
+              _InfoRow(label: 'Adresse effective', value: AppConfig.apiBaseUrl),
+              _InfoRow(
+                label: 'HTTPS',
+                value: AppConfig.usesTls ? 'Activé' : 'Non activé',
+              ),
               _Note(
-                'Accès distant non encore configuré. Aucun VPS disponible et aucun déploiement prévu maintenant.',
+                AppConfig.remoteAccessConfigured
+                    ? 'Une adresse distante chiffrée est compilée dans cette version.'
+                    : 'Cette version utilise une adresse locale ou de développement.',
               ),
             ],
           ),

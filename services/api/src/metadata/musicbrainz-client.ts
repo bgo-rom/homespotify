@@ -361,6 +361,35 @@ export class MusicBrainzClient {
     });
   }
 
+  /** Recherche libre destinée au catalogue utilisateur (titre + artiste dans
+   * une seule saisie). Les caractères de syntaxe Lucene sont neutralisés : le
+   * texte ne devient jamais une expression fournie telle quelle à MusicBrainz. */
+  async searchRecordingsText(query: string, limit = 5): Promise<MusicBrainzRecordingCandidate[]> {
+    const tokens = query
+      .normalize('NFKC')
+      .replace(/[^\p{L}\p{N}\s'\u2019.-]+/gu, ' ')
+      .split(/\s+/u)
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+    if (tokens.length === 0) return [];
+    const safeQuery = tokens.map((token) => `"${quoteSearchValue(token)}"`).join(' AND ');
+    return this.enqueue(async () => {
+      const params = new URLSearchParams({
+        query: safeQuery,
+        fmt: 'json',
+        limit: String(Math.min(10, Math.max(1, limit))),
+        inc: 'artist-credits+releases+release-groups+media+tags',
+      });
+      const response = await this.fetchJson<MusicBrainzRecordingSearchResponse>(
+        `/ws/2/recording?${params}`,
+      );
+      return response.recordings
+        ?.map(normalizeRecording)
+        .filter((recording): recording is MusicBrainzRecordingCandidate => recording !== null) ?? [];
+    });
+  }
+
   async searchArtists(query: string, limit = 5): Promise<MusicBrainzArtistCandidate[]> {
     const clean = query.trim();
     if (!clean) return [];

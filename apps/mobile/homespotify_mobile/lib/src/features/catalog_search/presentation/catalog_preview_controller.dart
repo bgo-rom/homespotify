@@ -100,8 +100,7 @@ class CatalogPreviewController extends Notifier<CatalogPreviewState> {
     final player = ref.read(catalogPreviewPlayerFactoryProvider)();
     _stateSubscription = player.playerStateStream.listen((playerState) {
       if (!ref.mounted) return;
-      final finished =
-          playerState.processingState == ProcessingState.completed;
+      final finished = playerState.processingState == ProcessingState.completed;
       state = state.copyWith(
         clearActive: finished,
         playing: playerState.playing && !finished,
@@ -178,11 +177,7 @@ class CatalogPreviewController extends Notifier<CatalogPreviewState> {
   Future<void> stop() async {
     final player = _player;
     if (state.activeKey != null || (player?.playing ?? false)) {
-      state = state.copyWith(
-        clearActive: true,
-        playing: false,
-        loading: false,
-      );
+      state = state.copyWith(clearActive: true, playing: false, loading: false);
     }
     if (player != null) {
       try {

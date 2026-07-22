@@ -28,12 +28,12 @@ import '../features/library/presentation/library_screen.dart';
 import '../features/library/presentation/playlist_detail_screen.dart';
 import '../features/library/presentation/playlists_screen.dart';
 import '../features/player/presentation/player_screen.dart';
+import '../features/player/presentation/audio_diagnostics_screen.dart';
 import '../features/player/presentation/queue_screen.dart';
 import '../features/player/presentation/stretch_lab_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
 import '../features/listening/presentation/listening_activity_screen.dart';
-import '../features/node_fetch/presentation/node_fetch_screen.dart';
-import '../features/remote_search/presentation/remote_search_screen.dart';
+import '../features/offline/presentation/downloads_screen.dart';
 
 /// Transition custom sombre commune : fade + léger slide vertical, à la place
 /// de la transition Material par défaut (flash clair sur thème non sombre).
@@ -337,6 +337,16 @@ final GoRouter appRouter = GoRouter(
         child: const AdminRecommendationDiagnosticsScreen(),
       ),
     ),
+    // Téléchargements : entièrement local (manifeste SQLite), fonctionne sans
+    // serveur — c'est l'écran pivot du mode hors connexion.
+    GoRoute(
+      path: '/downloads',
+      name: 'downloads',
+      pageBuilder: (context, state) => _darkTransitionPage(
+        key: state.pageKey,
+        child: const DownloadsScreen(),
+      ),
+    ),
     GoRoute(
       path: '/settings',
       name: 'settings',
@@ -351,22 +361,6 @@ final GoRouter appRouter = GoRouter(
       pageBuilder: (context, state) => _darkTransitionPage(
         key: state.pageKey,
         child: const ListeningActivityScreen(),
-      ),
-    ),
-    GoRoute(
-      path: '/node-fetch',
-      name: 'node-fetch',
-      pageBuilder: (context, state) => _darkTransitionPage(
-        key: state.pageKey,
-        child: const NodeFetchScreen(),
-      ),
-    ),
-    GoRoute(
-      path: '/remote-search',
-      name: 'remote-search',
-      pageBuilder: (context, state) => _darkTransitionPage(
-        key: state.pageKey,
-        child: const RemoteSearchScreen(),
       ),
     ),
     GoRoute(
@@ -390,6 +384,14 @@ final GoRouter appRouter = GoRouter(
       pageBuilder: (context, state) => _darkTransitionPage(
         key: state.pageKey,
         child: const StretchLabScreen(),
+      ),
+    ),
+    GoRoute(
+      path: '/dev/audio-diagnostics',
+      name: 'audio-diagnostics',
+      pageBuilder: (context, state) => _darkTransitionPage(
+        key: state.pageKey,
+        child: const AudioDiagnosticsScreen(),
       ),
     ),
   ],

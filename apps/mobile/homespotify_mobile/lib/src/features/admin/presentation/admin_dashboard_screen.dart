@@ -19,6 +19,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
   AdminOverview? _overview;
   String? _error;
   bool _loading = false;
+  bool _maintenanceRunning = false;
   DateTime? _refreshedAt;
 
   @override
@@ -48,6 +49,29 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
         _error = error.message;
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _runMaintenance(
+    Future<void> Function(AdminApi api) action,
+    String successMessage,
+  ) async {
+    if (_maintenanceRunning) return;
+    setState(() => _maintenanceRunning = true);
+    try {
+      await action(ref.read(adminApiProvider));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(successMessage)),
+      );
+      await _refresh();
+    } on AdminApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message), backgroundColor: adminError),
+      );
+    } finally {
+      if (mounted) setState(() => _maintenanceRunning = false);
     }
   }
 
@@ -140,6 +164,109 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                     ('Sessions actives', '${overview.activeSessions}'),
                   ],
                 ),
+                _AdminSection(
+                  title: 'Santé opérationnelle',
+                  rows: [
+                    (
+                      'État global',
+                      switch (overview.operationsStatus) {
+                        'healthy' => 'Sain',
+                        'degraded' => 'À surveiller',
+                        'critical' => 'Critique',
+                        _ => 'Inconnu',
+                      },
+                    ),
+                    ('Erreurs audio (24 h)', '${overview.audioErrors24h}'),
+                    ('Imports échoués', '${overview.failedImports}'),
+                    ('Fichiers suspects', '${overview.suspectFiles}'),
+                    ('Fichiers absents', '${overview.missingFiles}'),
+                    (
+                      'Tailles incohérentes',
+                      '${overview.inconsistentSizeFiles}',
+                    ),
+                    ('Chemins invalides', '${overview.invalidPathFiles}'),
+                  ],
+                ),
+                _AdminSection(
+                  title: 'Sauvegarde quotidienne',
+                  rows: [
+                    (
+                      'État',
+                      !overview.backupEnabled
+                          ? 'Désactivée'
+                          : overview.backupRunning
+                          ? 'En cours'
+                          : overview.backupLastError != null
+                          ? 'Erreur'
+                          : 'Planifiée',
+                    ),
+                    (
+                      'Dernier succès',
+                      overview.backupLastSuccessAt == null
+                          ? 'Jamais'
+                          : formatDateTime(overview.backupLastSuccessAt!),
+                    ),
+                    (
+                      'Prochaine',
+                      overview.backupNextRunAt == null
+                          ? 'Non planifiée'
+                          : formatDateTime(overview.backupNextRunAt!),
+                    ),
+                    ('Rétention', '${overview.backupRetentionCount} sauvegardes'),
+                    if (overview.backupLastError != null)
+                      ('Dernière erreur', overview.backupLastError!),
+                  ],
+                ),
+                _AdminSection(
+                  title: 'Détection du stockage par profil',
+                  rows: [
+                    (
+                      'Scanner',
+                      overview.scannerRunning ? 'Analyse en cours' : 'Prêt',
+                    ),
+                    ('Imports actifs', '${overview.scannerActiveImports}'),
+                    ('En attente', '${overview.scannerQueuedImports}'),
+                    (
+                      'Dernier scan',
+                      overview.scannerLastCompletedAt == null
+                          ? 'Jamais'
+                          : formatDateTime(overview.scannerLastCompletedAt!),
+                    ),
+                    if (overview.scannerLastError != null)
+                      ('Dernière erreur', overview.scannerLastError!),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed:
+                            _maintenanceRunning || !overview.backupEnabled
+                            ? null
+                            : () => _runMaintenance(
+                                (api) => api.runBackup(),
+                                'Sauvegarde terminée.',
+                              ),
+                        icon: const Icon(Icons.backup_rounded),
+                        label: const Text('Sauvegarder'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _maintenanceRunning
+                            ? null
+                            : () => _runMaintenance(
+                                (api) => api.scanStorage(),
+                                'Stockage analysé.',
+                              ),
+                        icon: const Icon(Icons.manage_search_rounded),
+                        label: const Text('Scanner'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(

@@ -15,6 +15,13 @@ abstract class TokenStore {
   Future<void> clearTokens();
   Future<bool> readBiometricEnabled();
   Future<void> saveBiometricEnabled(bool enabled);
+
+  /// Identité minimale du dernier compte authentifié avec succès sur CET
+  /// appareil (JSON `AuthUser.toJson`, jamais de token) : permet d'ouvrir le
+  /// « Mode hors connexion » quand le serveur est injoignable au démarrage.
+  Future<String?> readLocalIdentityJson();
+  Future<void> saveLocalIdentityJson(String json);
+  Future<void> clearLocalIdentity();
 }
 
 /// Implémentation réelle : Android Keystore via flutter_secure_storage.
@@ -26,6 +33,7 @@ class SecureTokenStore implements TokenStore {
   static const _accessTokenKey = 'auth_access_token';
   static const _refreshTokenKey = 'auth_refresh_token';
   static const _biometricEnabledKey = 'auth_biometric_enabled';
+  static const _localIdentityKey = 'auth_local_identity';
 
   final FlutterSecureStorage _storage;
 
@@ -63,4 +71,15 @@ class SecureTokenStore implements TokenStore {
   Future<void> saveBiometricEnabled(bool enabled) async {
     await _storage.write(key: _biometricEnabledKey, value: '$enabled');
   }
+
+  @override
+  Future<String?> readLocalIdentityJson() =>
+      _storage.read(key: _localIdentityKey);
+
+  @override
+  Future<void> saveLocalIdentityJson(String json) =>
+      _storage.write(key: _localIdentityKey, value: json);
+
+  @override
+  Future<void> clearLocalIdentity() => _storage.delete(key: _localIdentityKey);
 }

@@ -46,15 +46,32 @@ void main() {
 
     await tester.pumpWidget(ownerApp(api, const AdminMusicRequestsScreen()));
     await tester.pumpAndSettle();
-    // Le titre de la demande est désormais rendu « titre — artiste ».
+    await tester.tap(find.text('En cours (1)'));
+    await tester.pumpAndSettle();
     await tester.tap(find.textContaining('Playlist été'));
     await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('resolve-request-spotify-link')));
+    await tester.pumpAndSettle();
+    expect(find.text('Lien Spotify exact'), findsOneWidget);
+    expect(api.spotifyRequestId, 10);
 
     await tester.tap(find.byKey(const Key('open-request-external-url')));
     await tester.pump();
     expect(openedUrl, 'https://example.test/playlist/42');
 
+    await tester.scrollUntilVisible(
+      find.text('1. Titre cible'),
+      240,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.tap(find.text('1. Titre cible'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('admin-track-search-field')),
+      240,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.enterText(
       find.byKey(const Key('admin-track-search-field')),
       'titre cible',
@@ -146,6 +163,7 @@ class _FakeAdminApi extends AdminApi {
   _FakeAdminApi() : super(Dio());
 
   ({int requestId, int itemId, int trackId})? assignedRequest;
+  int? spotifyRequestId;
 
   final request = const AdminMusicRequest(
     id: 10,
@@ -225,6 +243,18 @@ class _FakeAdminApi extends AdminApi {
           album: 'Album cible',
         ),
       ];
+
+  @override
+  Future<AdminSpotifyLink> resolveSpotifyLink(int requestId) async {
+    spotifyRequestId = requestId;
+    return const AdminSpotifyLink(
+      url: 'https://open.spotify.com/track/test',
+      exact: true,
+      source: 'SPOTIFY_WEB_API',
+      title: 'Playlist été',
+      artist: 'Artiste cible',
+    );
+  }
 
   @override
   Future<void> assignTrack(int requestId, int itemId, int trackId) async {

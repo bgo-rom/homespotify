@@ -19,9 +19,9 @@ Document de référence pour toute fonctionnalité d'import. Règle d'or : **la 
 | FLAC lossless 16/24 bit 44,1–192 kHz | Lossless | Sans perte | Accepté et streamé nativement, sans décompression stockée ni réencodage |
 | MP3 | Lossy | Avec perte | Refusé à l'import ; toute conversion reste hors pipeline HomeSpotify et ne recrée pas la qualité perdue |
 | AAC | Lossy | Avec perte (meilleur que MP3 à débit égal) | Refusé à l'import ; toute conversion reste hors pipeline HomeSpotify et ne recrée pas la qualité perdue |
-| Opus | Lossy | Avec perte (le plus efficace des lossy) | Refusé à l'import ; aucun transcodage de streaming mobile |
+| Opus | Lossy | Avec perte (le plus efficace des lossy) | Refusé à l'import canonique ; autorisé uniquement comme dérivée mobile hors connexion 128/256 kb/s créée depuis un WAV/FLAC conforme |
 
-- **Lossy → lossless est impossible.** Convertir un lossy en WAV ou FLAC ne recrée aucune information ; cela ne fait que stocker un signal déjà dégradé dans un conteneur plus lourd. Lossy → lossy dégrade encore : tout transcodage de diffusion est exclu de HomeSpotify.
+- **Lossy → lossless est impossible.** Convertir un lossy en WAV ou FLAC ne recrée aucune information ; cela ne fait que stocker un signal déjà dégradé dans un conteneur plus lourd. La seule conversion lossy autorisée est une dérivée Ogg/Opus hors connexion, créée depuis la source canonique lossless sans la remplacer ; elle est toujours affichée comme lossy avec son débit mesuré.
 - Qualité CD = PCM 16 bit / 44,1 kHz. Le Hi-Res (24 bit / 96+ kHz) est un bonus, pas un objectif.
 
 ## Voie gratuite autorisée

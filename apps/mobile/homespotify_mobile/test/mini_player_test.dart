@@ -71,17 +71,18 @@ void main() {
     expect(onPressedOf(tester, Icons.skip_next_rounded), isNull);
   });
 
-  testWidgets('milieu de file : contrôles et progression restent synchronisés', (
-    tester,
-  ) async {
-    await pumpMini(tester, queueIndex: 1);
+  testWidgets(
+    'milieu de file : contrôles et progression restent synchronisés',
+    (tester) async {
+      await pumpMini(tester, queueIndex: 1);
 
-    expect(onPressedOf(tester, Icons.skip_previous_rounded), isNotNull);
-    expect(onPressedOf(tester, Icons.skip_next_rounded), isNotNull);
-    expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
-    final progress = tester.widget<LinearProgressIndicator>(
-      find.byKey(const ValueKey('mini-player-progress')),
-    );
-    expect(progress.value, 0.5);
-  });
+      expect(onPressedOf(tester, Icons.skip_previous_rounded), isNotNull);
+      expect(onPressedOf(tester, Icons.skip_next_rounded), isNotNull);
+      expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+      final progress = tester.widget<LinearProgressIndicator>(
+        find.byKey(const ValueKey('mini-player-progress')),
+      );
+      expect(progress.value, 0.5);
+    },
+  );
 }

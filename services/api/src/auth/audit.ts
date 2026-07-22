@@ -33,7 +33,9 @@ export type AuditAction =
   | 'import.failed'
   | 'import.retried'
   | 'import.rejected'
-  | 'import.manually_matched';
+  | 'import.manually_matched'
+  | 'storage.scan_requested'
+  | 'backup.manual_requested';
 
 // Défense en profondeur : même si un appelant passe une valeur sensible par
 // erreur, elle n'atteint jamais la table d'audit.

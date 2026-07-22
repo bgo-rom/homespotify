@@ -8,6 +8,7 @@ import type { AppConfig } from '../config.js';
 import { createDb, type DbHandle } from './client.js';
 import {
   ensureDiscoverV3Columns,
+  ensureOfflineVariantsSchema,
   ensurePlaybackSettingsAndAnalysisSchema,
   runMigrations,
 } from './migrate.js';
@@ -225,6 +226,64 @@ describe('reparation hors journal du schema playback/BPM', () => {
         VALUES (1, 1, 0.69, 1, 'now', 'now');
       `),
     ).toThrow();
+    repaired.sqlite.close();
+  });
+});
+
+describe('schéma des variantes hors ligne (Phase 1A)', () => {
+  it('base NEUVE : table et index créés par runMigrations, idempotent', () => {
+    const handle = createDb(dbFile);
+    runMigrations(handle, silentLog);
+    const objects = (
+      handle.sqlite
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE name IN ('track_offline_variants', 'track_offline_variants_identity_unique')
+           ORDER BY name`,
+        )
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(objects).toEqual(['track_offline_variants', 'track_offline_variants_identity_unique']);
+    expect(ensureOfflineVariantsSchema(handle, silentLog)).toEqual([]); // second passage : no-op
+    // L'unicité (source_sha256, profile_version, encoder_version) est réelle.
+    handle.sqlite.exec(`
+      INSERT INTO tracks (hash, path, size_bytes, title, artist, album, created_at)
+      VALUES ('src-hash', 'x.flac', 1, 'T', 'A', 'B', 'now');
+      INSERT INTO track_offline_variants
+        (track_id, source_sha256, profile, profile_version, encoder_version, target_bitrate_kbps, created_at, updated_at)
+      VALUES (1, 'src-hash', 'opus_128', 'opus-128-v1', 'enc-1', 128, 'now', 'now');
+    `);
+    expect(() =>
+      handle.sqlite.exec(`
+        INSERT INTO track_offline_variants
+          (track_id, source_sha256, profile, profile_version, encoder_version, target_bitrate_kbps, created_at, updated_at)
+        VALUES (1, 'src-hash', 'opus_128', 'opus-128-v1', 'enc-1', 128, 'now', 'now');
+      `),
+    ).toThrow();
+    handle.sqlite.close();
+  });
+
+  it('base LEGACY (table absente, journal futur) : réparée sans perte de données', () => {
+    const seed = createDb(dbFile);
+    runMigrations(seed, silentLog);
+    const now = new Date().toISOString();
+    seed.db.insert(tracks).values({
+      hash: 'legacy-h', path: 'l.wav', sizeBytes: 1, title: 'L', artist: 'A', album: 'B', createdAt: now,
+    }).run();
+    seed.sqlite.exec('DROP TABLE `track_offline_variants`');
+    // Journal « futur » : le migrateur drizzle ne rejouera jamais rien.
+    seed.sqlite
+      .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
+      .run('legacy-future-offline', 1784060000000);
+    seed.sqlite.close();
+
+    const repaired = createDb(dbFile);
+    runMigrations(repaired, silentLog);
+    const table = repaired.sqlite
+      .prepare(`SELECT name FROM sqlite_master WHERE name = 'track_offline_variants'`)
+      .get();
+    expect(table).toBeDefined();
+    expect(repaired.db.select().from(tracks).all()).toHaveLength(1);
     repaired.sqlite.close();
   });
 });

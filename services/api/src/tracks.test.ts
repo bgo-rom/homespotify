@@ -202,6 +202,28 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
     expect(res.rawPayload.toString('ascii')).toBe('RIFF');
   });
 
+  it('conserve un X-Request-Id sûr de bout en bout', async () => {
+    const requestId = 'request-audio-test-0001';
+    const res = await inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { range: 'bytes=0-3', 'x-request-id': requestId },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['x-request-id']).toBe(requestId);
+  });
+
+  it('remplace un X-Request-Id invalide et ne permet pas une injection de header', async () => {
+    const res = await inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { range: 'bytes=0-3', 'x-request-id': 'bad id with spaces' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['x-request-id']).toBeTruthy();
+    expect(res.headers['x-request-id']).not.toBe('bad id with spaces');
+  });
+
   it('bytes=100- → 206 jusqu à la fin (reprise de lecture)', async () => {
     const res = await inject({
       method: 'GET',
@@ -243,6 +265,19 @@ describe('GET /api/tracks/:id/stream (HTTP Range)', () => {
     expect(res.statusCode).toBe(200);
     expect(Number(res.headers['content-length'])).toBe(size);
     expect(res.rawPayload.length).toBe(size);
+    expect(res.headers['content-encoding']).toBeUndefined();
+  });
+
+  it('retourne le requestId même sur un 401 sans exposer de token', async () => {
+    const requestId = 'request-auth-test-0001';
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { 'x-request-id': requestId },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['x-request-id']).toBe(requestId);
+    expect(res.body).not.toContain('Bearer');
   });
 
   it('piste inconnue → 404', async () => {

@@ -86,11 +86,7 @@ class CatalogEntityRef {
 }
 
 class PlatformLink {
-  const PlatformLink({
-    required this.platform,
-    required this.status,
-    this.url,
-  });
+  const PlatformLink({required this.platform, required this.status, this.url});
 
   final String platform;
   final PlatformAvailability status;
@@ -222,11 +218,7 @@ class CatalogResult {
 }
 
 class ProviderStatus {
-  const ProviderStatus({
-    required this.id,
-    required this.status,
-    this.message,
-  });
+  const ProviderStatus({required this.id, required this.status, this.message});
 
   final String id;
 
@@ -339,10 +331,8 @@ class CatalogAlbumDetail {
   final List<PlatformLink> links;
   final CatalogEntityRef? reference;
 
-  int get totalDurationMs => tracks.fold(
-    0,
-    (sum, track) => sum + (track.durationMs ?? 0),
-  );
+  int get totalDurationMs =>
+      tracks.fold(0, (sum, track) => sum + (track.durationMs ?? 0));
 
   static CatalogAlbumDetail fromJson(Map<String, dynamic> json) {
     final images = (json['images'] as List<dynamic>? ?? const [])

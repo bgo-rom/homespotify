@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/network/authenticated_network_image.dart';
 import '../../../../core/theme/home_design.dart';
+import '../../../offline/application/offline_index.dart';
 import '../../domain/track.dart';
 import 'current_track_indicator.dart';
 import 'track_favorite_button.dart';
@@ -26,6 +27,10 @@ class LibraryTrackTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final active = ref.watch(isTrackPlayingProvider('${track.id}'));
+    // Badge hors ligne : lu depuis l'index mémoire partagé (une seule lecture
+    // SQLite par session, jamais une requête par piste).
+    final offlineProfile = ref.watch(offlineProfileLabelProvider(track.id));
+    final localCoverUrl = ref.watch(offlineCoverUrlProvider(track.id));
     final secondary = [
       track.artist,
       if (track.album.isNotEmpty) track.album,
@@ -67,7 +72,7 @@ class LibraryTrackTile extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 9),
-                  _TrackArtwork(url: coverUrl, active: active),
+                  _TrackArtwork(url: localCoverUrl ?? coverUrl, active: active),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -102,17 +107,50 @@ class LibraryTrackTile extends ConsumerWidget {
                             fontSize: 12.5,
                           ),
                         ),
-                        if (details.isNotEmpty) ...[
+                        if (details.isNotEmpty || offlineProfile != null) ...[
                           const SizedBox(height: 3),
-                          Text(
-                            details,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white30,
-                              fontSize: 10.5,
-                              fontFeatures: [FontFeature.tabularFigures()],
-                            ),
+                          Row(
+                            children: [
+                              if (offlineProfile != null) ...[
+                                Icon(
+                                  Icons.download_done_rounded,
+                                  key: ValueKey('offline-badge-${track.id}'),
+                                  size: 12,
+                                  color: HomeDesign.accent,
+                                ),
+                                const SizedBox(width: 3),
+                                Text(
+                                  offlineProfile,
+                                  style: const TextStyle(
+                                    color: HomeDesign.accent,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                if (details.isNotEmpty)
+                                  const Text(
+                                    ' · ',
+                                    style: TextStyle(
+                                      color: Colors.white30,
+                                      fontSize: 10.5,
+                                    ),
+                                  ),
+                              ],
+                              Flexible(
+                                child: Text(
+                                  details,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white30,
+                                    fontSize: 10.5,
+                                    fontFeatures: [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ],

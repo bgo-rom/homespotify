@@ -87,11 +87,68 @@ function insertTrack(
   }).returning({ id: tracks.id }).get().id;
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition non atteinte avant timeout');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe('imports locaux isolés par utilisateur', () => {
+  it('détecte récursivement tous les sous-dossiers et conserve le profil propriétaire', async () => {
+    const { handle, service } = setup();
+    const alice = insertUser(handle, 'alice');
+    const bob = insertUser(handle, 'bob');
+    const alicePaths = await service.ensureUserDirectory(alice, 'alice');
+    const bobPaths = await service.ensureUserDirectory(bob, 'bob');
+    const aliceAlbum = join(alicePaths.inbox, 'Artiste', 'Album', 'Disc 1');
+    const bobAlbum = join(bobPaths.inbox, 'Autre', 'Album');
+    mkdirSync(aliceAlbum, { recursive: true });
+    mkdirSync(bobAlbum, { recursive: true });
+    writeFileSync(
+      join(aliceAlbum, 'alpha.wav'),
+      makeWav({ title: 'Alpha', artist: 'Alice Artist', seconds: 0.08 }),
+    );
+    writeFileSync(
+      join(bobAlbum, 'beta.wav'),
+      makeWav({ title: 'Beta', artist: 'Bob Artist', seconds: 0.08 }),
+    );
+    writeFileSync(join(aliceAlbum, 'ignore.mp3'), Buffer.from('not supported'));
+
+    const summary = await service.scanAllUserInboxes();
+    expect(summary).toMatchObject({ profiles: 2, discoveredFiles: 2, queuedFiles: 2 });
+    expect(service.status()).toMatchObject({
+      running: false,
+      lastResult: { profiles: 2, discoveredFiles: 2, queuedFiles: 2 },
+      lastError: null,
+    });
+    await waitUntil(() => handle.db.select().from(importJobs).all().length === 2);
+    await waitUntil(() =>
+      handle.db.select().from(importJobs).all().every((job) => job.status === 'IMPORTED'),
+    );
+
+    const aliceTracks = handle.db
+      .select()
+      .from(userTracks)
+      .where(eq(userTracks.userId, alice))
+      .all();
+    const bobTracks = handle.db
+      .select()
+      .from(userTracks)
+      .where(eq(userTracks.userId, bob))
+      .all();
+    expect(aliceTracks).toHaveLength(1);
+    expect(bobTracks).toHaveLength(1);
+    expect(aliceTracks[0]!.trackId).not.toBe(bobTracks[0]!.trackId);
+    service.stop();
+    handle.sqlite.close();
+  });
+
   it('crée les dossiers manquants une fois et conserve le nom après changement de username', async () => {
     const { handle, service } = setup();
     const userId = insertUser(handle, 'alice');

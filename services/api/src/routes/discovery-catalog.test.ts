@@ -52,7 +52,7 @@ class FakeProvider implements DiscoveryCatalogProvider {
   failWith: CatalogProviderError | null = null;
 
   constructor(
-    readonly id: 'spotify' | 'musicbrainz' | 'apple_music',
+    readonly id: 'itunes' | 'spotify' | 'musicbrainz' | 'apple_music',
     readonly results: CatalogSearchResult[],
     capabilities?: CatalogCapability[],
   ) {
@@ -100,6 +100,7 @@ class FakeProvider implements DiscoveryCatalogProvider {
 
 function providersWith(entries: Partial<Record<string, RegisteredProvider>>): RegisteredProvider[] {
   const defaults: RegisteredProvider[] = [
+    { id: 'itunes', enabled: false, disabledReason: 'test_disabled', provider: null },
     { id: 'spotify', enabled: false, disabledReason: 'credentials_missing', provider: null },
     { id: 'musicbrainz', enabled: false, disabledReason: 'user_agent_missing', provider: null },
     { id: 'apple_music', enabled: false, disabledReason: 'credentials_missing', provider: null },
@@ -269,6 +270,40 @@ describe('GET /api/discovery/search', () => {
     expect(spotify.searchCalls).toBe(1);
   });
 
+  it('une recherche artiste exacte retire les variantes sans rapport', async () => {
+    const itunes = new FakeProvider('itunes', [fakeResult({
+      canonicalKey: 'itunes:artist:ajna',
+      entityType: 'artist',
+      title: 'Ajna',
+      artists: [{ name: 'Ajna', reference: null }],
+      providerReferences: [{
+        provider: 'itunes', entityType: 'artist', externalId: 'ajna', externalUrl: null, market: 'FR',
+      }],
+    })], ['SEARCH_ARTISTS']);
+    const musicbrainz = new FakeProvider('musicbrainz', [fakeResult({
+      canonicalKey: 'mbid:random',
+      entityType: 'artist',
+      title: 'Ajna Masters',
+      artists: [{ name: 'Ajna Masters', reference: null }],
+      providerReferences: [{
+        provider: 'musicbrainz', entityType: 'artist', externalId: 'random', externalUrl: null, market: null,
+      }],
+    })], ['SEARCH_ARTISTS']);
+    await startApp(providersWith({
+      itunes: { id: 'itunes', enabled: true, disabledReason: null, provider: itunes },
+      musicbrainz: { id: 'musicbrainz', enabled: true, disabledReason: null, provider: musicbrainz },
+    }));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/discovery/search?q=Ajna&type=artist',
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items.map((item: { title: string }) => item.title)).toEqual(['Ajna']);
+  });
+
   it('rate limit par utilisateur : 429 après la fenêtre autorisée', async () => {
     await startApp(providersWith({}));
     const headers = { authorization: `Bearer ${ownerToken}` };
@@ -314,8 +349,61 @@ describe('GET /api/discovery/providers et santé OWNER', () => {
       headers: { authorization: `Bearer ${ownerToken}` },
     });
     expect(allowed.statusCode).toBe(200);
-    expect(allowed.json().providers).toHaveLength(5);
+    expect(allowed.json().providers).toHaveLength(6);
     expect(allowed.json().cache).toHaveProperty('entries');
+  });
+});
+
+describe('lien Spotify depuis une demande OWNER', () => {
+  async function createTrackRequest(): Promise<number> {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/music-requests',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: {
+        requestType: 'TRACK',
+        title: 'Titre',
+        artist: 'Artiste',
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    return created.json().id as number;
+  }
+
+  it('retourne le lien exact fourni par l’API Spotify officielle', async () => {
+    const spotify = new FakeProvider('spotify', [fakeResult({})]);
+    await startApp(
+      providersWith({
+        spotify: { id: 'spotify', enabled: true, disabledReason: null, provider: spotify },
+      }),
+    );
+    const requestId = await createTrackRequest();
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/music-requests/${requestId}/spotify-link`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      url: 'https://open.spotify.com/track/t1',
+      exact: true,
+      source: 'SPOTIFY_WEB_API',
+      title: 'Titre',
+      artist: 'Artiste',
+    });
+  });
+
+  it('fournit une recherche Spotify préremplie quand l’API n’est pas configurée', async () => {
+    await startApp(providersWith({}));
+    const requestId = await createTrackRequest();
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/music-requests/${requestId}/spotify-link`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ exact: false, source: 'SPOTIFY_SEARCH' });
+    expect(response.json().url).toBe('https://open.spotify.com/search/Titre%20Artiste');
   });
 });
 

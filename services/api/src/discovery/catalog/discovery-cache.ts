@@ -9,11 +9,14 @@ import { and, eq, lt, sql } from 'drizzle-orm';
 import type { DbHandle } from '../../db/client.js';
 import { discoveryCache } from '../../db/schema.js';
 
-export const DISCOVERY_CACHE_SCHEMA_VERSION = 1;
+// V3 invalide aussi les pages où durée/explicit créaient plusieurs cartes
+// pour une même identité visible.
+export const DISCOVERY_CACHE_SCHEMA_VERSION = 3;
 
 /** TTL par opération (ms). Les métadonnées canoniques vivent longtemps, les
  * recherches quelques heures, les erreurs temporaires quelques dizaines de
- * secondes (Phase 7). */
+ * secondes (Phase 7). Les pages contenant une preview appliquent en plus le
+ * TTL court calculé par DiscoveryCatalogService. */
 export const DISCOVERY_CACHE_TTLS_MS: Record<string, number> = {
   search: 4 * 60 * 60 * 1000,
   isrc: 7 * 24 * 60 * 60 * 1000,

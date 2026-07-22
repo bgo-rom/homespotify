@@ -143,8 +143,8 @@ class CatalogSearchApi implements CatalogSearchRepository {
     return switch (error.type) {
       DioExceptionType.connectionError ||
       DioExceptionType.connectionTimeout => AppConfig.serverUnreachableMessage,
-      DioExceptionType.receiveTimeout ||
-      DioExceptionType.sendTimeout => 'Le serveur met trop de temps à répondre.',
+      DioExceptionType.receiveTimeout || DioExceptionType.sendTimeout =>
+        'Le serveur met trop de temps à répondre.',
       _ => 'Échec de la recherche catalogue.',
     };
   }

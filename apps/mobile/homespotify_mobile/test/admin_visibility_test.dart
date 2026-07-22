@@ -5,8 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:homespotify_mobile/src/features/admin/presentation/admin_guard.dart';
 import 'package:homespotify_mobile/src/features/auth/application/auth_controller.dart';
 import 'package:homespotify_mobile/src/features/settings/presentation/settings_screen.dart';
+import 'package:homespotify_mobile/src/features/player/audio/homespotify_audio_handler.dart';
 
 import 'support/fake_auth.dart';
+import 'support/noop_audio_handler.dart';
 import 'support/test_overrides.dart';
 
 Future<void> pumpSettingsAs(WidgetTester tester, AuthState authState) async {
@@ -17,6 +19,7 @@ Future<void> pumpSettingsAs(WidgetTester tester, AuthState authState) async {
       overrides: [
         ...authOverrides(state: authState),
         ...libraryNetworkOverrides(),
+        audioHandlerProvider.overrideWithValue(NoopHomeSpotifyAudioHandler()),
       ],
       child: const MaterialApp(home: SettingsScreen()),
     ),

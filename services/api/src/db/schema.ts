@@ -595,8 +595,9 @@ export const listeningEvents = sqliteTable(
 
 // Accès d'un utilisateur à une piste physique. Le fichier existe UNE fois
 // (table tracks) ; user_tracks est la relation logique qui rend la
-// bibliothèque distincte par compte. Retirer une ligne ne touche jamais le
-// fichier — cf. MULTI_USER_DATA_MODEL.md.
+// bibliothèque distincte par compte. Un retrait conserve la relation avec
+// is_visible=false afin de ne pas être annulé par le backfill du démarrage ; il
+// ne touche jamais le fichier — cf. MULTI_USER_DATA_MODEL.md.
 export const USER_TRACK_SOURCES = ['EXISTING', 'MANUAL_IMPORT', 'ADMIN'] as const;
 export type UserTrackSource = (typeof USER_TRACK_SOURCES)[number];
 
@@ -809,3 +810,46 @@ export const trackEnrichment = sqliteTable('track_enrichment', {
   index('track_enrichment_status_idx').on(table.status),
   index('track_enrichment_recording_idx').on(table.musicbrainzRecordingId),
 ]);
+
+// --- Variantes hors ligne (Phase 1A) ---------------------------------------
+// Dérivées Ogg/Opus produites côté serveur. Le fichier canonique WAV/FLAC
+// n'est JAMAIS modifié : une variante est identifiée par
+// (source_sha256, profile_version, encoder_version) — single-flight distinct
+// pour 128 et 256. `path` est relatif au cache de dérivées, jamais absolu.
+export const OFFLINE_VARIANT_STATUSES = ['PENDING', 'ENCODING', 'READY', 'FAILED', 'STALE'] as const;
+export type OfflineVariantStatus = (typeof OFFLINE_VARIANT_STATUSES)[number];
+
+export const trackOfflineVariants = sqliteTable(
+  'track_offline_variants',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    trackId: integer('track_id')
+      .notNull()
+      .references(() => tracks.id, { onDelete: 'cascade' }),
+    sourceSha256: text('source_sha256').notNull(), // hash de la source au moment de la demande
+    profile: text('profile').notNull(), // opus_128 | opus_256
+    profileVersion: text('profile_version').notNull(), // opus-128-v1 | opus-256-v1
+    encoderVersion: text('encoder_version').notNull(),
+    status: text('status').notNull().default('PENDING'),
+    targetBitrateKbps: integer('target_bitrate_kbps').notNull(),
+    measuredBitrateKbps: integer('measured_bitrate_kbps'), // ffprobe, jamais l'argument demandé
+    durationSeconds: real('duration_seconds'),
+    sizeBytes: integer('size_bytes'),
+    sha256: text('sha256'), // hash de la dérivée publiée
+    path: text('path'), // relatif au cache de dérivées
+    errorMessage: text('error_message'),
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    readyAt: text('ready_at'),
+  },
+  (table) => [
+    uniqueIndex('track_offline_variants_identity_unique').on(
+      table.sourceSha256,
+      table.profileVersion,
+      table.encoderVersion,
+    ),
+    index('track_offline_variants_track_idx').on(table.trackId),
+    index('track_offline_variants_status_idx').on(table.status),
+  ],
+);

@@ -239,6 +239,35 @@ describe('activité d’écoute', () => {
     });
   });
 
+  it('termine une ancienne session quand la même installation en démarre une autre', async () => {
+    const firstTrack = seedTrack(owner.id, 'Ancienne session');
+    const secondTrack = seedTrack(owner.id, 'Nouvelle session');
+    const startedAt = Date.now();
+    await send(owner.token, [
+      event(firstTrack, { createdAt: new Date(startedAt).toISOString() }),
+    ]);
+    await send(owner.token, [
+      event(secondTrack, {
+        eventId: '12121212-1212-4212-8212-121212121212',
+        sessionId: '34343434-3434-4434-8434-343434343434',
+        createdAt: new Date(startedAt + 1_000).toISOString(),
+      }),
+    ]);
+
+    const sessions = app.dbHandle.db
+      .select()
+      .from(listeningSessions)
+      .all();
+    expect(sessions.find((row) => row.trackId === firstTrack)).toMatchObject({
+      status: 'ENDED',
+      endReason: 'SUPERSEDED',
+    });
+    expect(sessions.find((row) => row.trackId === secondTrack)).toMatchObject({
+      status: 'ACTIVE',
+      endReason: null,
+    });
+  });
+
   it('isole Alice et Bob et ignore un userId injecté', async () => {
     const alice = await createUser('alice');
     const bob = await createUser('bob');

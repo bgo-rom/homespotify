@@ -6,8 +6,9 @@ import 'package:just_audio/just_audio.dart';
 
 import 'package:homespotify_mobile/src/features/player/audio/audio_diagnostics.dart';
 import 'package:homespotify_mobile/src/features/player/audio/homespotify_audio_handler.dart';
+import 'package:homespotify_mobile/src/features/player/data/playback_session_store.dart';
 
-/// Fiabilité des longues sessions : une file de 20 pistes doit s'enchaîner
+/// Fiabilité des longues sessions : une file de 200 pistes doit rester cohérente
 /// sans intervention ; une piste irrécupérable est sautée (borné) ; un token
 /// expiré est rafraîchi À CHAQUE expiration, pas seulement la première.
 ///
@@ -31,10 +32,11 @@ void main() {
   PlayerException sourceError([String cause = 'FileDataSourceException']) =>
       PlayerException(0, 'Source error <- $cause: unreadable', null);
 
-  List<PlayerQueueItem> makeQueue(int count) => [
+  List<PlayerQueueItem> makeQueue(int count, {int? userId}) => [
     for (var index = 0; index < count; index++)
       PlayerQueueItem(
         id: '${index + 1}',
+        userId: userId,
         streamUri: Uri.parse('https://homespotify.test/${index + 1}/stream'),
         title: 'Piste ${index + 1}',
         headers: const {'Authorization': 'Bearer initial'},
@@ -52,8 +54,14 @@ void main() {
     HomeSpotifyAudioHandler handler,
     _FakeClock clock,
     List<String> refreshLog,
+    void Function() rotateAuthorization,
   })
-  makeRig({int refreshResult = -1}) {
+  makeRig({
+    int refreshResult = -1,
+    PlaybackSessionStore? playbackSessionStore,
+    Duration endOfTrackGracePeriod = const Duration(seconds: 2),
+    Duration playbackGuardInterval = const Duration(seconds: 1),
+  }) {
     final player = _LongSessionFakePlayer();
     final clock = _FakeClock();
     final refreshLog = <String>[];
@@ -73,6 +81,9 @@ void main() {
       currentAuthorizationHeaders: () => {
         'Authorization': 'Bearer renewed-$tokenGeneration',
       },
+      playbackSessionStore: playbackSessionStore,
+      endOfTrackGracePeriod: endOfTrackGracePeriod,
+      playbackGuardInterval: playbackGuardInterval,
     );
     addTearDown(handler.dispose);
     return (
@@ -80,6 +91,7 @@ void main() {
       handler: handler,
       clock: clock,
       refreshLog: refreshLog,
+      rotateAuthorization: () => tokenGeneration += 1,
     );
   }
 
@@ -119,6 +131,27 @@ void main() {
     expect(rig.player.setAudioSourcesCalls, 1);
   });
 
+  test('une file de 200 pistes reste alignée jusqu’au dernier index', () async {
+    final rig = makeRig();
+    await rig.handler.setQueueAndPlay(items: makeQueue(200), initialIndex: 0);
+    await settleUntil(() => rig.player.playCalls == 1);
+
+    expect(rig.handler.queue.value.length, 200);
+    expect(rig.player.sequence.length, 200);
+    for (final index in <int>[1, 49, 99, 149, 199]) {
+      rig.player.advanceToIndex(index);
+      await settleUntil(
+        () => rig.handler.playbackState.value.queueIndex == index,
+      );
+      expect(rig.handler.mediaItem.value?.id, '${index + 1}');
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+    }
+    expect(rig.player.setAudioSourcesCalls, 1);
+  });
+
   test('une durée inconnue ne bloque pas l’enchaînement', () async {
     final rig = makeRig();
     rig.player.loadedDuration = null;
@@ -132,6 +165,72 @@ void main() {
       isNot(AudioProcessingState.error),
     );
   });
+
+  test('la file et ses modes sont persistés puis restaurés en pause', () async {
+    final store = _MemoryPlaybackSessionStore();
+    final first = makeRig(playbackSessionStore: store);
+    await first.handler.setQueueAndPlay(
+      items: makeQueue(4, userId: 7),
+      initialIndex: 2,
+    );
+    await settleUntil(() => first.player.playCalls == 1);
+    await first.handler.seek(const Duration(seconds: 42));
+    await first.handler.setRepeatMode(AudioServiceRepeatMode.all);
+    await first.handler.setShuffleMode(AudioServiceShuffleMode.all);
+    await first.handler.pause();
+    await settleUntil(() => store.sessions[7]?.positionMs == 42000);
+
+    final persisted = store.sessions[7];
+    expect(persisted, isNotNull);
+    expect(persisted!.currentIndex, 2);
+    expect(persisted.repeatMode, 'all');
+    expect(persisted.shuffleEnabled, isTrue);
+    expect(persisted.wasPlaying, isFalse);
+    expect(persisted.queue.length, 4);
+
+    final restored = makeRig(playbackSessionStore: store);
+    expect(await restored.handler.restorePlaybackSessionForUser(7), isTrue);
+    expect(restored.player.lastInitialIndex, 2);
+    expect(restored.player.lastInitialPosition, const Duration(seconds: 42));
+    expect(restored.player.shuffleModeEnabled, isTrue);
+    expect(restored.player.playing, isFalse);
+    expect(restored.handler.queue.value.map((item) => item.id), [
+      '1',
+      '2',
+      '3',
+      '4',
+    ]);
+  });
+
+  test(
+    'une coupure réseau reprend la même piste et la même position',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(6), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+      rig.player.advanceToIndex(3);
+      await rig.handler.seek(const Duration(seconds: 42));
+      await rig.handler.handleConnectivityChanged(false);
+
+      rig.player.emitError(sourceError('SocketException: network unreachable'));
+      await settleUntil(
+        () =>
+            rig.handler.playbackState.value.processingState ==
+            AudioProcessingState.buffering,
+      );
+      expect(rig.player.setAudioSourcesCalls, 1);
+
+      await rig.handler.handleConnectivityChanged(true);
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+      expect(rig.player.lastInitialIndex, 3);
+      expect(rig.player.lastInitialPosition, const Duration(seconds: 42));
+      await settleUntil(() => rig.player.playCalls >= 2);
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+    },
+  );
 
   test('une piste 404 au milieu est sautée et la file continue', () async {
     final rig = makeRig();
@@ -237,6 +336,158 @@ void main() {
         rig.handler.playbackState.value.processingState,
         isNot(AudioProcessingState.error),
       );
+
+      // Troisième expiration simulée (~45 min) : le verrou est relâché après
+      // chaque récupération réussie et la file reste sur la piste courante.
+      rig.clock.advance(const Duration(minutes: 15));
+      rig.player.emitError(authError());
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 4);
+      expect(rig.refreshLog.length, 3);
+      expect(rig.player.lastInitialIndex, 9);
+      expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-3');
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+    },
+  );
+
+  test(
+    'un token renouvelé en amont reconstruit la source sans double refresh',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(5), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      // Le timer de session a déjà fait tourner le token, mais Media3 conserve
+      // le Bearer figé dans la source créée avant ce renouvellement.
+      rig.rotateAuthorization();
+      rig.player.emitError(authError());
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+
+      expect(rig.refreshLog, isEmpty);
+      expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-1');
+      await settleUntil(() => rig.player.playCalls >= 2);
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+    },
+  );
+
+  test(
+    'un Source error générique utilise le token déjà tourné sans sauter',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(5), initialIndex: 2);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      // Media3 ne conserve parfois que "Source error" et perd le code 401.
+      // La rotation du Bearer suffit alors à identifier la récupération auth.
+      rig.rotateAuthorization();
+      rig.player.emitError(sourceError());
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+
+      expect(rig.refreshLog, isEmpty);
+      expect(rig.player.lastInitialIndex, 2);
+      expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-1');
+      await settleUntil(() => rig.player.playCalls >= 2);
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+    },
+  );
+
+  test('Lecture reconstruit une file idle avec le dernier Bearer', () async {
+    final rig = makeRig();
+    await rig.handler.setQueueAndPlay(items: makeQueue(1), initialIndex: 0);
+    await settleUntil(() => rig.player.playCalls == 1);
+
+    // Une file d'une piste ne peut pas sauter l'élément en erreur : elle
+    // publie donc un échec visible et marque la source comme inutilisable.
+    rig.player.emitError(sourceError());
+    await settleUntil(
+      () =>
+          rig.handler.playbackState.value.processingState ==
+          AudioProcessingState.error,
+    );
+
+    rig.rotateAuthorization();
+    expect(
+      await rig.handler.handleAuthorizationChanged(reason: 'idle-refresh'),
+      isFalse,
+    );
+    await rig.handler.play();
+    await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+    await settleUntil(() => rig.player.playCalls >= 2);
+
+    expect(rig.player.lastInitialIndex, 0);
+    expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-1');
+    expect(
+      rig.handler.playbackState.value.processingState,
+      isNot(AudioProcessingState.error),
+    );
+  });
+
+  test(
+    'une rotation proactive est propagée avant tout 401, à position constante',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(5), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+      rig.player.advanceToIndex(2);
+      await rig.handler.seek(const Duration(seconds: 42));
+
+      // Le timer auth renouvelle le JWT 90 secondes avant son expiration.
+      // Le lecteur doit reconstruire immédiatement les AudioSource dont les
+      // headers sont immuables, sans attendre que Media3 rencontre un 401.
+      rig.rotateAuthorization();
+      expect(
+        await rig.handler.handleAuthorizationChanged(reason: 'test-refresh'),
+        isTrue,
+      );
+
+      expect(rig.refreshLog, isEmpty);
+      expect(rig.player.setAudioSourcesCalls, 2);
+      expect(rig.player.lastInitialIndex, 2);
+      expect(rig.player.lastInitialPosition, const Duration(seconds: 42));
+      expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-1');
+      await settleUntil(() => rig.player.playCalls >= 2);
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+    },
+  );
+
+  test(
+    'les rotations proactives répétées maintiennent la session sans limite',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(20), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      for (var generation = 1; generation <= 5; generation++) {
+        rig.rotateAuthorization();
+        expect(
+          await rig.handler.handleAuthorizationChanged(
+            reason: 'test-refresh-$generation',
+          ),
+          isTrue,
+        );
+        expect(rig.player.setAudioSourcesCalls, generation + 1);
+        expect(
+          rig.player.lastHeaders?['Authorization'],
+          'Bearer renewed-$generation',
+        );
+      }
+
+      expect(rig.refreshLog, isEmpty);
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
     },
   );
 
@@ -312,6 +563,127 @@ void main() {
       isNot(AudioProcessingState.error),
     );
   });
+
+  test(
+    'la même erreur native remontée deux fois ne déclenche qu’une recovery',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(6), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      final blocker = Completer<void>();
+      rig.player.nextSetAudioSourcesBlocker = blocker;
+      final error = sourceError(
+        'InvalidResponseCodeException: Response code: 404',
+      );
+      rig.player.emitError(error);
+      rig.player.emitError(error);
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+
+      expect(rig.player.setAudioSourcesCalls, 2);
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_DUPLICATE_ERROR_SUPPRESSED'),
+      );
+      blocker.complete();
+      await settleUntil(() => rig.player.playCalls >= 2);
+      expect(rig.player.lastInitialIndex, 1);
+    },
+  );
+
+  test(
+    'un completed prématuré avant la fin déclenche un seul auto-advance borné',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(3), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      rig.player.completeQueue();
+      await settleUntil(() => rig.player.currentIndex == 1);
+      await settleUntil(() => rig.player.playCalls == 2);
+
+      expect(rig.player.currentIndex, 1);
+      expect(rig.player.playCalls, 2);
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_QUEUE_AUTO_ADVANCE_COMPLETED'),
+      );
+    },
+  );
+
+  test(
+    'playing bloqué à la durée avance même sans état completed natif',
+    () async {
+      final rig = makeRig(endOfTrackGracePeriod: Duration.zero);
+      await rig.handler.setQueueAndPlay(items: makeQueue(3), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      // Incident réel Android : position == durée et playing=true, mais le
+      // moteur reste en ready au lieu d'émettre completed/index suivant.
+      rig.player.stallAtEnd();
+      await settleUntil(() => rig.player.currentIndex == 1);
+      await settleUntil(() => rig.player.playCalls == 2);
+
+      expect(rig.player.currentIndex, 1);
+      expect(rig.player.playCalls, 2);
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_END_OF_TRACK_STALL_DETECTED'),
+      );
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('position-stalled-at-logical-end'),
+      );
+    },
+  );
+
+  test(
+    'le garde périodique avance si le flux de position cesse à la fin',
+    () async {
+      final rig = makeRig(
+        endOfTrackGracePeriod: Duration.zero,
+        playbackGuardInterval: const Duration(milliseconds: 10),
+      );
+      await rig.handler.setQueueAndPlay(items: makeQueue(3), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      rig.player.stallAtEndSilently();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await settleUntil(() => rig.player.currentIndex == 1);
+
+      expect(rig.player.currentIndex, 1);
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_END_OF_TRACK_STALL_DETECTED'),
+      );
+    },
+  );
+
+  test(
+    'un retour natif de la fin vers zéro ne reboucle pas la même piste',
+    () async {
+      final rig = makeRig(
+        endOfTrackGracePeriod: const Duration(seconds: 2),
+        playbackGuardInterval: const Duration(milliseconds: 10),
+      );
+      await rig.handler.setQueueAndPlay(items: makeQueue(3), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      rig.player.approachEnd();
+      await settleUntil(
+        () => AudioDiagnostics.instance.snapshot().join('\n').isNotEmpty,
+      );
+      rig.player.wrapToStartSilently();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await settleUntil(() => rig.player.currentIndex == 1);
+
+      expect(rig.player.currentIndex, 1);
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_END_OF_TRACK_POSITION_WRAPPED'),
+      );
+    },
+  );
 }
 
 class _FakeClock {
@@ -342,9 +714,11 @@ class _LongSessionFakePlayer implements AudioPlayer {
   int setAudioSourcesCalls = 0;
   int playCalls = 0;
   int? lastInitialIndex;
+  Duration? lastInitialPosition;
   Map<String, String>? lastHeaders;
   Duration? loadedDuration = const Duration(minutes: 3);
   bool suppressReadyOnPlay = false;
+  Completer<void>? nextSetAudioSourcesBlocker;
   List<int> shuffleOrder = const <int>[];
 
   List<IndexedAudioSource> _sequence = const [];
@@ -352,6 +726,7 @@ class _LongSessionFakePlayer implements AudioPlayer {
   double _speed = 1;
   double _pitch = 1;
   double _volume = 1;
+  Duration _position = Duration.zero;
   bool _playing = false;
   bool _shuffleEnabled = false;
   ProcessingState _processingState = ProcessingState.idle;
@@ -380,6 +755,34 @@ class _LongSessionFakePlayer implements AudioPlayer {
     _processingState = ProcessingState.completed;
     _playing = false;
     _broadcast();
+  }
+
+  /// Simule Media3 bloqué à la fin : la timeline est terminée, mais l'état
+  /// reste ready/playing et aucun nouvel index n'est publié.
+  void stallAtEnd() {
+    _position = loadedDuration ?? Duration.zero;
+    _processingState = ProcessingState.ready;
+    _playing = true;
+    _positions.add(_position);
+    _broadcast();
+  }
+
+  void stallAtEndSilently() {
+    _position = loadedDuration ?? Duration.zero;
+    _processingState = ProcessingState.ready;
+    _playing = true;
+  }
+
+  void approachEnd() {
+    final durationMs = (loadedDuration ?? Duration.zero).inMilliseconds;
+    _position = Duration(milliseconds: (durationMs * 0.95).round());
+    _positions.add(_position);
+  }
+
+  void wrapToStartSilently() {
+    _position = Duration.zero;
+    _processingState = ProcessingState.ready;
+    _playing = true;
   }
 
   /// Simule une erreur de source native : le lecteur repasse idle (comme le
@@ -411,8 +814,9 @@ class _LongSessionFakePlayer implements AudioPlayer {
       case #playbackEvent:
         return _event;
       case #position:
+        return _position;
       case #bufferedPosition:
-        return Duration.zero;
+        return _position;
       case #duration:
         return loadedDuration;
       case #processingState:
@@ -458,6 +862,9 @@ class _LongSessionFakePlayer implements AudioPlayer {
         _sequence = sources.cast<IndexedAudioSource>();
         lastInitialIndex =
             invocation.namedArguments[#initialIndex] as int? ?? 0;
+        lastInitialPosition =
+            invocation.namedArguments[#initialPosition] as Duration? ??
+            Duration.zero;
         if (_sequence.isNotEmpty) {
           final first =
               _sequence[lastInitialIndex!.clamp(0, _sequence.length - 1)];
@@ -465,13 +872,23 @@ class _LongSessionFakePlayer implements AudioPlayer {
             lastHeaders = first.headers?.cast<String, String>();
           }
         }
-        _currentIndex = _sequence.isEmpty ? null : lastInitialIndex;
-        _processingState = _sequence.isEmpty
-            ? ProcessingState.idle
-            : ProcessingState.ready;
-        if (_currentIndex != null) _indexes.add(_currentIndex);
-        _broadcast();
-        return Future<Duration?>.value(loadedDuration);
+        Future<Duration?> completeLoad() {
+          _currentIndex = _sequence.isEmpty ? null : lastInitialIndex;
+          _position = lastInitialPosition ?? Duration.zero;
+          _positions.add(_position);
+          _processingState = _sequence.isEmpty
+              ? ProcessingState.idle
+              : ProcessingState.ready;
+          if (_currentIndex != null) _indexes.add(_currentIndex);
+          _broadcast();
+          return Future<Duration?>.value(loadedDuration);
+        }
+        final blocker = nextSetAudioSourcesBlocker;
+        nextSetAudioSourcesBlocker = null;
+        if (blocker != null) {
+          return blocker.future.then((_) => completeLoad());
+        }
+        return completeLoad();
       case #pause:
         _playing = false;
         _states.add(PlayerState(false, _processingState));
@@ -490,6 +907,8 @@ class _LongSessionFakePlayer implements AudioPlayer {
         _broadcast();
         return Future<void>.value();
       case #seek:
+        _position = invocation.positionalArguments.first as Duration;
+        _positions.add(_position);
         final index = invocation.namedArguments[#index] as int?;
         if (index != null) {
           _currentIndex = index;
@@ -509,5 +928,22 @@ class _LongSessionFakePlayer implements AudioPlayer {
       default:
         return super.noSuchMethod(invocation);
     }
+  }
+}
+
+class _MemoryPlaybackSessionStore implements PlaybackSessionStore {
+  final Map<int, PersistedPlaybackSession> sessions = {};
+
+  @override
+  Future<void> delete(int userId) async {
+    sessions.remove(userId);
+  }
+
+  @override
+  Future<PersistedPlaybackSession?> read(int userId) async => sessions[userId];
+
+  @override
+  Future<void> write(PersistedPlaybackSession session) async {
+    sessions[session.userId] = session;
   }
 }

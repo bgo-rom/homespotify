@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../offline/application/offline_index.dart';
 import '../data/library_api.dart';
 import '../domain/track.dart';
 
@@ -59,40 +60,81 @@ final librarySortProvider = NotifierProvider<LibrarySortSetting, LibrarySort>(
   name: 'librarySort',
 );
 
+/// Filtre « Téléchargées » : ne montre que les pistes disponibles hors ligne.
+class LibraryDownloadedOnly extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void toggle() => state = !state;
+
+  void set(bool value) => state = value;
+}
+
+final libraryDownloadedOnlyProvider =
+    NotifierProvider<LibraryDownloadedOnly, bool>(
+      LibraryDownloadedOnly.new,
+      name: 'libraryDownloadedOnly',
+    );
+
 /// Pistes visibles : bibliothèque chargée + recherche + tri.
 ///
 /// Dérivé pur : seul ce provider (et les widgets qui l'écoutent) se recalcule
 /// quand la recherche ou le tri change — pas l'AppBar ni le mini-player.
+final mergedLibraryTracksProvider = Provider<List<Track>>((ref) {
+  final remoteTracks =
+      ref.watch(libraryProvider).asData?.value ?? const <Track>[];
+  final localTracks = ref.watch(offlineLibraryTracksProvider);
+  final byId = <int, Track>{for (final track in localTracks) track.id: track};
+  // Les métadonnées serveur, plus riches, gagnent lorsqu'elles sont
+  // disponibles ; le manifeste complète la liste en mode hors connexion.
+  for (final track in remoteTracks) {
+    byId[track.id] = track;
+  }
+  return byId.values.toList(growable: false);
+});
+
 final visibleTracksProvider = Provider<List<Track>>((ref) {
-  final tracks = ref.watch(libraryProvider).asData?.value ?? const <Track>[];
+  final tracks = ref.watch(mergedLibraryTracksProvider);
   final query = ref.watch(librarySearchQueryProvider);
   final sort = ref.watch(librarySortProvider);
-  final result = applyLibraryFilters(tracks, query: query, sort: sort);
+  final downloadedOnly = ref.watch(libraryDownloadedOnlyProvider);
+  // Index hors ligne chargé UNE fois (jamais une requête SQLite par piste).
+  final downloadedIds = ref.watch(offlineAvailableTrackIdsProvider);
+  final result = applyLibraryFilters(
+    tracks,
+    query: query,
+    sort: sort,
+    onlyDownloaded: downloadedOnly,
+    downloadedIds: downloadedIds,
+  );
   logLibrary(
     'bibliothèque: ${tracks.length} pistes chargées, query="$query", '
-    'tri=${sort.name}, visibles=${result.length}',
+    'tri=${sort.name}, téléchargées=${downloadedOnly ? 'seules' : 'toutes'}, '
+    'visibles=${result.length}',
   );
   return result;
 });
 
-/// Filtre (titre/artiste/album, insensible à la casse) puis trie. Fonction
-/// pure, testable sans widget.
+/// Filtre (titre/artiste/album, insensible à la casse, option « téléchargées
+/// seulement ») puis trie. Fonction pure, testable sans widget.
 List<Track> applyLibraryFilters(
   List<Track> tracks, {
   required String query,
   required LibrarySort sort,
+  bool onlyDownloaded = false,
+  Set<int> downloadedIds = const {},
 }) {
   final q = query.trim().toLowerCase();
-  final result = q.isEmpty
-      ? List.of(tracks)
-      : tracks
-            .where(
-              (t) =>
-                  t.title.toLowerCase().contains(q) ||
-                  t.artist.toLowerCase().contains(q) ||
-                  t.album.toLowerCase().contains(q),
-            )
-            .toList();
+  final result = tracks
+      .where((t) => !onlyDownloaded || downloadedIds.contains(t.id))
+      .where(
+        (t) =>
+            q.isEmpty ||
+            t.title.toLowerCase().contains(q) ||
+            t.artist.toLowerCase().contains(q) ||
+            t.album.toLowerCase().contains(q),
+      )
+      .toList();
 
   int text(String a, String b) => a.toLowerCase().compareTo(b.toLowerCase());
   int byTitle(Track a, Track b) => text(a.title, b.title);

@@ -17,17 +17,6 @@ describe('loadConfig', () => {
       maxUploadBytes: 200 * 1024 * 1024,
       accessTokenTtlSeconds: 900,
       refreshTokenTtlSeconds: 30 * 24 * 60 * 60,
-      nodeFetch: {
-        allowedOrigins: [],
-        mediaAllowedOrigins: [],
-        remoteSearchPathTemplate: '/search?q={query}',
-        remoteResolvePathTemplate: '/api/download?trackId={trackId}',
-        metadataTimeoutMs: 10_000,
-        maxBytes: 200 * 1024 * 1024,
-        timeoutMs: 10 * 60_000,
-        maxConcurrentJobs: 2,
-        maxQueuedJobs: 20,
-      },
     });
     // Hors production sans AUTH_TOKEN_SECRET : secret éphémère généré.
     expect(config.authTokenSecret.length).toBeGreaterThanOrEqual(32);
@@ -69,55 +58,4 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ NODE_ENV: 'staging' })).toThrow(/NODE_ENV/);
   });
 
-  it('normalise les origines HTTPS autorisées du fetch-node', () => {
-    const config = loadConfig({
-      NODE_FETCH_ALLOWED_ORIGINS: 'https://audio.example, https://audio.example/,https://backup.example:8443',
-      NODE_FETCH_MEDIA_ALLOWED_ORIGINS: 'https://media.example,https://media.example/',
-      NODE_FETCH_SEARCH_PATH_TEMPLATE: '/v2/search/{query}',
-      NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE: '/v1/resolve/{trackId}',
-      NODE_FETCH_METADATA_TIMEOUT_MS: '12000',
-      NODE_FETCH_MAX_MB: '350',
-      NODE_FETCH_TIMEOUT_MS: '900000',
-      NODE_FETCH_MAX_CONCURRENT: '1',
-      NODE_FETCH_MAX_QUEUED: '8',
-    });
-    expect(config.nodeFetch).toEqual({
-      allowedOrigins: ['https://audio.example', 'https://backup.example:8443'],
-      mediaAllowedOrigins: ['https://media.example'],
-      remoteSearchPathTemplate: '/v2/search/{query}',
-      remoteResolvePathTemplate: '/v1/resolve/{trackId}',
-      metadataTimeoutMs: 12_000,
-      maxBytes: 350 * 1024 * 1024,
-      timeoutMs: 900_000,
-      maxConcurrentJobs: 1,
-      maxQueuedJobs: 8,
-    });
-  });
-
-  it('refuse une origine fetch-node non HTTPS ou contenant un chemin', () => {
-    expect(() => loadConfig({
-      NODE_FETCH_ALLOWED_ORIGINS: 'http://audio.example',
-    })).toThrow(/origines HTTPS/);
-    expect(() => loadConfig({
-      NODE_FETCH_ALLOWED_ORIGINS: 'https://audio.example/files',
-    })).toThrow(/origines HTTPS/);
-    expect(() => loadConfig({
-      NODE_FETCH_MEDIA_ALLOWED_ORIGINS: 'https://cdn.example/files',
-    })).toThrow(/origines HTTPS/);
-  });
-
-  it('refuse un template de résolution distant absolu ou sans trackId', () => {
-    expect(() => loadConfig({
-      NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE: 'https://other.example/api/{trackId}',
-    })).toThrow(/chemin relatif/);
-    expect(() => loadConfig({
-      NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE: '/api/download',
-    })).toThrow(/trackId/);
-    expect(() => loadConfig({
-      NODE_FETCH_SEARCH_PATH_TEMPLATE: 'https://other.example/search?q={query}',
-    })).toThrow(/chemin relatif/);
-    expect(() => loadConfig({
-      NODE_FETCH_SEARCH_PATH_TEMPLATE: '/search',
-    })).toThrow(/query/);
-  });
 });

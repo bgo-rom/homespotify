@@ -226,6 +226,7 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : Android signalait un ANR au lancement après l'ajout des réglages de vitesse. `main()` attendait `AudioService.init` avant `runApp`, tandis que le constructeur du handler lançait déjà `setVolume` et `AudioSession.instance`. Une attente native suffisait donc à laisser l'écran de lancement sans frame Flutter interactive.
 - **Leçon** : les constructeurs d'infrastructure mobile restent sans effet natif ; la première frame est publiée avant tout rattachement de service facultatif. Les réglages distants d'une piste ne doivent jamais se trouver dans le chemin critique de lecture.
 - **Conséquence** : handler local unique injecté immédiatement, rattachement `audio_service` après la première frame, volume/session paresseux à la première lecture, réglage de vitesse chargé en arrière-plan avec timeout et contrôle de piste active. Le lecteur local reste fonctionnel si le service de notification échoue.
+  - **Mise à jour 2026-07-20** : la conclusion « aucun plugin natif avant la première frame » était trop large. La cause bloquante était le travail natif lancé par le constructeur du handler. Ce constructeur étant désormais paresseux, `AudioService.init` doit au contraire être attendu avant `runApp` : le service média est une condition de la lecture en arrière-plan, pas un enrichissement facultatif.
 
 ### L-042 — Une migration présente peut rester invisible à une base dont le journal est « dans le futur » (2026-07-14)
 - **Contexte** : la base réelle avait déjà un `created_at` maximal à `1784050000000`, tandis que l'entrée 0014 des réglages de lecture et de l'analyse audio portait `when=1784037485683`. Drizzle a donc ignoré son SQL et les tables `user_track_playback_settings` et `track_audio_analysis` n'existaient pas, malgré la présence du fichier de migration.
@@ -246,6 +247,7 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Contexte** : la lecture s'arrêtait silencieusement après ~4-5 pistes (≈ 15 min). Les `AudioSource` de la file embarquent le Bearer capturé au lancement ; `ACCESS_TOKEN_TTL_SECONDS` = 900. À l'expiration, la requête Range suivante reçoit 401 et ExoPlayer lève `TYPE_SOURCE` dont la CAUSE est `InvalidResponseCodeException: Response code: 401` — mais le fork n'envoyait à Dart que `exoError.getMessage()` = « Source error ». `_isAuthorizationFailure` ne matchait jamais → aucun refresh → arrêt. Second verrou : la récupération 401 était limitée à UNE tentative par file (`_authorizationRetriedRequest`), donc même détectée, une session > 2 expirations s'arrêtait.
 - **Leçon** : (1) à chaque frontière (JNI, MethodChannel, plugin), transmettre la CHAÎNE de causes, pas le message du wrapper — un code HTTP invisible côté Dart rend toute politique de récupération aveugle ; (2) un anti-boucle « une fois par X » doit être dimensionné par rapport à la durée de vie de X : une file de lecture vit des heures, un access token 15 minutes — le garde-fou correct est une fenêtre de temps, pas un drapeau par file.
 - **Conséquence** : `onPlayerError` remonte `describePlaybackError` (wrapper + causes, borné, sans header) ; récupération 401 réarmable (cooldown 30 s, horloge injectable) ; une piste irrécupérable est sautée (max 3 sauts consécutifs, réarmés après 5 s de lecture stable — sans ce délai, une file entièrement cassée en repeat-all bouclerait) ; journal `AudioDiagnostics` (ring buffer sans secret, exportable depuis `/dev/stretch-lab`, actif via `HOMESPOTIFY_AUDIO_DIAGNOSTICS=true`). Tests `long_session_test.dart` : 20 pistes, 404 isolé, sauts bornés, double expiration récupérée, anti-martèlement, refresh impossible.
+  - **Mise à jour 2026-07-20** : le ring buffer initial et le harnais 20 pistes sont remplacés par le journal persistant rotatif, l'écran `/dev/audio-diagnostics`, les verrous single-flight/déduplication et le scénario 200 pistes / trois expirations décrit dans L-052/L-053 et `TD-Audio-2026-07-20`.
 
 ### L-046 — Un paramètre DSP qui exige un reset ne peut pas être piloté par une valeur continue (2026-07-16)
 - **Contexte** : audit du timbre « robotique/métallique » des voix à 0,80x/1,20x/1,30x. La chaîne était saine (pas de formants, pas de freq map, pitch 1,0, Sonic neutre, une seule conversion PCM aller-retour, accumulateur fractionnaire exact à 0 frame sur 90 s). La cause mesurée (`quality_lab latch`) : le profil Signalsmith était sélectionné par plage de ratio, mais reconfigurer Signalsmith vide la STFT — impossible en cours de flux. Tout glissement du slider (1,04x → 1,30x) laissait donc le flux sur le profil du PREMIER ratio non-unitaire, `presetCheaper` 100/40 (recouvrement 2,5x), avec `profileChangePending=true` à jamais : l'utilisateur écoutait la pire config aux ratios extrêmes.
@@ -262,6 +264,200 @@ Ce fichier **doit** être mis à jour dès qu'est découverte : une erreur commi
 - **Leçon** : la récupération distante est uniquement un transport vers l'inbox. L'identité du dossier vient du Bearer, jamais d'un `userId` libre ; le réseau est limité à une liste d'origines HTTPS exactes, chaque redirection est revalidée, et le fichier reste invisible au watcher tant que le flux borné n'a pas été renommé atomiquement depuis `.part`.
 - **Conséquence** : `/api/library/fetch-node` et `/api/library/import-remote-track` répondent `202`, exposent un statut sans révéler l'URL et n'écrivent aucune ligne métier en base. Une URL CDN résolue reste soumise à une allowlist exacte et le flux doit porter une vraie signature FLAC/WAV : un conteneur MP4 renommé `.flac` est refusé. Le watcher reste seul responsable du hash, de la déduplication et de l'import ; le mobile invalide la bibliothèque après la remise du fichier au watcher.
 
+### L-049 — Un manifeste DASH annonçant le codec FLAC n'est pas un fichier FLAC (2026-07-20)
+- **Contexte** : l'endpoint distant `/track/?id=...` répond `200` avec `{ version, data: { manifestMimeType, manifest, audioQuality, ... } }`. `data.manifest` est un XML DASH encodé en base64 ; ses modèles `initialization` et `media` servent des fragments `audio/mp4` dont la représentation annonce le codec `flac`.
+- **Leçon** : le codec interne et le conteneur livré sont deux faits distincts. Des fragments fMP4 contenant du FLAC ne commencent pas par la signature `fLaC`, ne forment pas un `.flac` par simple concaténation et ne doivent jamais être renommés pour contourner la validation. Un log de diagnostic doit exposer seulement la structure (types et noms de champs), jamais le manifeste ou ses URL signées.
+- **Conséquence** : le résolveur accepte plusieurs clés d'URL directe dans des enveloppes bornées. Un manifeste BTS JSON base64 peut fournir un fichier direct via `urls[0]`. Un manifeste DASH XML validé est confié à FFmpeg pour produire un véritable conteneur FLAC ; l'allowlist, la limite de taille et la vérification finale `fLaC` restent obligatoires. Le remux initial `-c:a copy` a ensuite été remplacé par la reconstruction lossless décrite dans L-054.
+
+### L-050 — La résolution distante varie à la fois par instance et par chemin (2026-07-20)
+- **Contexte** : selon l'instance Hi-Fi API, un même `trackId` peut être résolu par `/track/`, `/download`, `/stream` ou `/api/download`, sous forme de JSON, de flux direct ou de redirection HTTP.
+- **Leçon** : la cascade doit couvrir le produit origines × chemins, dédupliquer le template configuré et borner chaque tentative. Capturer une redirection ne dispense jamais de valider sa cible HTTPS contre l'allowlist média, et les URL signées ne doivent pas apparaître dans les logs.
+- **Conséquence** : le résolveur essaie le template `.env` en premier, puis quatre fallbacks connus sur chaque instance. Les réponses 301/302/303/307/308 fournissent une cible au worker sans précharger le média ; les flux et redirections restent soumis aux limites, à la revalidation et à la signature audio finale.
+
+### L-051 — FFmpeg devient un client réseau lorsqu'il lit un MPD local (2026-07-20)
+- **Contexte** : écrire un manifeste DASH dans un fichier temporaire puis lancer FFmpeg évite d'assembler les segments en Node.js, mais les URL du MPD sont alors téléchargées directement par le processus enfant.
+- **Leçon** : l'allowlist doit être appliquée à toutes les références du MPD avant le lancement. Les DTD, entités externes, XLink, URL relatives et protocoles non HTTPS sont refusés ; FFmpeg reçoit en plus des listes de protocoles blanche/noire. Son stderr n'est jamais journalisé car il peut recopier des URL CDN signées.
+- **Conséquence** : le MPD est borné et temporaire, FFmpeg est interrompu avec le job, la taille de sortie est surveillée, puis la signature `fLaC` est relue avant le renommage atomique. `FFMPEG_PATH` doit être visible depuis l'environnement réel du service, pas seulement depuis le terminal interactif.
+
 # L-Phase-3B — Une position média n’est pas une durée écoutée
 
 La différence entre deux positions est fausse dès qu’un utilisateur seek. La durée écoutée doit être cumulée avec une horloge monotone pendant les seuls intervalles réellement joués, puis envoyée comme maximum cumulatif idempotent. La file hors ligne doit être partitionnée par compte, sans jamais envoyer ce `userId` au serveur : le Bearer reste l’unique autorité.
+
+### L-052 — Un callback d'erreur audio peut être livré plusieurs fois (2026-07-20)
+- **Contexte** : le stream d'erreur et le callback asynchrone du player peuvent signaler la même panne native à quelques millisecondes d'intervalle. Les deux chemins lançaient alors une reconstruction de file concurrente.
+- **Leçon** : une récupération doit avoir une identité, un verrou single-flight et une courte fenêtre de déduplication ; compter sur « un événement natif = une panne » n'est pas sûr.
+- **Conséquence** : les erreurs 401 et non-401 ont des verrous distincts, un fingerprint borné et des événements `AUDIO_DUPLICATE_ERROR_SUPPRESSED`. Le test bloque volontairement la première reconstruction puis livre deux fois la même erreur et vérifie une seule reprise.
+
+### L-053 — « Stream closed prematurely » n'identifie pas le fautif (2026-07-20)
+- **Contexte** : les logs réels montrent deux fermetures prématurées sur `/api/tracks/:id/stream`, l'une en 200 et l'autre en 206, tandis que des requêtes voisines terminent après 11–13 secondes. L'ancien log ne contenait ni octets envoyés, ni premier chunk, ni événement d'abandon client corrélé.
+- **Leçon** : un message terminal isolé ne permet pas de trancher entre fermeture du client, bascule réseau, erreur de fichier ou serveur. Il faut corréler auth, Range, ouverture, premiers octets, compteur d'octets et terminaison avec le même identifiant.
+- **Conséquence** : le backend émet désormais les événements `STREAM_*` structurés avec un seul terminal et sans chemin sensible ; le mobile propage des identifiants de session/file/source. L'origine exacte des deux incidents historiques reste inconnue et doit être confirmée par un test téléphone avec la nouvelle instrumentation.
+
+### L-054 — Remuxer un DASH/fMP4 conserve aussi ses horodatages défectueux (2026-07-20)
+- **Contexte** : certains FLAC produits depuis des segments DASH démarraient vers 0:30 et exposaient une durée incohérente. Le mode `-c:a copy` recopiait les paquets et leurs PTS/DTS issus du streaming dans le conteneur final.
+- **Leçon** : changer seulement de conteneur ne répare pas une chronologie cassée. `asetpts=PTS-STARTPTS` ne supprime que l'offset initial ; `asetpts=N/SR/TB` recalcule chaque PTS audio depuis le nombre d'échantillons et produit une timeline continue partant de zéro.
+- **Conséquence** : le pipeline DASH décode les fragments, applique `asetpts=N/SR/TB`, puis réencode avec `-c:a flac`. Les échantillons PCM restent préservés par le codec lossless, mais le bitstream FLAC et son hash changent nécessairement.
+
+### L-055 — Un lecteur local ne devient pas un lecteur d'arrière-plan après coup (2026-07-20)
+- **Contexte** : HomeSpotify construisait et injectait son handler avant le rendu, puis tentait de le rattacher à `audio_service` après la première frame. Tout échec natif était absorbé et conservait le lecteur local : la musique fonctionnait au premier plan, mais Android ne voyait ni session média complète ni foreground service, aucune notification n'apparaissait et le processus pouvait être suspendu en arrière-plan. Le manifeste omettait aussi `MediaButtonReceiver`.
+- **Leçon** : la notification média et la survie en arrière-plan ne sont pas des options UI ajoutables à un lecteur déjà actif. Le handler doit être construit par l'initialisation du service avant toute lecture ; un échec ne doit jamais dégrader silencieusement vers un mode qui promet une fonctionnalité qu'il ne peut pas assurer.
+- **Conséquence** : `main()` attend désormais `AudioService.init<HomeSpotifyAudioHandler>` avant `runApp`; le constructeur reste sans appel natif bloquant, le manifeste déclare service et receiver, et `androidStopForegroundOnPause=false` maintient le service au premier plan jusqu'à `stop()`. L'expiration du JWT n'est pas supprimée : le refresh single-flight et la récupération 401 déjà testée conservent la session longue sans affaiblir l'authentification.
+
+### L-056 — Une ressource Android résolue par son nom peut disparaître d'un APK release (2026-07-20)
+- **Contexte** : malgré un handler correctement enregistré et un manifeste complet, aucune notification n'apparaissait et `dumpsys activity services` restait à `startForegroundCount=0`. Le téléphone répétait `IllegalArgumentException: You must specify an icon resource id to build a CustomAction`. Le rapport release marquait les drawables `audio_service_stop`, `pause`, `play_arrow`, `skip_next` et `skip_previous` comme « not reachable » : le resource shrinker les supprimait parce que `audio_service` les recherche dynamiquement depuis les chaînes `drawable/audio_service_*`.
+- **Leçon** : la présence d'une ressource dans les sorties intermédiaires Gradle ne prouve pas sa présence dans l'APK final. Toute ressource atteinte uniquement par nom doit être protégée explicitement, puis vérifiée dans l'artefact produit et dans le journal du système réel.
+- **Conséquence** : `android/app/src/main/res/raw/keep.xml` conserve `@drawable/audio_service_*`; le manifeste et `MainActivity` déclarent puis demandent `POST_NOTIFICATIONS`. L'APK release a été inspecté avec AAPT2 (cinq IDs présents), installé sans perte de données et validé sur Xiaomi Android 16 : `startForegroundCount=1`, `isForeground=true`, session `PLAYING`, notification visible, passage accueil réussi et transition vers la piste suivante après 45 s écran éteint en mode `Dozing`, sans nouvelle exception.
+
+### L-057 — Renouveler le JWT après le 401 est trop tard pour une source audio longue (2026-07-20)
+- **Contexte** : le service média et la notification restaient actifs sur téléphone, mais une requête Range de la piste suivante recevait 401 à l'expiration du JWT. Media3 fige le Bearer dans chaque `AudioSource`; même si la session applicative vient de tourner son token, la source native peut encore porter l'ancien.
+- **Leçon** : une session audio longue exige deux niveaux complémentaires : renouveler avant `exp`, puis conserver une récupération 401 réactive. Quand le token courant diffère déjà de celui utilisé pour construire la source, il faut seulement reconstruire la file ; relancer `/refresh` consommerait inutilement une seconde fois un refresh token rotatif.
+- **Conséquence** : `AuthSessionManager` planifie un refresh single-flight 90 s avant l'expiration et retente 30 s plus tard sur panne réseau sans déconnecter. Le handler mémorise uniquement l'en-tête utilisé par ses sources, ne le journalise jamais, détecte sa rotation et reprend au même index/position avec les headers courants. Les tests couvrent le timer et l'absence de double refresh.
+
+### L-058 — Une recherche complète ne prouve pas que son manifeste contient le morceau complet (2026-07-20)
+- **Contexte** : la recherche distante identifiait `PARAFFINE — Ajna`, album `L’HERMITE`, durée 134 s, mais la résolution du même identifiant livrait un MPD de 59,907 s (15 segments). Le pipeline ne transmettait que l'identifiant au job : le FLAC final perdait aussi titre, artiste et album, puis le watcher utilisait le numéro comme titre.
+- **Leçon** : l'identité catalogue et l'intégrité média doivent être corrélées explicitement. Réencoder une timeline ne peut ni inventer les segments absents ni valider une durée ; accepter une signature `fLaC` seule garantit le conteneur, pas la complétude du morceau.
+- **Conséquence** : titre/artiste/album/durée accompagnent désormais le `trackId`, sont validés, servent au nom lisible et aux tags FFmpeg. Avant le remux, la durée calculée depuis `SegmentTimeline` (ou celle déclarée par le MPD) doit correspondre à la recherche à 3 s/2 % près. Une source tronquée produit `source_duration_mismatch`, la cascade tente les autres chemins/origines et aucun faux morceau n'entre dans la bibliothèque.
+
+### L-059 — Une recherche de catalogue et une acquisition audio sont deux produits distincts (2026-07-20)
+- **Contexte** : le fetch distant multipliait les contrats fragiles (404 selon
+  l'instance, manifests tronqués, métadonnées et timelines incohérentes), alors
+  que le besoin utilisateur réel est de trouver vite un titre puis de le demander.
+- **Leçon** : une recherche gratuite, rapide et fiable doit s'arrêter aux
+  métadonnées officielles. La sélection devient une commande métier locale
+  (`music_requests`), pas le début implicite d'un pipeline de téléchargement.
+- **Conséquence** : iTunes Search est la source principale sans clé,
+  MusicBrainz le complément canonique, et SQLite absorbe les recherches
+  répétées. Le fetch-node/Lucida et leurs UIs sont retirés ; les leçons
+  L-048–L-051, L-054 et L-058 sont conservées comme historique du pipeline
+  supprimé. L'ajout audio reste un dépôt manuel dans l'inbox surveillée.
+
+### L-060 — Une source canonique ne suffit pas à rendre un catalogue exploitable (2026-07-20)
+- **Contexte** : MusicBrainz trouvait les entités rares, mais renvoyait plusieurs
+  artistes homonymes sans photo, des albums sans pochette et aucune preview.
+  iTunes seul laissait encore une part importante des recherches muettes.
+- **Leçon** : identité, illustration et écoute sont trois capacités distinctes.
+  La couverture utile vient d'une fusion de sources complémentaires, avec
+  déduplication par identité et classement favorable aux résultats enrichis.
+- **Conséquence** : Deezer public fournit photos, pochettes et previews ; iTunes
+  reste un secours indépendant ; MusicBrainz et Cover Art Archive assurent le
+  long tail canonique. Mesure réelle : `PARAFFINE — Ajna` est complet, et les
+  10 premiers résultats `Ajna`/`Antidote` testés sont illustrés. Aucun de ces
+  appels n'importe ou ne télécharge une piste complète.
+
+### L-061 — Le premier homonyme d'une API artiste n'est pas forcément l'auteur recherché (2026-07-20)
+- **Contexte** : `/search/artist?q=Ajna` plaçait en tête un homonyme à 9 fans,
+  tandis que l'artiste de `AJCENSION` et `PARAFFINE` (ID Deezer `1197134`,
+  22 408 fans) n'arrivait qu'en quatrième position.
+- **Leçon** : une recherche artiste doit être corroborée par les titres portant
+  réellement la requête. Le nom exact élimine le fuzzy ; le nombre de titres et
+  leur rang départagent les homonymes avant le nombre de fans.
+- **Conséquence** : Deezer lance en parallèle la recherche artiste et une
+  recherche titres bornée, classe par preuve de titres puis popularité, et ne
+  conserve que les noms exacts lorsqu'ils existent. Vérification réelle : la
+  recherche `Ajna` place désormais l'ID `1197134` en premier et n'expose plus
+  `ELIESG`, `NeS` ou les variantes sans rapport.
+
+### L-062 — Une URL de preview signée ne peut pas partager le TTL des métadonnées (2026-07-20)
+- **Contexte** : les résultats Deezer étaient mis en cache quatre heures avec leur URL `cdnt-preview`. Ces URLs portent un jeton `hdnea` expirant environ quinze minutes après la recherche ; le catalogue restait visible mais chaque bouton d'écoute réutilisait ensuite un lien mort. Le correctif artiste était lui aussi masqué par les pages de recherche V1 encore valides en cache.
+- **Leçon** : la durée de vie d'une enveloppe cache doit être celle de son champ le plus éphémère. Modifier un algorithme de classement sans versionner son cache revient à continuer d'exécuter l'ancien algorithme en production.
+- **Conséquence** : les pages contenant une preview vivent cinq minutes au maximum, ou jusqu'à soixante secondes avant l'expiration signée la plus proche. Deezer expose cette expiration dans `PreviewDescriptor.expiresAt` et `DISCOVERY_CACHE_SCHEMA_VERSION=2` invalide les résultats V1. Le filtre artiste exact est appliqué après la fusion de tous les fournisseurs, afin que les résultats fuzzy d'iTunes ou MusicBrainz ne réintroduisent pas le bruit supprimé par Deezer.
+
+### L-063 — Une divergence de durée fournisseur n'est pas une nouvelle carte (2026-07-20)
+- **Contexte** : `PARAFFINE — FAUVE` apparaissait une fois avec preview à 260 s et une seconde fois sans preview à 316 s ; `Paraffine — MyPollux` était aussi scindé parce qu'iTunes annonçait `explicit=false` tandis que MusicBrainz ne renseignait pas ce champ. Les identités visibles étaient identiques malgré des métadonnées contradictoires.
+- **Leçon** : durée et indicateur explicite sont utiles pour corroborer une correspondance, mais trop hétérogènes entre catalogues pour servir de clé d'affichage. La version doit venir d'un marqueur sémantique visible (`Live`, `Remix`, `Acoustic`, etc.), pas de l'absence d'une donnée chez un fournisseur.
+- **Conséquence** : titres et albums sont uniques par titre normalisé + artiste principal + empreinte de version. La fusion agrège preview, images, liens et références ; les œuvres homonymes d'artistes différents ainsi que les versions réellement nommées restent séparées. `DISCOVERY_CACHE_SCHEMA_VERSION=3` invalide les pages produites par l'ancienne règle.
+
+### L-064 — Persister une file ne signifie jamais persister son Bearer (2026-07-21)
+- **Contexte** : restaurer la file, l'index et la position après la mort du processus exige de sérialiser les sources, mais les `PlayerQueueItem` portent aussi les headers d'accès au flux.
+- **Leçon** : une session de confort et une session d'authentification ont des cycles de vie différents. Copier l'objet runtime brut écrirait un secret expirant dans un stockage non prévu pour lui et pourrait mélanger deux comptes.
+- **Conséquence** : le format persistant est un DTO explicite, versionné, lié à un seul `userId` et sans champ header. La restauration reconstruit les sources avec le token courant ; le logout efface la session locale.
+
+### L-065 — Une panne réseau n'est pas une piste corrompue (2026-07-21)
+- **Contexte** : la politique de longue session sautait une piste illisible, mais appliquée à une `SocketException`, elle pouvait parcourir trois titres puis arrêter toute la file alors que le problème concernait le réseau entier.
+- **Leçon** : la décision de retry dépend de la classe d'échec. `connectivity_plus` accélère le retour, mais une interface Wi-Fi active ne garantit pas que le serveur soit joignable.
+- **Conséquence** : timeout/socket/connexion, 408, 425, 429 et 5xx conservent la même piste et la même position. Le lecteur reprend au retour réseau et continue avec un backoff plafonné ; 404/416/décodage restent dans la politique de saut borné.
+
+### L-066 — Une copie de fichier SQLite actif n'est pas une sauvegarde (2026-07-21)
+- **Contexte** : SQLite fonctionne en WAL et le serveur tourne H24. Copier uniquement `.db` peut ignorer des transactions du WAL ou produire une restauration incohérente.
+- **Leçon** : la sauvegarde doit utiliser l'API online backup, vérifier l'intégrité et porter sa propre preuve avant de devenir restaurable.
+- **Conséquence** : le CLI crée un snapshot cohérent, exécute `PRAGMA integrity_check`, calcule SHA-256 et écrit un manifest. La restauration exige l'arrêt du service, revérifie la sauvegarde et garde une copie `.pre-restore-*` de la base remplacée.
+
+### L-067 — Renouveler le token en mémoire ne modifie pas les sources Media3 déjà créées (2026-07-21)
+- **Contexte** : les logs réels montrent un refresh réussi à 15:02:59, puis une lecture encore autorisée avec l'ancien JWT à 15:03:42. Dès l'expiration de cet ancien JWT, la même source `/api/tracks/12/stream` a produit 26 réponses 401 entre 15:05:17 et 15:06:26, sans nouvel appel au refresh. Le timer d'authentification fonctionnait ; la file native n'avait simplement jamais reçu le nouveau Bearer.
+- **Leçon** : détecter une rotation seulement après une erreur 401 reste trop tard et dépend du moment où Media3 remonte son erreur après ses propres retries. Les headers d'une `AudioSource` étant immuables, la rotation de session doit être un événement explicitement propagé au lecteur.
+- **Conséquence** : `main.dart` relaie chaque révision de session au handler. Si le Bearer courant diffère de celui de la file chargée, le handler reconstruit immédiatement toutes les sources au même index et à la même position, puis reprend si la lecture était demandée. Le changement de piste refait le même contrôle en filet de sécurité ; le 401 réactif reste seulement le dernier recours.
+
+### L-068 — Supprimer une relation peut créer une piste « orpheline » que le boot restaure (2026-07-21)
+- **Contexte** : retirer la dernière relation `user_tracks` masquait bien une piste dans l'instant, mais le backfill de démarrage la considérait ensuite comme un ancien fichier sans propriétaire et la réattribuait au OWNER. La piste revenait après redémarrage de l'application, du serveur ou installation d'un APK.
+- **Leçon** : quand un mécanisme automatique adopte les entités sans relation, une suppression volontaire doit laisser une preuve durable distincte de l'absence historique de relation.
+- **Conséquence** : `revokeTrack` conserve désormais la relation avec `is_visible=false`. Toutes les lectures métier restent filtrées sur les relations visibles, tandis que le backfill voit le tombstone et ne restaure jamais la piste. Un ajout explicite réactive la même relation et efface le masquage de recommandation.
+
+### L-069 — `playing=true` ne garantit pas une timeline qui avance (2026-07-21)
+- **Contexte** : la session réelle de `Back In Black` a atteint sa durée exacte (`256000 ms`), puis est restée plus de deux minutes sur cette position avec `playing=true` et un compteur d'écoute croissant. Media3 est resté en `ready` sans publier ni `completed` ni l'index suivant ; le mode répétition était désactivé.
+- **Leçon** : l'auto-avance ne peut pas dépendre uniquement d'un changement d'état natif. Position, durée, index, intention de lecture et mode repeat doivent former un second signal indépendant, temporisé pour ne pas concurrencer une transition normale.
+- **Conséquence** : un watchdog s'arme à moins de 250 ms de la fin lorsque la lecture reste `ready/playing`. Après deux secondes sur le même index, il force une seule auto-avance dans l'ordre effectif ; une transition, une pause, un changement de file ou repeat-one l'annule. Le dernier titre sans répétition est mis en pause proprement.
+
+### L-070 — Un watcher seul ne garantit pas la détection récursive durable (2026-07-21)
+- **Contexte** : les dépôts audio sont rangés par profil et peuvent contenir une arborescence artiste/album/disque. Un événement `fs.watch` peut être perdu pendant une veille, un redémarrage ou une rafale de copies, et son nom relatif n'est pas toujours fourni.
+- **Leçon** : le watcher doit accélérer la détection, jamais constituer l'unique vérité. Une réconciliation récursive périodique, idempotente et single-flight est nécessaire ; le chemin du profil doit être établi avant le parcours pour ne jamais attribuer une piste au mauvais compte.
+- **Conséquence** : chaque `storage/imports/<id>_<username>/inbox/**` est parcouru récursivement au démarrage, toutes les 60 secondes et à la demande du OWNER. Les liens symboliques, extensions non autorisées et suffixes temporaires sont ignorés. Une file bornée à deux analyses protège CPU, RAM et disque ; le tableau OWNER expose le dernier scan et l'activité de la file.
+
+### L-071 — Un tableau de santé ne doit pas lancer une analyse audio lourde (2026-07-21)
+- **Contexte** : le OWNER doit voir rapidement si l'API, le disque, les sauvegardes et les fichiers vont bien, mais exécuter `ffprobe` sur toute la bibliothèque à chaque ouverture rendrait le serveur H24 instable.
+- **Leçon** : un écran de santé sert des faits déjà disponibles ou des vérifications de métadonnées peu coûteuses. Une corruption de contenu exige un job de fond distinct ; une absence ou une taille incohérente peut être signalée immédiatement comme fichier suspect sans inventer un diagnostic codec.
+- **Conséquence** : l'overview compte les `PLAY_ERROR` sur 24 h, imports `FAILED`, chemins invalides, fichiers absents et tailles divergentes. Il expose aussi l'espace disque, le scheduler de sauvegarde et le scanner. Aucun fichier audio n'est chargé en mémoire et aucune qualité n'est déduite de son extension.
+
+### L-072 — Une file Media3 en erreur conserve aussi ses anciens headers (2026-07-21)
+- **Contexte** : pendant le test réel, le refresh continuait toutes les 13 minutes mais une file passée en `ERROR/idle` ne pouvait plus être reconstruite par l'observateur normal. Une reprise ultérieure a réutilisé son ancien Bearer et produit des 401 répétés sur `/api/tracks/8/stream`. Android ne remontait alors que `Source error`, sans code HTTP exploitable.
+- **Leçon** : propager une rotation uniquement aux sources prêtes ne suffit pas. La représentation Dart doit toujours recevoir les nouveaux headers ; toute reprise depuis `idle` doit recréer la source native. La divergence entre Bearer courant et Bearer chargé est également un signal d'authentification plus fiable que le texte tronqué d'une exception Media3.
+- **Conséquence** : `handleAuthorizationChanged` actualise la file même lorsqu'elle n'est plus prête, `play()` reconstruit la file au même index après une erreur, et une erreur générique avec Bearer tourné suit d'abord la récupération auth. Le TTL d'accès du déploiement H24 passe à 24 h pour qu'une session de quatre heures n'entraîne aucune reconstruction périodique ; le refresh rotatif et révocable reste actif.
+
+### L-073 — Un arrêt apparent peut être une commande média injectée par le système (2026-07-21)
+- **Contexte** : à 22:58:43, la lecture de `Billie Jean` s'est mise en pause sans erreur applicative, sans perte de focus audio, sans 401 et avec le service de premier plan encore actif. Les traces Android montrent un `KEYCODE_MEDIA_PAUSE` synthétique (`deviceId=-1`, `scanCode=0`) injecté dans la fenêtre `com.miui.home` par HyperOS 3, puis transmis à la session HomeSpotify. Le téléphone venait de revenir de Snapchat vers l'accueil et l'interface média Dynamic Island était active.
+- **Leçon** : une session `PAUSED` n'est pas nécessairement causée par le lecteur, le réseau ou l'expiration d'une session. Les commandes média Android, les interruptions audio et les erreurs de source doivent être corrélées avant d'ajouter une reprise automatique qui annulerait aussi les vraies pauses utilisateur.
+- **Conséquence** : HomeSpotify continue de respecter les commandes Pause explicites d'Android. Le moniteur longue durée sélectionne désormais le bloc de session `com.homespotify.homespotify_mobile` au lieu de prendre la dernière session de `dumpsys media_session`, qui pouvait être une session Google Cast inactive et produire de faux incidents `NONE`.
+
+### L-074 — Le cache mobile n'a pas besoin de dupliquer l'archive lossless (2026-07-21)
+- **Contexte** : télécharger chaque FLAC/WAV original sur le téléphone consommerait rapidement stockage et données mobiles, alors que le serveur H24 reste l'autorité de conservation et la source de qualité maximale en ligne.
+- **Leçon** : archive canonique et copie d'usage mobile ont des objectifs distincts. Une dérivée Opus compacte est acceptable si elle est explicitement lossy, reproductible depuis le hash source et ne remplace jamais l'original. Transcoder sur le téléphone gaspillerait batterie/CPU et multiplierait les résultats non déterministes.
+- **Conséquence** : décision initiale mono-profil Opus 128, remplacée le 2026-07-22 par L-076. Les invariants restent valides : génération serveur, Range, SHA-256, original intact et retour à l'original au titre suivant.
+
+### L-075 — Un watchdog alimenté uniquement par la position peut rater la fin (2026-07-22)
+- **Contexte** : une session réelle de 3 h 43 a enchaîné 69 pistes distinctes sans erreur serveur, mais huit lectures ont continué à être comptées plus de cinq secondes après leur durée. Deux sont restées `ACTIVE` dans l'historique. Sur `Billie Jean` à 1,30x, la position est passée de la fin vers zéro sans changement d'index, puis la même piste a continué. Le watchdog existant n'était appelé que par `positionStream` et pouvait donc ne jamais s'armer si Media3 cessait d'émettre ou rebouclait avant un échantillon dans les 250 dernières millisecondes.
+- **Leçon** : le filet de sécurité de fin doit avoir sa propre horloge et reconnaître deux signatures indépendantes : position figée à la durée et retour fin vers zéro. La télémétrie serveur doit aussi garantir qu'une installation ne conserve pas plusieurs sessions actives si le client disparaît avant son événement terminal.
+- **Conséquence** : un garde léger vérifie chaque seconde la position native, conserve le watchdog temporisé et force une auto-avance single-flight. Un retour d'au moins 90 % vers moins de deux secondes est traité comme une fin, sauf après un seek utilisateur ou en repeat-one. Le tracker cesse de cumuler à la durée et qualifie la transition naturelle en `PLAY_COMPLETED`. À l'ouverture d'une nouvelle session, l'API clôt les anciennes sessions `ACTIVE/PAUSED` de la même installation en `SUPERSEDED` ou `COMPLETED_POSITION`.
+
+### L-076 — Une préférence de qualité hors ligne fait partie de l'identité du cache (2026-07-22)
+- **Contexte** : le profil unique Opus 128 économisait l'espace mais ne laissait pas choisir entre compacité, haute qualité mobile et copie originale.
+- **Leçon** : Opus 128, Opus 256 et l'original sont trois produits différents. Une taille Opus calculée avant encodage est une estimation, pas une mesure ; Opus 256 reste lossy. Le profil et la version d'encodeur doivent donc participer à la clé de variante et au manifeste local.
+- **Conséquence** : Phase 1 propose les trois choix, recommande Opus 256, mémorise éventuellement la préférence par appareil et conserve une variante single-flight distincte pour chaque débit. L'original utilise son hash et sa taille exacts ; les Opus ne sont publiés qu'après ffprobe, durée, taille et SHA-256. Aucun profil ne remplace ni ne modifie la source canonique.
+
+### L-077 — La première exécution à froid de la suite vitest complète peut produire de faux échecs (2026-07-22)
+- **Contexte** : lors de la vérification du gate Phase 0, `pnpm vitest run` complet a échoué 10 tests sur 284 (8 fichiers) uniquement par `Hook timed out in 10000ms`, avec une phase de collecte de 177 s. Une relance immédiate, sans aucun changement de code, a donné 284/284 verts. Même schéma côté Flutter : `favorites_screen_test.dart` a échoué au chargement dans la suite complète puis est passé isolément et à la relance (305/305).
+- **Leçon** : sur cette machine, la première exécution après démarrage/installation subit un coût de transformation/compilation qui dépasse les timeouts de hooks. Un rouge composé exclusivement de timeouts de hooks ou d'échecs `loading` n'est pas une régression tant qu'une relance ne le confirme pas.
+- **Conséquence** : toujours relancer la suite avant de conclure à une régression ; ne jamais valider ou invalider un gate sur une seule exécution à froid.
+
+### L-079 — Un démarrage qui exige le réseau rend le cache hors connexion inutilisable (2026-07-22)
+- **Contexte** : la verticale hors connexion 1A était complète (téléchargement, manifeste, SHA-256, sélection de source locale), mais sur téléphone réel sans serveur l'application restait bloquée avant son interface. Cause racine : `HomeSpotifyMobileApp` ne montait l'app principale que sur `AuthStatus.authenticated`, et `AuthController.initialize()` ne quittait `loading` qu'après un appel réseau (`bootstrapRequired`/`me`). Aucune identité de compte n'était persistée : impossible de savoir « qui » sans le serveur. Les musiques téléchargées étaient donc inaccessibles précisément quand elles servent le plus.
+- **Leçon** : une fonctionnalité hors connexion ne vaut que si le CHEMIN DE DÉMARRAGE fonctionne sans réseau. Il faut (1) une identité locale minimale persistée (jamais de token), (2) un état applicatif distinct « hors connexion » qui monte l'UI, (3) une frontière stricte entre panne de communication (réseau/timeout/5xx → jamais un logout) et refus d'authentification (401 confirmé serveur joignable → seule cause d'effacement).
+- **Conséquence** : `AuthStatus.offline`, identité dans `flutter_secure_storage`, montage de l'app sur `authenticated` OU `offline`, bandeau « Mode hors connexion », reprise en ligne automatique. La source de compte de la couche hors ligne (`offlineUserIdProvider`) est découplée du contrôleur d'auth (bridge uniquement dans `main.dart`) pour éviter qu'un widget de bibliothèque instancie l'auth complète — ce qui cassait des tests widget qui ne stubbaient pas l'auth (une dépendance transitive nouvelle vers un provider « lançable au boot » doit rester optionnelle/injectable).
+
+### L-080 — Une action de tap déclenchant de l'IO SQLite réel ne se règle pas sous fake-async (2026-07-22)
+- **Contexte** : un test widget de l'écran Téléchargements tapait « Supprimer » puis vérifiait la disparition de la ligne du manifeste. Le handler de tap `await removeLocal()` fait de l'IO sqflite FFI réel ; sa continuation est liée à la zone fake-async de `testWidgets` et ne progresse jamais, même avec `pumpAndSettle` — le manifeste restait inchangé et le test échouait (ou pire, se figeait). Même famille de piège que L-016/fake-async déjà connue.
+- **Leçon** : le contrat d'un widget dans un test fake-async, c'est l'UI (le dialogue de confirmation s'affiche, aucun appel serveur n'est émis), pas le résultat d'une IO réelle déclenchée par le tap. La correction sémantique (fichier + manifeste effacés, autre compte intact) se teste directement sur le service (`removeLocal`) hors zone widget, avec un store sqflite FFI attendu par `await`.
+- **Conséquence** : test widget = dialogue + « jamais d'appel serveur » ; test unitaire du service = sémantique de suppression. Les préparations de manifeste dans les tests widget passent par `tester.runAsync` (IO réelle), jamais dans la zone figée.
+
+### L-081 — Un filtre hors ligne ne peut pas filtrer une liste qui vient uniquement du réseau (2026-07-22)
+- **Contexte** : les identifiants téléchargés étaient bien présents dans SQLite, mais `visibleTracksProvider` appliquait « Téléchargées » uniquement à `GET /api/tracks`. Hors connexion, la liste source était vide. Les pochettes restaient également des URL serveur et l'écran Téléchargements n'écoutait pas la session audio.
+- **Leçon** : l'index hors ligne doit suffire à reconstruire une piste présentable et jouable. Tous les éléments nécessaires à l'expérience hors ligne — métadonnées minimales, fichier audio, pochette et état de lecture — doivent venir de sources locales ou de la session média, jamais d'un catalogue réseau supposé disponible.
+- **Conséquence** : fusion locale/distante par `track_id`, catalogue distant prioritaire lorsqu'il existe, cache de pochette atomique partitionné par compte, `MediaItem.artUri` local et indicateur de lecture commun dans Téléchargements.
+
+### L-078 — La provenance d'un secret ne légitime jamais une intégration (2026-07-22)
+- **Contexte** : des passages non sourcés dans `CLAUDE.md` (proxy de téléchargement vers URL dynamiques, Lucida « explicitement autorisée », cookies de contournement « 100 % conformes » s'ils viennent du `.env`) et `TECH_DECISIONS.md` (« annule la Conclusion C pour les intégrations basées sur le .env ») contredisaient frontalement les audits SpotiFLAC, `ROADMAP.md` et les interdictions historiques du projet.
+- **Leçon** : externaliser un token, un cookie ou une URL dans `.env` ne change ni la légitimité de l'API appelée, ni le caractère de contournement, ni les règles de sécurité. Une « autorisation » écrite dans un fichier du dépôt sans décision tracée du propriétaire n'a aucune autorité ; les documents qui pilotent le modèle doivent être relus avec la même vigilance que du code.
+- **Conséquence** : passages retirés le 2026-07-22 sur instruction du propriétaire ; Conclusion C réaffirmée dans `TECH_DECISIONS.md`. Par la même décision, la règle de séquencement est amendée : le développement d'une phase suivante peut démarrer sur autorisation explicite du propriétaire (gate de développement), mais aucune phase n'est « terminée » ni « prête pour production » sans le gate de production de la phase précédente (session 4 h + restauration réelle pour Phase 0).
+
+### L-079 — Un manifeste READY ne prouve pas que le fichier existe encore (2026-07-22)
+- **Contexte** : la première implémentation hors ligne validait correctement chaque dérivée avant publication, mais ne réparait pas une ligne `READY` dont le fichier avait ensuite disparu. L'annulation mobile ne couvrait que le flux HTTP et la sélection locale ne comparait pas le hash mémorisé au hash courant de la piste.
+- **Leçon** : la fiabilité d'un cache dépend de toute sa chaîne de vie. Il faut revérifier l'existence physique avant de servir, propager l'annulation à la préparation comme au transfert, conserver l'identité source jusqu'à la lecture et coordonner l'arrêt d'un processus externe avec la fermeture de la base.
+- **Conséquence** : variante absente réarmée automatiquement, durée/débit ffprobe obligatoires, arrêt FFmpeg attendu avant SQLite, annulation du polling, erreurs disque explicites et rejet des copies locales liées à une ancienne empreinte source.

@@ -32,10 +32,13 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 ## Stockage des fichiers
 
 - Racine unique, ex. `/data/music`, arborescence `Artiste/Album/Titre.ext` (`.wav` ou `.flac`, composants assainis : caractères interdits Windows/Linux remplacés). En cas de collision de nom, suffixe `[hash8]`. Le numéro de piste et l'année (parfois peu fiables dans les tags) seront réintroduits dans le nom en Phase 3 si l'enrichissement les fournit.
-- Correspondance dépôt ↔ runtime : les dossiers `storage/music`, `storage/imports`, `storage/covers`, `storage/cache` du projet servent de racines locales de dev et sont montés en volumes Docker sur `/data/music`, `/data/imports`, `/data/artwork`, `/data/cache`. Leur contenu est ignoré par git (`.gitkeep` seulement).
+- Correspondance dépôt ↔ runtime : les dossiers `storage/music`, `storage/imports`, `storage/covers`, `storage/cache` du projet servent de racines locales de dev et sont montés en volumes Docker sur `/data/music`, `/data/imports`, `/data/artwork`, `/data/cache`. `storage/cache/offline-opus` ne contient que des dérivées régénérables, jamais une source canonique. Leur contenu est ignoré par git (`.gitkeep` seulement).
 - Le serveur **ne modifie jamais** un fichier audio sans action explicite ; l'import copie puis normalise le nom.
 - Zone de staging `HOMESPOTIFY_IMPORT_ROOT` (`/data/imports` en Docker) : un dossier immuable par compte `<userId>_<username>`, avec `inbox`, `processed` et `rejected`. Au boot, seuls les dossiers manquants sont créés ; aucun fichier ni chemin `tracks.path` existant n'est déplacé.
-- Récupération depuis un nœud privé : `POST /api/library/fetch-node` accepte une URL directe autorisée ; `GET /api/library/search-remote` et `POST /api/library/import-remote-track` ajoutent la recherche puis la résolution serveur d'un `trackId`. Le média résolu et chaque redirection doivent appartenir à une origine HTTPS exacte de `NODE_FETCH_MEDIA_ALLOWED_ORIGINS`. Le worker répond `202`, écrit le flux borné dans un `.part`, vérifie sa signature FLAC/WAV réelle puis le renomme atomiquement dans l'`inbox` immuable du compte. Un MP4 ne peut pas devenir un FLAC par simple extension. La file et les statuts sont en mémoire ; aucune donnée audio ne transite par SQLite.
+- Aucune acquisition distante : la recherche catalogue Deezer + iTunes +
+  MusicBrainz/Cover Art Archive ne manipule que métadonnées, images et extraits
+  officiels éphémères, puis crée des `music_requests`. L'ajout audio est
+  exclusivement manuel via l'inbox locale surveillée et l'association OWNER.
 - Watcher d'import : WAV/FLAC seulement, taille+mtime stables, lecture des métadonnées sans réécriture, SHA-256 par flux, déduplication hash→ISRC→titre/artiste/durée. L'association automatique à une demande est confinée au même `userId` et exige un résultat unique à score élevé ; sinon le job attend une décision OWNER. L'accès bibliothèque créé est exclusivement `user_tracks(userId, trackId)` pour le propriétaire du dossier.
 - Pochettes et miniatures dans `/data/artwork`, nommées par ID d'album.
 - La base ne contient jamais d'audio : chemins + hashes uniquement.
@@ -65,29 +68,40 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 - Endpoint `GET /api/tracks/:id/stream` avec support complet **`Range: bytes=`** : `206 Partial Content`, `Accept-Ranges: bytes`, `Content-Range`, `416` si hors borne, `200` complet si pas de Range — indispensable pour le seek et la reprise sur des WAV/FLAC lourds. Parsing isolé et testé dans `lib/range.ts` (formes `a-b`, `a-`, `-n`, multi-range → 200).
 - `Content-Type: audio/wav` ou `audio/flac` selon le fichier ; `ETag` = hash SHA-256 du fichier ; `Last-Modified` = mtime ; `Cache-Control: private`.
 - Envoi par flux (`fs.createReadStream` borné à `{ start, end }`), jamais de lecture complète en mémoire.
-- **Téléchargement offline** : `GET /api/tracks/:id/download` partage le même service de fichier (Range-resumable) mais force le téléchargement via `Content-Disposition: attachment` (fallback ASCII + `filename*=UTF-8''…` pour les tags accentués). Le listing expose `etag` (hash) et `lastModified` par piste pour que le client compare son cache local sans télécharger.
-- **Évolution prévue** (Phase 4/5) : lecture mobile WAV/FLAC native via HTTP Range, avec cache offline, reprise et politiques Wi-Fi/cellulaire ; le fichier source n'est jamais altéré ni transformé.
+- Chaque requête stream/download possède un `X-Request-Id` sûr, propagé dans la réponse et journalisé avec une route normalisée. Les événements `STREAM_*` couvrent auth, stat, Range, ouverture, premiers octets, fin, abandon client et erreur ; ils n'exposent ni chemin absolu, ni Bearer, ni query sensible. Un seul événement terminal est émis par requête.
+- **Téléchargement original** : `GET /api/tracks/:id/download` partage le même service de fichier (Range-resumable) mais force le téléchargement via `Content-Disposition: attachment` (fallback ASCII + `filename*=UTF-8''…` pour les tags accentués). Il reste disponible pour l'export explicite de l'original, mais n'est pas le format par défaut du cache mobile.
+- **Options hors connexion** : le client demande les trois profils disponibles et leur taille avant de télécharger : `opus-128-v1`, `opus-256-v1` ou `original`. Les tailles Opus sont explicitement estimées depuis la durée et le débit tant que la variante n'est pas matérialisée, puis remplacées par la taille mesurée ; l'original expose sa taille exacte. Une route dédiée sert par Range chaque dérivée Ogg/Opus vérifiée. Si elle n'existe pas, l'API crée ou rejoint un job single-flight pour ce profil et répond `202` jusqu'à disponibilité.
+- **Règle de transformation** : le fichier canonique WAV/FLAC n'est jamais altéré. FFmpeg décode la source en flux et produit la dérivée dans un fichier temporaire, avec concurrence serveur bornée ; validation Ogg/Opus, taille et SHA-256 précèdent le renommage atomique. Aucun transcodage n'est effectué sur le téléphone ni à la volée pendant une réponse HTTP.
 
 ## Application mobile
 
 - **Flutter Android-first**, lecteur via `just_audio` + `audio_service` (lecture arrière-plan, notifications média, lockscreen, files d'attente).
+- `AudioService.init` enregistre le handler avant `runApp` : la lecture ne peut pas démarrer dans un mode local sans service média. Android déclare le foreground service `mediaPlayback`, le `MediaButtonReceiver` et `POST_NOTIFICATIONS`, demandée au lancement sur Android 13+. Le service reste au premier plan pendant une pause et n'est libéré que par un arrêt explicite. Les ressources `@drawable/audio_service_*`, résolues dynamiquement par le plugin, sont protégées du resource shrinker release par `res/raw/keep.xml`; sans elles, la publication du `PlaybackState` échoue avant la création de la notification.
+- Le handler audio reste l'unique source de vérité de la file. Chaque rotation proactive du JWT est propagée au handler : les sources Media3, dont les headers sont immuables, sont reconstruites immédiatement avec le nouveau Bearer au même index/position. Le changement de piste revérifie cette divergence et la récupération 401 reste un dernier filet single-flight. Les doublons natifs rapprochés sont supprimés et un état `completed` prématuré peut déclencher une seule auto-avance bornée. Les sources HTTP envoient directement le Bearer au serveur (`useProxyForRequestHeaders: false`) ainsi que des identifiants non secrets de session/file/source.
+- La file, l'index, la position, repeat/shuffle et la vitesse sont persistés par compte dans le stockage applicatif. Aucun header ni token n'est sérialisé ; les sources restaurées reçoivent le Bearer courant. Après un lancement manuel, la session revient en pause. Une déconnexion explicite efface cette session locale.
+- Une erreur réseau transitoire conserve la piste et sa position au lieu d'utiliser la politique de saut des fichiers réellement invalides. Le retour de connectivité déclenche une reprise immédiate ; si l'interface réseau est présente mais que le serveur reste indisponible, un backoff plafonné à 30 secondes poursuit les tentatives tant que la lecture est demandée.
+- Le diagnostic audio normal est un journal JSON Lines persistant et rotatif, initialisé après la première frame ; la trace détaillée est temporaire (15 minutes par défaut). L'écran OWNER/debug `/dev/audio-diagnostics` expose un état sûr, un marqueur utilisateur, l'export et un test guidé. Aucun token, URL complète ou chemin local ne doit être exporté.
 - La vitesse par piste est persistée par compte côté API et appliquée uniquement par le `HomeSpotifyAudioHandler` entre 0,70x et 1,30x. Sur Android compatible, le lecteur Media3 unique passe par le package local `packages/homespotify_just_audio` et HomeSpotify Stretch (Signalsmith 1.3.2) avec **une seule configuration calibrée pour tout ratio actif** (120 ms / 30 ms ; bypass complet à 1,00x) — un profil dépendant du ratio ne peut pas être réappliqué en cours de flux (voir L-046) ; Sonic n'est utilisé qu'en fallback exclusif. Chaque changement de piste force d'abord 1,00x et vide le DSP, empêchant tout héritage entre titres ; aucun fichier audio n'est transformé.
 - Le BPM descriptif vient d'abord des tags existants ; à défaut, une tâche serveur asynchrone décode un flux PCM mono borné pour estimer le tempo sans fichier intermédiaire ni modification de la source. Une confiance faible est présentée comme approximative.
-- Écrans MVP : bibliothèque (artistes/albums/pistes), recherche, lecteur, file d'attente, gestion hors ligne, réglages (streaming/cache WAV).
+- Écrans MVP : bibliothèque (artistes/albums/pistes), recherche, lecteur, file d'attente, gestion hors ligne, réglages (qualité originale en ligne/cache Opus compact).
 - Affiche systématiquement le badge de qualité mesurée de chaque piste.
 - Le client v1 est l'app Flutter décrite dans `MOBILE_ARCHITECTURE.md`.
 
 ## Cache hors ligne
 
-- Téléchargement explicite par piste/album/playlist vers le stockage local de l'app (route unitaire `download` livrée en Phase 2/3 ; groupage album/playlist à venir).
-- Table `cache_state` côté serveur + manifeste local côté client : synchronisation par comparaison des `etag`/`lastModified` exposés au listing (identité par hash).
-- Cache offline au format original WAV ou FLAC ; la gestion d'espace passe par quotas, suppression locale et priorités utilisateur.
-- Lecture hors ligne 100 % locale (mode avion) ; purge LRU configurable par plafond d'espace.
+- Téléchargement explicite par piste/album/playlist vers le stockage sandboxé de l'app, avec choix **Opus 128 kb/s VBR**, **Opus 256 kb/s VBR** ou **original WAV/FLAC**. Opus 256 est recommandé par défaut mais la préférence peut être mémorisée par appareil. Le serveur partage physiquement chaque dérivée entre les comptes autorisés ; l'autorisation reste vérifiée à chaque demande.
+- Table `track_offline_variants` côté serveur (implémentée le 2026-07-22, nom aligné sur la convention `track_*` du schéma — cf. TECH_DECISIONS) : `track_id`, hash source, profil/version encodeur, débit cible et débit mesuré par ffprobe, chemin relatif, taille, SHA-256, états `PENDING|ENCODING|READY|FAILED|STALE` et dates. La clé single-flight contient le profil : une variante 128 ne peut jamais satisfaire une demande 256. L'original ne devient pas une variante serveur : sa route Range existante et son hash canonique sont réutilisés. Table `cache_state` par appareil + manifeste SQLite mobile : état de téléchargement, octets reçus, hash attendu/vérifié et dernière utilisation.
+- Les dérivées Opus sont volontairement **lossy** et affichées « Hors ligne · Opus 128 kb/s » ou « Hors ligne · Opus 256 kb/s ». Elles n'héritent jamais du badge lossless de la source. L'option originale conserve le badge issu de l'analyse technique de la source. Les métadonnées sont conservées dans le manifeste mobile ; la pochette est un fichier durable adjacent, partitionné par compte et référencé par convention interne, indépendamment des tags du fichier dérivé.
+- Lecture 100 % locale lorsque le serveur est injoignable. Au retour d'un serveur réellement joignable, la sélection de source repasse à l'original WAV/FLAC au prochain chargement de piste ; le morceau Opus déjà commencé se termine localement pour éviter une coupure ou une dérive de position.
+- **Session locale hors connexion (Phase 1A.1)** : après une connexion réussie, une identité minimale du compte (jamais de token) est mémorisée dans le stockage sécurisé. Si le serveur est injoignable au démarrage mais qu'une session locale existe, l'application s'ouvre en « Mode hors connexion » (bandeau discret) et donne accès à l'écran Téléchargements, à la bibliothèque reconstruite depuis le manifeste et à la lecture locale. Une panne réseau, un timeout ou un 5xx ne sont jamais un logout ; seuls un logout explicite ou un refus 401 confirmé par un serveur joignable terminent la session. Le retour du serveur rétablit le fonctionnement en ligne sans redémarrer l'application. L'écran Téléchargements, les pochettes locales et les badges de bibliothèque sont alimentés par l'index local partitionné par compte, sans dépendre de `GET /api/tracks` pour s'afficher.
+- Phase 1A ne change pas de source au milieu d'un titre. La bascule d'un flux original en erreur vers une copie locale au même index et à la position la plus proche est planifiée en Phase 1C, après qualification du handler. La politique cellulaire explicite est également ultérieure ; le mode actuel reste original en ligne.
+- Purge LRU configurable par plafond d'espace. Les variantes serveur sont régénérables et suivent une rétention distincte ; supprimer une variante ne supprime jamais l'original.
 
 ## Authentification
 
 - Comptes locaux (usage personnel/familial), mots de passe hachés **Argon2id**.
 - Sessions par **JWT court + refresh token** révocable par appareil (table `devices`).
+- Le mobile renouvelle automatiquement le JWT 90 secondes avant son expiration et propage immédiatement le nouveau Bearer à toute file audio chargée. Le refresh token est rotatif avec une expiration glissante : tant que l'application reste active et que le serveur accepte les rotations, la session se prolonge sans limite fixe. Une écoute en arrière-plan ne dépend donc pas d'un JWT artificiellement infini ; seuls une révocation, un refus définitif ou une inactivité dépassant la durée du refresh token terminent réellement la session.
 - Toutes les routes authentifiées par défaut ; rate limiting sur `/auth`.
 
 ## Accès distant sécurisé
@@ -98,9 +112,11 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 
 ## Sauvegardes
 
-- **DB** : snapshot SQLite quotidien (`VACUUM INTO`), rétention 30 jours.
-- **Musique + artwork** : sauvegarde incrémentale `restic` vers un second disque, idéalement + une cible hors site.
-- Test de restauration documenté et exécuté au moins une fois avant la mise en production (critère `PROJECT.md`).
+- **DB** : `scripts/backup_homespotify.ps1` utilise l'API online backup de `better-sqlite3`, exécute `PRAGMA integrity_check`, puis produit un manifest versionné avec taille et SHA-256.
+- **Artwork** : les pochettes sont incluses dans chaque sauvegarde serveur.
+- **Musique** : exclue par défaut pour garder la sauvegarde quotidienne légère ; `-IncludeMedia` crée une copie complète à placer sur un second disque ou une cible hors site.
+- **Secrets** : jamais inclus ; ils restent dans un coffre chiffré distinct.
+- **Restauration** : le service doit être arrêté, le manifest/hash/intégrité sont revérifiés et l'ancienne base est conservée en `.pre-restore-*`. La procédure et la matrice de qualification sont dans `STABILIZATION_RUNBOOK.md`.
 
 ## Logs
 
@@ -122,10 +138,10 @@ Utilisateur → Upload/dépôt fichier → Staging → Analyse (ffprobe + spectr
 → Statut qualité + doublon check → Normalisation nom → /data/music
 → Métadonnées (tags + MusicBrainz) → Bibliothèque (SQLite) → Visible dans l'app
 
-NŒUD PRIVÉ
-App → URL HTTPS autorisée → POST fetch-node → 202 + suivi du job
-→ Flux borné vers `.part` → renommage atomique dans l'inbox du compte
-→ Watcher existant (hash + déduplication + import) → invalidation différée de la bibliothèque
+DEMANDE
+App → Recherche catalogue Deezer/iTunes/MusicBrainz → Sélection d'un résultat
+→ `music_requests` (anti-doublon) → Dépôt manuel OWNER dans l'inbox
+→ Watcher local (hash + déduplication + import) → Réconciliation
 
 ÉCOUTE
 App mobile → Auth (JWT) → Parcourt bibliothèque (API paginée)
@@ -133,6 +149,8 @@ App mobile → Auth (JWT) → Parcourt bibliothèque (API paginée)
 → Seek/reprise via Range
 
 HORS LIGNE
-App → Sélection pistes → Téléchargement WAV/FLAC original → Manifeste local
-→ Mode avion → Lecture locale → Reconnexion → Sync cache_state
+App → Sélection pistes + profil 128/256/original
+→ Opus : job serveur single-flight + dérivée vérifiée ; original : route canonique
+→ Téléchargement Range + SHA-256 → Manifeste local → Mode avion → Lecture locale
+→ Serveur de nouveau joignable → morceau courant inchangé → piste suivante en WAV/FLAC original
 ```

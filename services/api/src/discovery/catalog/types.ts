@@ -25,6 +25,7 @@ export type CatalogCapability = (typeof CATALOG_CAPABILITIES)[number];
 
 /** Identifiants stables des fournisseurs de découverte. */
 export const DISCOVERY_PROVIDER_IDS = [
+  'itunes',
   'spotify',
   'musicbrainz',
   'apple_music',

@@ -29,6 +29,17 @@ AuthUser makeUser({
 class FakeTokenStore implements TokenStore {
   AuthTokens? tokens;
   bool biometricEnabled = false;
+  String? localIdentityJson;
+
+  @override
+  Future<String?> readLocalIdentityJson() async => localIdentityJson;
+
+  @override
+  Future<void> saveLocalIdentityJson(String json) async =>
+      localIdentityJson = json;
+
+  @override
+  Future<void> clearLocalIdentity() async => localIdentityJson = null;
 
   @override
   Future<AuthTokens?> readTokens() async => tokens;
@@ -110,6 +121,12 @@ class FakeSessionManager implements AuthSessionManager {
   String? get accessToken => tokens?.accessToken;
 
   @override
+  Duration? get accessTokenExpiresIn => null;
+
+  @override
+  bool get accessTokenNeedsRefresh => false;
+
+  @override
   String? get refreshToken => tokens?.refreshToken;
 
   @override
@@ -140,6 +157,17 @@ class FakeSessionManager implements AuthSessionManager {
 
   @override
   Future<bool> refreshSession() async => refreshResult;
+
+  @override
+  Future<bool> ensureFreshSession({bool force = false}) async {
+    if (!hasSession) return false;
+    return force ? refreshSession() : true;
+  }
+
+  @override
+  Future<void> handleConnectivityRestored() async {
+    await ensureFreshSession();
+  }
 }
 
 /// Fake API auth scriptable : chaque champ nul déclenche une erreur réseau.

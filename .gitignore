@@ -2,7 +2,7 @@
 .pnpm-store/
 .tool-home/
 
-# Données privées et sauvegardes
+# État runtime privé — sauvegardé/restauré par les scripts, jamais versionné
 backups/
 services/api/data/
 
@@ -22,6 +22,9 @@ node_modules/
 *.crt
 secrets/
 credentials*
+**/*credentials*.json
+**/*cookies*.json
+**/*token*.json
 
 # --- Logs ---
 logs/
@@ -78,6 +81,17 @@ storage/cache/*
 *.alac
 *.aiff
 *.wma
+*.ape
+*.dsf
+*.dff
+*.mka
+*.wv
+*.tak
+*.tta
+*.caf
+*.ac3
+*.dts
+*.m4b
 
 # --- Temporaires / OS ---
 tmp/

@@ -8,7 +8,11 @@
  */
 
 import { DiscoveryCache } from './discovery-cache.js';
-import { mergeSearchResults, rankSearchResults } from './merge.js';
+import {
+  keepExactArtistMatchesWhenAvailable,
+  mergeSearchResults,
+  rankSearchResults,
+} from './merge.js';
 import {
   CatalogProviderError,
   type CatalogAlbum,
@@ -67,6 +71,26 @@ const noopLogger = {
   info: () => undefined,
   warn: () => undefined,
 };
+
+/** Les liens de preview Deezer sont signés pour quelques minutes seulement. */
+export const PREVIEW_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const PREVIEW_EXPIRY_SAFETY_MS = 60 * 1000;
+
+export function searchPageCacheTtlMs(
+  page: CatalogSearchPage,
+  now: number,
+): number | undefined {
+  const previews = page.items.flatMap((item) => item.preview ? [item.preview] : []);
+  if (previews.length === 0) return undefined;
+  const explicitExpiries = previews
+    .map((preview) => preview.expiresAt === null ? Number.NaN : Date.parse(preview.expiresAt))
+    .filter(Number.isFinite);
+  if (explicitExpiries.length === 0) return PREVIEW_SEARCH_CACHE_TTL_MS;
+  const safeLifetime = Math.min(...explicitExpiries) - now - PREVIEW_EXPIRY_SAFETY_MS;
+  // 1 ms rend une URL déjà trop proche de son expiration immédiatement
+  // inutilisable par le cache, sans conserver une entrée au TTL par défaut.
+  return Math.max(1, Math.min(PREVIEW_SEARCH_CACHE_TTL_MS, safeLifetime));
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -201,7 +225,11 @@ export class DiscoveryCatalogService {
           this.lastLatencies.set(entry.id, latencyMs);
           statuses.push({ id: entry.id, status: 'OK', latencyMs });
           this.logger.info({ provider: entry.id, latencyMs, items: page.items.length }, 'DISCOVERY_PROVIDER_COMPLETED');
-          this.cache.set(cacheKey, page, { entityType: input.type });
+          const ttlMs = searchPageCacheTtlMs(page, this.now());
+          this.cache.set(cacheKey, page, {
+            entityType: input.type,
+            ...(ttlMs !== undefined ? { ttlMs } : {}),
+          });
           return page;
         } catch (error) {
           const category = this.recordError(entry.id, error);
@@ -226,8 +254,12 @@ export class DiscoveryCatalogService {
       }
     }
 
+    const mergedResults = mergeSearchResults(pages.map((page) => page.items));
+    const relevantResults = input.type === 'artist'
+      ? keepExactArtistMatchesWhenAvailable(mergedResults, input.query)
+      : mergedResults;
     const merged = rankSearchResults(
-      mergeSearchResults(pages.map((page) => page.items)),
+      relevantResults,
       input.query,
     ).slice(0, input.limit);
     this.logger.info({ merged: merged.length }, 'DISCOVERY_RESULTS_MERGED');

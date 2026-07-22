@@ -197,7 +197,8 @@ export class SpotifyCatalogProvider implements DiscoveryCatalogProvider {
       q: input.query,
       type: SEARCH_TYPE[input.type],
       market: input.market,
-      limit: String(Math.min(50, Math.max(1, input.limit))),
+      // Development Mode février 2026 : GET /search est borné à 10 résultats.
+      limit: String(Math.min(10, Math.max(1, input.limit))),
       offset: String(offset),
     });
     const body = (await this.get(`/search?${params}`)) as SpotifySearchResponse;

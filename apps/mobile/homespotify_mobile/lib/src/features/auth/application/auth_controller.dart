@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -15,15 +16,18 @@ import '../../player/audio/homespotify_audio_handler.dart';
 import '../data/auth_api.dart';
 import '../../catalog/data/catalog_api.dart';
 import '../../library/application/track_library_membership.dart';
+import '../../catalog_search/application/catalog_search_controller.dart';
+import '../../catalog_search/presentation/catalog_preview_controller.dart';
+import '../../catalog_search/presentation/request_from_catalog_sheet.dart';
+import '../../offline/application/offline_index.dart';
 import '../data/auth_session_manager.dart';
 import '../data/biometric_service.dart';
 import '../data/token_store.dart';
 import '../domain/auth_user.dart';
-import '../../node_fetch/application/node_fetch_controller.dart';
-import '../../remote_search/application/remote_search_controller.dart';
 
 /// États du flux d'authentification. L'application principale n'est montée
-/// qu'en [authenticated] ; rien ne s'affiche avant résolution ([loading]).
+/// qu'en [authenticated] ou [offline] ; rien ne s'affiche avant résolution
+/// ([loading]).
 enum AuthStatus {
   loading,
   bootstrapRequired,
@@ -31,6 +35,12 @@ enum AuthStatus {
   passwordChangeRequired,
   locked, // session valide mais verrouillée derrière la biométrie
   authenticated,
+
+  /// Serveur injoignable mais session locale connue : l'application s'ouvre en
+  /// « Mode hors connexion » (bibliothèque téléchargée seulement). JAMAIS un
+  /// logout — la session et les tokens restent intacts, la reprise en ligne
+  /// est automatique.
+  offline,
   error,
 }
 
@@ -75,6 +85,13 @@ final audioLogoutPurgeProvider = Provider<Future<void> Function()>((ref) {
   return handler.clearForLogout;
 });
 
+final audioSessionRestoreProvider = Provider<Future<bool> Function(int userId)>(
+  (ref) {
+    final handler = ref.watch(audioHandlerProvider);
+    return handler.restorePlaybackSessionForUser;
+  },
+);
+
 final authSessionRevisionProvider = StreamProvider<int>((ref) {
   return ref.watch(authSessionManagerProvider).sessionChanges;
 });
@@ -98,8 +115,16 @@ class AuthController extends Notifier<AuthState> {
   TokenStore get _store => ref.read(tokenStoreProvider);
   BiometricService get _biometrics => ref.read(biometricServiceProvider);
 
+  /// Sondage automatique du retour serveur en mode hors connexion.
+  Timer? _onlineRestoreTimer;
+  static const _onlineRestoreInterval = Duration(seconds: 30);
+
   @override
   AuthState build() {
+    ref.onDispose(() {
+      _onlineRestoreTimer?.cancel();
+      _onlineRestoreTimer = null;
+    });
     // Résolution asynchrone lancée immédiatement ; l'UI reste sur `loading`.
     Future.microtask(initialize);
     return const AuthState(AuthStatus.loading);
@@ -124,6 +149,12 @@ class AuthController extends Notifier<AuthState> {
     await _restoreSession();
   }
 
+  /// Panne de communication (serveur arrêté, timeout, coupure) — jamais un
+  /// refus d'authentification. Un statut HTTP 5xx compte aussi : le serveur
+  /// n'a pas pu répondre normalement.
+  static bool _isServerUnreachable(AuthApiException error) =>
+      error.statusCode == null || error.statusCode! >= 500;
+
   Future<void> _resolveWithoutSession() async {
     try {
       final bootstrapRequired = await _api.bootstrapRequired();
@@ -133,7 +164,16 @@ class AuthController extends Notifier<AuthState> {
             : AuthStatus.unauthenticated,
       );
     } on AuthApiException catch (error) {
-      state = AuthState(AuthStatus.error, message: error.message);
+      // Aucun compte n'a jamais réussi à se connecter sur cet appareil : pas
+      // de mode hors connexion possible, on l'explique clairement.
+      state = AuthState(
+        AuthStatus.error,
+        message: _isServerUnreachable(error)
+            ? 'Serveur HomeSpotify inaccessible. Une première connexion en '
+                  'ligne est nécessaire avant de pouvoir utiliser le mode '
+                  'hors connexion sur cet appareil.'
+            : error.message,
+      );
     }
   }
 
@@ -144,12 +184,80 @@ class AuthController extends Notifier<AuthState> {
       _publishAuthenticated(user);
     } on AuthApiException catch (error) {
       if (error.statusCode == 401) {
-        // Access token mort et refresh impossible : déconnexion propre.
+        // Refus d'authentification CONFIRMÉ par le serveur (access token mort
+        // et refresh impossible) : déconnexion propre, identité locale purgée.
         await _session.clearSession();
+        await _store.clearLocalIdentity();
         await _resolveWithoutSession();
+      } else if (_isServerUnreachable(error)) {
+        await _enterOfflineModeOrError(error);
       } else {
         state = AuthState(AuthStatus.error, message: error.message);
       }
+    }
+  }
+
+  /// Serveur injoignable avec une session locale : ouvre le mode hors
+  /// connexion si une identité a déjà été mémorisée sur cet appareil.
+  Future<void> _enterOfflineModeOrError(AuthApiException error) async {
+    final user = await _readLocalIdentity();
+    if (user == null || user.mustChangePassword) {
+      state = AuthState(AuthStatus.error, message: error.message);
+      return;
+    }
+    logNetwork('serveur injoignable : mode hors connexion pour ${user.username}');
+    state = AuthState(AuthStatus.offline, user: user);
+    _scheduleOnlineRestore();
+    unawaited(_restorePlaybackSession(user.id));
+  }
+
+  Future<AuthUser?> _readLocalIdentity() async {
+    try {
+      final json = await _store.readLocalIdentityJson();
+      if (json == null || json.isEmpty) return null;
+      final decoded = jsonDecode(json);
+      if (decoded is! Map<String, dynamic>) return null;
+      return AuthUser.fromJson(decoded);
+    } catch (error) {
+      // Identité illisible : on la considère absente, jamais de crash au boot.
+      logError('identité locale illisible', error: error);
+      return null;
+    }
+  }
+
+  void _scheduleOnlineRestore() {
+    _onlineRestoreTimer?.cancel();
+    _onlineRestoreTimer = Timer.periodic(
+      _onlineRestoreInterval,
+      (_) => unawaited(attemptOnlineRestore()),
+    );
+  }
+
+  /// Tente de repasser en ligne depuis le mode hors connexion. Sans effet si
+  /// l'état a changé entre-temps. Une panne persistante laisse l'état intact.
+  Future<void> attemptOnlineRestore() async {
+    if (state.status != AuthStatus.offline) {
+      _onlineRestoreTimer?.cancel();
+      _onlineRestoreTimer = null;
+      return;
+    }
+    try {
+      final user = await _api.me();
+      _onlineRestoreTimer?.cancel();
+      _onlineRestoreTimer = null;
+      logNetwork('serveur de retour : reprise en ligne pour ${user.username}');
+      _publishAuthenticated(user);
+      // Les providers réseau peuvent porter des erreurs accumulées hors
+      // connexion : repartir d'un état frais, sans fermer l'application.
+      _invalidatePersonalProviders();
+    } on AuthApiException catch (error) {
+      if (error.statusCode == 401) {
+        // Session réellement morte, confirmée par un serveur joignable.
+        _onlineRestoreTimer?.cancel();
+        _onlineRestoreTimer = null;
+        await _completeExpiredSessionLogout();
+      }
+      // Toujours injoignable : on reste en mode hors connexion.
     }
   }
 
@@ -157,6 +265,32 @@ class AuthController extends Notifier<AuthState> {
     state = user.mustChangePassword
         ? AuthState(AuthStatus.passwordChangeRequired, user: user)
         : AuthState(AuthStatus.authenticated, user: user);
+    if (!user.mustChangePassword) {
+      // Identité minimale mémorisée pour les prochains démarrages hors
+      // connexion — jamais de token dans cette écriture.
+      unawaited(
+        _store
+            .saveLocalIdentityJson(jsonEncode(user.toJson()))
+            .catchError((Object error) {
+              logError('mémorisation identité locale échouée', error: error);
+            }),
+      );
+      unawaited(_restorePlaybackSession(user.id));
+    }
+  }
+
+  Future<void> _restorePlaybackSession(int userId) async {
+    try {
+      await ref.read(audioSessionRestoreProvider)(userId);
+    } catch (error, stackTrace) {
+      // Une file locale corrompue ou un serveur momentanément inaccessible ne
+      // doit jamais empêcher la connexion à l'application.
+      logError(
+        'restauration de la file audio impossible',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   void _handleSessionExpired() {
@@ -168,6 +302,7 @@ class AuthController extends Notifier<AuthState> {
   Future<void> _completeExpiredSessionLogout() async {
     await _stopAndClearPlayback();
     await _session.clearSession();
+    await _store.clearLocalIdentity();
     _invalidatePersonalProviders();
     state = const AuthState(AuthStatus.unauthenticated);
   }
@@ -243,6 +378,8 @@ class AuthController extends Notifier<AuthState> {
   Future<void> logout() async {
     // Démonte immédiatement l'application personnelle : aucun provider de
     // l'ancien compte ne peut repeindre pendant les opérations asynchrones.
+    _onlineRestoreTimer?.cancel();
+    _onlineRestoreTimer = null;
     state = const AuthState(AuthStatus.loading);
     final refreshToken = _session.refreshToken;
     try {
@@ -262,6 +399,9 @@ class AuthController extends Notifier<AuthState> {
     // donnée de l'ancien compte ne peut apparaître sous le compte suivant.
     await _stopAndClearPlayback();
     await _session.clearSession();
+    // Logout explicite : l'identité locale disparaît aussi — le mode hors
+    // connexion n'est plus possible tant qu'une connexion n'a pas réussi.
+    await _store.clearLocalIdentity();
     _invalidatePersonalProviders();
     state = const AuthState(AuthStatus.unauthenticated);
   }
@@ -291,10 +431,15 @@ class AuthController extends Notifier<AuthState> {
     // Appartenance par piste : recalculée pour le nouveau compte (skibidi voit
     // « Supprimer », le OWNER « Ajouter » pour la même piste).
     ref.invalidate(trackMembershipProvider);
-    // Import distant : aucun identifiant de tâche ni nom de fichier de l'ancien
-    // compte ne doit rester visible après une rotation de session.
-    ref.invalidate(nodeFetchControllerProvider);
-    ref.invalidate(remoteSearchControllerProvider);
+    // Recherche et demandes catalogue : aucune recherche ni marqueur de
+    // demande du compte précédent ne survit à la rotation de session.
+    ref.invalidate(catalogSearchProvider);
+    ref.invalidate(catalogPreviewProvider);
+    ref.invalidate(catalogRequestedKeysProvider);
+    // Index hors ligne : reconstruit pour le compte courant (vide si aucun).
+    // Les fichiers de l'ancien compte restent sur disque mais deviennent
+    // immédiatement inaccessibles — aucun fallback vers un autre userId.
+    ref.invalidate(offlineIndexProvider);
   }
 
   /// Déverrouillage biométrique depuis l'écran de verrouillage.

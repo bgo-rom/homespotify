@@ -9,10 +9,12 @@ import 'package:homespotify_mobile/src/core/config/app_config.dart';
 import 'package:homespotify_mobile/src/features/auth/application/auth_controller.dart';
 import 'package:homespotify_mobile/src/features/library/domain/local_playlist.dart';
 import 'package:homespotify_mobile/src/features/library/presentation/library_summary.dart';
+import 'package:homespotify_mobile/src/features/player/audio/homespotify_audio_handler.dart';
 import 'package:homespotify_mobile/src/features/settings/data/settings_server_checker.dart';
 import 'package:homespotify_mobile/src/features/settings/presentation/settings_screen.dart';
 
 import 'support/fake_auth.dart';
+import 'support/noop_audio_handler.dart';
 import 'support/test_overrides.dart';
 
 void main() {
@@ -45,6 +47,7 @@ void main() {
             ),
           ),
           settingsServerCheckerProvider.overrideWithValue(checker),
+          audioHandlerProvider.overrideWithValue(NoopHomeSpotifyAudioHandler()),
           ...libraryNetworkOverrides(
             favoriteIds: const <int>{1, 2, 3},
             playlists: const <LocalPlaylist>[
@@ -166,7 +169,7 @@ void main() {
       summaryLoader: () => completer.future,
     );
 
-    expect(find.text('Chargement…'), findsOneWidget);
+    expect(infoValue('Bibliothèque', 'Chargement…'), findsOneWidget);
   });
 
   testWidgets('résumé en erreur permet une relance manuelle', (tester) async {

@@ -6,6 +6,7 @@ import '../../../core/logging/app_logger.dart';
 import '../../../core/network/authenticated_network_image.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
+import '../../offline/presentation/offline_download_sheet.dart';
 import '../../player/presentation/track_speed_sheet.dart';
 import '../data/library_api.dart';
 import '../domain/track.dart';
@@ -27,6 +28,7 @@ enum _TrackAction {
   artist,
   album,
   speed,
+  download,
   remove,
 }
 
@@ -128,6 +130,8 @@ Future<void> showTrackActionsBottomSheet(
           headers: item.headers,
         ),
       );
+    case _TrackAction.download:
+      await showOfflineDownloadSheet(context, track: track);
     case _TrackAction.remove:
       await confirmAndRemoveTrackFromLibrary(
         context,
@@ -219,6 +223,12 @@ class _TrackActionsSheet extends ConsumerWidget {
             icon: Icons.speed_rounded,
             label: 'Vitesse du titre',
             onTap: () => Navigator.pop(context, _TrackAction.speed),
+          ),
+          _ActionTile(
+            key: const ValueKey('track-action-download'),
+            icon: Icons.download_for_offline_outlined,
+            label: 'Télécharger',
+            onTap: () => Navigator.pop(context, _TrackAction.download),
           ),
           const Divider(color: Colors.white12, height: 24),
           _ActionTile(

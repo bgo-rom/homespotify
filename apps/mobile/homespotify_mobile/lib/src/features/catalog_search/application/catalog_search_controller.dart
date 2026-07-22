@@ -175,16 +175,13 @@ class CatalogSearchController extends Notifier<CatalogSearchState> {
           .read(catalogSearchApiProvider)
           .search(query: query, type: state.type, cursor: cursor);
       if (sequence != _sequence || !ref.mounted) return;
-      final known = state.results
-          .map((result) => result.canonicalKey)
-          .toSet();
+      final known = state.results.map((result) => result.canonicalKey).toSet();
       state = state.copyWith(
         results: [
           ...state.results,
           ...page.items.where(
             (item) =>
-                item.canonicalKey.isEmpty ||
-                !known.contains(item.canonicalKey),
+                item.canonicalKey.isEmpty || !known.contains(item.canonicalKey),
           ),
         ],
         nextCursor: page.nextCursor,

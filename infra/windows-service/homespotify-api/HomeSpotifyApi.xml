@@ -8,7 +8,6 @@
   <env name="NODE_ENV" value="production" />
   <env name="HOST" value="0.0.0.0" />
   <env name="PORT" value="3000" />
-  <env name="AUTH_TOKEN_SECRET" value="23968fc0fc3da4c53b603135d86f0830be3cf62f17a4e5048b97c4735c9da50a" />
   <startmode>Automatic</startmode>
   <delayedAutoStart>true</delayedAutoStart>
   <hidewindow>true</hidewindow>

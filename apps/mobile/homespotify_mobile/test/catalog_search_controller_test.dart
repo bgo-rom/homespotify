@@ -68,8 +68,9 @@ class FakeCatalogRepository implements CatalogSearchRepository {
   return (container, repository);
 }
 
-Future<void> waitDebounce() =>
-    Future<void>.delayed(kCatalogSearchDebounce + const Duration(milliseconds: 80));
+Future<void> waitDebounce() => Future<void>.delayed(
+  kCatalogSearchDebounce + const Duration(milliseconds: 80),
+);
 
 void main() {
   test('état initial : aucune recherche, aucun résultat', () {
@@ -255,6 +256,9 @@ void main() {
     });
     expect(parsed.items.single.references.single.externalId, 'id1');
     // Un canonicalKey et des URLs https : rien d'autre ne sort du backend.
-    expect(parsed.items.single.references.single.externalUrl, startsWith('https://'));
+    expect(
+      parsed.items.single.references.single.externalUrl,
+      startsWith('https://'),
+    );
   });
 }

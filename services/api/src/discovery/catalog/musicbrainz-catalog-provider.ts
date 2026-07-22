@@ -41,6 +41,20 @@ const URL_RELATION_PLATFORMS: ReadonlyArray<{ hostSuffix: string; platform: stri
   { hostSuffix: 'soundcloud.com', platform: 'soundcloud' },
 ];
 
+function coverArtImages(releaseGroupId: string | null): Array<{
+  url: string;
+  width: number;
+  height: number;
+}> {
+  return releaseGroupId
+    ? [{
+        url: `https://coverartarchive.org/release-group/${releaseGroupId}/front-500`,
+        width: 500,
+        height: 500,
+      }]
+    : [];
+}
+
 /**
  * Convertit les relations URL MusicBrainz en liens plateformes vérifiés.
  * Une relation confirmée = LINK_FOUND ; jamais de statut « indisponible »
@@ -103,11 +117,10 @@ export class MusicBrainzCatalogProvider implements DiscoveryCatalogProvider {
   async search(input: CatalogSearchInput): Promise<CatalogSearchPage> {
     switch (input.type) {
       case 'track': {
-        const recordings = await this.client.searchRecordings({
-          title: input.query,
-          artist: '',
-          limit: Math.min(10, input.limit),
-        });
+        const recordings = await this.client.searchRecordingsText(
+          input.query,
+          Math.min(10, input.limit),
+        );
         return { items: recordings.map((r) => this.recordingResult(r)), nextCursor: null };
       }
       case 'artist': {
@@ -172,7 +185,7 @@ export class MusicBrainzCatalogProvider implements DiscoveryCatalogProvider {
         albumType: group.primaryType?.toLowerCase() ?? null,
         releaseDate: group.firstReleaseDate,
         trackCount: null,
-        images: [],
+        images: coverArtImages(group.id),
       })),
       nextCursor: offset + items.length < total ? String(offset + items.length) : null,
     };
@@ -201,7 +214,7 @@ export class MusicBrainzCatalogProvider implements DiscoveryCatalogProvider {
       copyright: null,
       upc: null,
       mbid: id,
-      images: [],
+      images: coverArtImages(id),
       discCount: detail.discCount,
       trackCount: detail.tracks.length,
       tracks: detail.tracks.map((track, index) => ({
@@ -267,7 +280,7 @@ export class MusicBrainzCatalogProvider implements DiscoveryCatalogProvider {
       durationMs: recording.lengthMs,
       releaseDate: release?.date ?? null,
       explicit: null,
-      images: [],
+      images: coverArtImages(release?.releaseGroupId ?? null),
       isrc,
       upc: null,
       mbid: recording.id,
@@ -319,7 +332,7 @@ export class MusicBrainzCatalogProvider implements DiscoveryCatalogProvider {
       durationMs: null,
       releaseDate: group.firstReleaseDate,
       explicit: null,
-      images: [],
+      images: coverArtImages(group.id),
       isrc: null,
       upc: null,
       mbid: group.id,

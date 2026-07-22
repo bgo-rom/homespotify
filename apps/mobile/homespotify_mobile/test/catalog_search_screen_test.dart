@@ -96,7 +96,10 @@ void main() {
   ) async {
     await tester.pumpWidget(makeApp(FakeCatalogRepository()));
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('catalog-search-initial')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('catalog-search-initial')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('recherche trop courte : indication dédiée', (tester) async {

@@ -34,4 +34,15 @@ class AuthUser {
   final String? createdAt;
 
   bool get isOwner => role == 'OWNER';
+
+  /// Identité minimale persistée localement pour le mode hors connexion.
+  /// AUCUN champ sensible : ni token, ni mot de passe, ni secret.
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'username': username,
+    'displayName': displayName,
+    'role': role,
+    'isActive': isActive,
+    'mustChangePassword': mustChangePassword,
+  };
 }

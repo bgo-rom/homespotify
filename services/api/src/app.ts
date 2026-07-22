@@ -5,7 +5,7 @@ import fastifyJwt from '@fastify/jwt';
 import { sql } from 'drizzle-orm';
 import {
   defaultDiscoveryConfig,
-  defaultNodeFetchConfig,
+  defaultOfflineConfig,
   type AppConfig,
   type DiscoveryConfig,
 } from './config.js';
@@ -52,6 +52,8 @@ import {
 } from './discovery/catalog/discovery-catalog-service.js';
 import { SpotifyCatalogProvider } from './discovery/catalog/spotify-catalog-provider.js';
 import { MusicBrainzCatalogProvider } from './discovery/catalog/musicbrainz-catalog-provider.js';
+import { ItunesDiscoveryProvider } from './discovery/catalog/itunes-discovery-provider.js';
+import { DeezerDiscoveryProvider } from './discovery/catalog/deezer-discovery-provider.js';
 import { AppleMusicDiscoveryProvider } from './discovery/catalog/apple-music-discovery-provider.js';
 import { MusicBrainzClient } from './metadata/musicbrainz-client.js';
 import {
@@ -62,9 +64,13 @@ import {
 import { registerPlaybackSettingsRoutes } from './routes/playback-settings.js';
 import { UserImportService } from './import/user-import-service.js';
 import { registerImportRoutes } from './routes/imports.js';
-import { NodeFetchService } from './import/node-fetch-service.js';
-import { registerNodeFetchRoutes } from './routes/node-fetch.js';
-import { registerRemoteLibraryRoutes } from './routes/remote-library.js';
+import { ServerBackupScheduler } from './operations/backup-scheduler.js';
+import {
+  FfmpegOpusEncoderRunner,
+  OfflineVariantService,
+  type OpusEncoderRunner,
+} from './audio/offline-variant-service.js';
+import { registerOfflineRoutes } from './routes/offline.js';
 
 const pkg = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
@@ -76,6 +82,8 @@ declare module 'fastify' {
   interface FastifyInstance {
     dbHandle: DbHandle;
     config: AppConfig;
+    /** Service des variantes hors ligne (tests : attendre `drain()`). */
+    offlineVariants: OfflineVariantService;
   }
 }
 
@@ -91,15 +99,14 @@ export interface BuildAppOptions {
   importWatcher?: boolean;
   /** Providers de recherche catalogue injectables (tests : aucun réseau réel). */
   discoveryProviders?: RegisteredProvider[];
-  /** Transport HTTP injectable : les tests de fetch-node restent hors réseau. */
-  nodeFetchHttpClient?: typeof globalThis.fetch;
+  /** Encodeur Opus injectable : les tests ne lancent jamais ffmpeg/ffprobe. */
+  opusEncoderRunner?: OpusEncoderRunner;
 }
 
 /**
- * Registre des providers de découverte depuis la config. Deezer et TIDAL sont
- * conservés DÉSACTIVÉS (interface prête, conformité/credentials non confirmés
- * — cf. DISCOVERY_CATALOG.md) : leurs recherches retournent PROVIDER_DISABLED
- * et les disponibilités correspondantes restent UNKNOWN.
+ * Registre des providers de découverte depuis la config. Deezer et iTunes
+ * enrichissent gratuitement les résultats (images + extraits officiels), puis
+ * MusicBrainz apporte les identifiants canoniques. TIDAL reste désactivé.
  */
 function buildDiscoveryProviders(
   config: AppConfig,
@@ -107,6 +114,32 @@ function buildDiscoveryProviders(
   previewProvider: CatalogProvider,
 ): RegisteredProvider[] {
   const providers: RegisteredProvider[] = [];
+
+  // Deezer passe en premier afin que les fiches ouvertes depuis un résultat
+  // fusionné conservent sa photo artiste et sa pochette haute définition.
+  providers.push(
+    discovery.deezerEnabled
+      ? {
+          id: 'deezer',
+          enabled: true,
+          disabledReason: null,
+          provider: new DeezerDiscoveryProvider({
+            baseUrl: discovery.deezerApiBase,
+            timeoutMs: discovery.providerTimeoutMs,
+          }),
+        }
+      : { id: 'deezer', enabled: false, disabledReason: 'flag_disabled', provider: null },
+  );
+
+  // Source grand public principale : API iTunes publique, sans compte ni clé.
+  // Elle fournit des résultats illustrés et des extraits officiels, mais ne
+  // déclenche jamais d'acquisition de fichier dans HomeSpotify.
+  providers.push({
+    id: 'itunes',
+    enabled: true,
+    disabledReason: null,
+    provider: new ItunesDiscoveryProvider({ market: discovery.defaultMarket }),
+  });
 
   providers.push(
     discovery.spotify !== undefined
@@ -164,7 +197,6 @@ function buildDiscoveryProviders(
         },
   );
 
-  providers.push({ id: 'deezer', enabled: false, disabledReason: 'tos_unverified', provider: null });
   providers.push({ id: 'tidal', enabled: false, disabledReason: 'credentials_missing', provider: null });
   return providers;
 }
@@ -218,30 +250,55 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   // mauvaise qualité désactivés — l'historique utilisateur est préservé.
   invalidateLegacyArtifacts(dbHandle);
 
-  for (const dir of [config.musicDir, config.incomingDir, config.importRoot, config.coversDir]) {
+  const offlineConfig = config.offline ?? defaultOfflineConfig();
+  for (const dir of [
+    config.musicDir,
+    config.incomingDir,
+    config.importRoot,
+    config.coversDir,
+    offlineConfig.derivedCacheDir,
+  ]) {
     mkdirSync(dir, { recursive: true });
   }
+
+  // Variantes Opus hors ligne : jobs persistants, concurrence bornée (1 par
+  // défaut sur le serveur H24), runner injectable pour les tests.
+  const offlineVariantService = new OfflineVariantService(dbHandle, {
+    musicDir: config.musicDir,
+    derivedCacheDir: offlineConfig.derivedCacheDir,
+    encodeConcurrency: offlineConfig.encodeConcurrency,
+    runner: options.opusEncoderRunner ?? new FfmpegOpusEncoderRunner(),
+    logger: {
+      info: (context, message) => app.log.info(context, message),
+      warn: (context, message) => app.log.warn(context, message),
+      error: (context, message) => app.log.error(context, message),
+    },
+  });
 
   const importService = new UserImportService(dbHandle, {
     importRoot: config.importRoot,
     musicDir: config.musicDir,
     coversDir: config.coversDir,
   });
-  const nodeFetchService = new NodeFetchService({
-    config: config.nodeFetch ?? defaultNodeFetchConfig(),
-    importService,
-    logger: {
-      info: (context, message) => app.log.info(context, message),
-      warn: (context, message) => app.log.warn(context, message),
-    },
-    ...(options.nodeFetchHttpClient
-      ? { fetchImpl: options.nodeFetchHttpClient }
-      : {}),
-  });
   const importWatcherEnabled = options.importWatcher ?? config.nodeEnv !== 'test';
+  const backupScheduler = config.backup?.enabled
+    ? new ServerBackupScheduler(
+        config.backup,
+        {
+          dbPath: config.dbPath,
+          coversDir: config.coversDir,
+          musicDir: config.musicDir,
+        },
+        {
+          info: (context, message) => app.log.info(context, message),
+          error: (context, message) => app.log.error(context, message),
+        },
+      )
+    : null;
 
   app.decorate('config', config);
   app.decorate('dbHandle', dbHandle);
+  app.decorate('offlineVariants', offlineVariantService);
 
   // Uploads WAV volumineux (~50 Mo/piste) : limite configurable, 200 Mo par défaut
   app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 1 } });
@@ -250,14 +307,19 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   app.register(fastifyJwt, { secret: config.authTokenSecret });
 
   app.addHook('onClose', async () => {
-    await nodeFetchService.stop();
+    backupScheduler?.stop();
     importService.stop();
+    offlineVariantService.stop();
+    await offlineVariantService.drain();
     dbHandle.sqlite.close();
   });
 
   app.addHook('onReady', async () => {
     if (importWatcherEnabled) await importService.start();
     else await importService.ensureAllUserDirectories();
+    backupScheduler?.start();
+    // Reprise des encodages interrompus (ENCODING → PENDING → file).
+    offlineVariantService.resumePendingJobs();
   });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
@@ -363,6 +425,7 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   app.register(async (instance) => {
     const guards = createAuthGuards(instance);
     registerTrackRoutes(instance, guards);
+    registerOfflineRoutes(instance, guards, offlineVariantService);
     registerSyncRoutes(instance, guards);
     registerPlayerRoute(instance);
     registerAuthRoutes(instance, guards, {
@@ -382,6 +445,19 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
         if (importWatcherEnabled) await importService.ensureAndWatchUser(userId, username);
         else await importService.ensureUserDirectory(userId, username);
       },
+      backupStatus: () =>
+        backupScheduler?.status() ?? {
+          enabled: false,
+          running: false,
+          nextRunAt: null,
+          lastSuccessAt: null,
+          lastDestination: null,
+          lastErrorAt: null,
+          lastError: null,
+          retentionCount: 0,
+        },
+      ...(backupScheduler ? { runBackup: () => backupScheduler.runNow() } : {}),
+      importScanStatus: () => importService.status(),
     });
     registerLibraryAdminRoutes(instance, guards);
     registerFavoritesRoutes(instance, guards);
@@ -397,8 +473,6 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     registerPlayEventRoutes(instance, guards);
     registerPlaybackSettingsRoutes(instance, guards, audioAnalysis);
     registerImportRoutes(instance, guards, importService);
-    registerNodeFetchRoutes(instance, guards, nodeFetchService);
-    registerRemoteLibraryRoutes(instance, guards, nodeFetchService);
   });
 
   return app;

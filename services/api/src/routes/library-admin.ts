@@ -105,7 +105,7 @@ export function registerLibraryAdminRoutes(app: FastifyInstance, guards: AuthGua
         })
         .from(userTracks)
         .innerJoin(tracks, eq(tracks.id, userTracks.trackId))
-        .where(eq(userTracks.userId, userId))
+        .where(and(eq(userTracks.userId, userId), eq(userTracks.isVisible, true)))
         .orderBy(desc(userTracks.addedAt))
         .limit(limit)
         .offset((page - 1) * limit)

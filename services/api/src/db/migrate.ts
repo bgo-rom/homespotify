@@ -175,6 +175,60 @@ CREATE TABLE IF NOT EXISTS \`import_jobs\` (
   FOREIGN KEY (\`music_request_item_id\`) REFERENCES \`music_request_items\`(\`id\`) ON UPDATE no action ON DELETE set null
 )`;
 
+const TRACK_OFFLINE_VARIANTS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS \`track_offline_variants\` (
+  \`id\` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+  \`track_id\` integer NOT NULL,
+  \`source_sha256\` text NOT NULL,
+  \`profile\` text NOT NULL,
+  \`profile_version\` text NOT NULL,
+  \`encoder_version\` text NOT NULL,
+  \`status\` text DEFAULT 'PENDING' NOT NULL,
+  \`target_bitrate_kbps\` integer NOT NULL,
+  \`measured_bitrate_kbps\` integer,
+  \`duration_seconds\` real,
+  \`size_bytes\` integer,
+  \`sha256\` text,
+  \`path\` text,
+  \`error_message\` text,
+  \`attempts\` integer DEFAULT 0 NOT NULL,
+  \`created_at\` text NOT NULL,
+  \`updated_at\` text NOT NULL,
+  \`ready_at\` text,
+  FOREIGN KEY (\`track_id\`) REFERENCES \`tracks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+)`;
+
+/**
+ * Schéma des variantes hors ligne (Phase 1A). Réparation IDEMPOTENTE et
+ * indépendante du journal drizzle (leçon V3 : jamais de migration raw fragile).
+ * Sûre sur base neuve (tracks absent → no-op avant migrate, créée après) et
+ * sur base legacy (CREATE IF NOT EXISTS).
+ */
+export function ensureOfflineVariantsSchema(
+  handle: DbHandle,
+  log: MigrationLogger = defaultLogger,
+): string[] {
+  if (!tableExists(handle, 'tracks')) return [];
+  const had = tableExists(handle, 'track_offline_variants');
+  handle.sqlite.transaction(() => {
+    handle.sqlite.exec(TRACK_OFFLINE_VARIANTS_TABLE_SQL);
+    handle.sqlite.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS `track_offline_variants_identity_unique` ON `track_offline_variants` (`source_sha256`,`profile_version`,`encoder_version`)',
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `track_offline_variants_track_idx` ON `track_offline_variants` (`track_id`)',
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `track_offline_variants_status_idx` ON `track_offline_variants` (`status`)',
+    );
+  })();
+  if (!had) {
+    log.info('réparation schéma : table track_offline_variants créée');
+    return ['track_offline_variants'];
+  }
+  return [];
+}
+
 function tableExists(handle: DbHandle, table: string): boolean {
   return (
     handle.sqlite
@@ -354,6 +408,7 @@ export function runMigrations(handle: DbHandle, log: MigrationLogger = defaultLo
   // colonnes v4. Toujours idempotente (colonnes déjà là → skip).
   const postMedia = ensureMediaReadyV4Columns(handle, log);
   const requestImports = ensureRequestImportSchema(handle, log);
+  const offlineVariants = ensureOfflineVariantsSchema(handle, log);
   const repaired = [
     ...preRepair,
     ...preMedia,
@@ -361,6 +416,7 @@ export function runMigrations(handle: DbHandle, log: MigrationLogger = defaultLo
     ...postRepair,
     ...postMedia,
     ...requestImports,
+    ...offlineVariants,
   ];
   if (repaired.length > 0) {
     log.info('réparation schéma appliquée', { objects: repaired });

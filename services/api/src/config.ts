@@ -17,6 +17,11 @@ export interface AppConfig {
   authTokenSecret: string;
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
+  backup?: BackupConfig;
+  /** Cache serveur des dérivées Opus hors ligne (Phase 1A). Optionnel pour la
+   * rétro-compatibilité des configs de test : buildApp applique
+   * defaultOfflineConfig() en absence. */
+  offline?: OfflineConfig;
   /**
    * Provider de similarité Last.fm (graphe track/artist). Absent = graphe
    * indisponible : le feed Découvrir reste vide proprement et le diagnostic
@@ -33,21 +38,20 @@ export interface AppConfig {
    * la rétro-compatibilité des configs de test : buildApp applique
    * defaultDiscoveryConfig() en absence. */
   discovery?: DiscoveryConfig;
-  /** Import distant depuis des origines HTTPS possédées et explicitement
-   * autorisées. Une liste vide désactive complètement la fonctionnalité. */
-  nodeFetch?: NodeFetchConfig;
 }
 
-export interface NodeFetchConfig {
-  allowedOrigins: string[];
-  mediaAllowedOrigins: string[];
-  remoteSearchPathTemplate: string;
-  remoteResolvePathTemplate: string;
-  metadataTimeoutMs: number;
-  maxBytes: number;
-  timeoutMs: number;
-  maxConcurrentJobs: number;
-  maxQueuedJobs: number;
+export interface OfflineConfig {
+  /** Racine confinée du cache de dérivées (fichiers .ogg publiés + .part). */
+  derivedCacheDir: string;
+  /** Encodages simultanés — borné 1..4, jamais illimité (serveur H24). */
+  encodeConcurrency: number;
+}
+
+export interface BackupConfig {
+  enabled: boolean;
+  root: string;
+  hourLocal: number;
+  retentionCount: number;
 }
 
 export interface SpotifyDiscoveryConfig {
@@ -70,9 +74,9 @@ export interface DiscoveryConfig {
   spotify?: SpotifyDiscoveryConfig;
   /** Apple Music discovery : suit config.appleMusic sauf refus explicite. */
   appleMusicEnabled: boolean;
-  /** Deezer/TIDAL : connecteurs conservés DÉSACTIVÉS tant que la conformité
-   * (tokens développeur, conditions) n'est pas confirmée. */
-  deezerEnabled: false;
+  /** API publique Deezer : catalogue, images et extraits officiels uniquement. */
+  deezerEnabled: boolean;
+  deezerApiBase: string;
   tidalEnabled: false;
 }
 
@@ -167,9 +171,9 @@ function boundedInt(name: string, raw: string | undefined, fallback: number, min
 
 /**
  * Config de la découverte catalogue. Spotify n'est branché que si le flag ET
- * les deux credentials sont présents ; Deezer/TIDAL restent structurellement
- * désactivés (conformité non confirmée — cf. DISCOVERY_CATALOG.md). Aucun
- * secret n'est journalisé ni exposé.
+ * les deux credentials sont présents. Deezer est un enrichissement public
+ * sans secret et reste désactivable indépendamment. Aucun secret n'est
+ * journalisé ni exposé.
  */
 function loadDiscoveryConfig(env: NodeJS.ProcessEnv): DiscoveryConfig {
   const spotifyEnabled = parseBool(env.SPOTIFY_DISCOVERY_ENABLED, false);
@@ -196,7 +200,8 @@ function loadDiscoveryConfig(env: NodeJS.ProcessEnv): DiscoveryConfig {
     musicbrainzApiBase: env.MUSICBRAINZ_API_BASE ?? 'https://musicbrainz.org',
     ...(spotify ? { spotify } : {}),
     appleMusicEnabled: parseBool(env.APPLE_MUSIC_DISCOVERY_ENABLED, true),
-    deezerEnabled: false,
+    deezerEnabled: parseBool(env.DEEZER_DISCOVERY_ENABLED, true),
+    deezerApiBase: env.DEEZER_API_BASE ?? 'https://api.deezer.com',
     tidalEnabled: false,
   };
 }
@@ -207,121 +212,9 @@ export function defaultDiscoveryConfig(): DiscoveryConfig {
   return loadDiscoveryConfig({});
 }
 
-function parseHttpsOrigins(name: string, raw: string | undefined): string[] {
-  const rawOrigins = (raw ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  return [...new Set(rawOrigins.map((value) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(value);
-    } catch {
-      throw new Error(`Config invalide : ${name} contient une URL invalide`);
-    }
-    if (
-      parsed.protocol !== 'https:' ||
-      parsed.username.length > 0 ||
-      parsed.password.length > 0 ||
-      parsed.pathname !== '/' ||
-      parsed.search.length > 0 ||
-      parsed.hash.length > 0
-    ) {
-      throw new Error(
-        `Config invalide : ${name} attend des origines HTTPS sans chemin ni credentials`,
-      );
-    }
-    return parsed.origin;
-  }))];
-}
-
-function relativePathTemplate(
-  name: string,
-  raw: string | undefined,
-  fallback: string,
-  placeholder: string,
-): string {
-  const value = raw?.trim() || fallback;
-  const marker = `{${placeholder}}`;
-  if (
-    value.length > 512 ||
-    !value.startsWith('/') ||
-    value.split(marker).length !== 2 ||
-    value.includes('#')
-  ) {
-    throw new Error(
-      `Config invalide : ${name} attend un chemin relatif contenant une fois ${marker}`,
-    );
-  }
-  const sample = new URL(value.replace(marker, 'value'), 'https://node.invalid');
-  if (sample.origin !== 'https://node.invalid') {
-    throw new Error(
-      `Config invalide : ${name} doit rester sur le nœud configuré`,
-    );
-  }
-  return value;
-}
-
-function loadNodeFetchConfig(env: NodeJS.ProcessEnv): NodeFetchConfig {
-  const allowedOrigins = parseHttpsOrigins(
-    'NODE_FETCH_ALLOWED_ORIGINS',
-    env.NODE_FETCH_ALLOWED_ORIGINS,
-  );
-  const mediaAllowedOrigins = parseHttpsOrigins(
-    'NODE_FETCH_MEDIA_ALLOWED_ORIGINS',
-    env.NODE_FETCH_MEDIA_ALLOWED_ORIGINS,
-  );
-  const maxMb = boundedInt('NODE_FETCH_MAX_MB', env.NODE_FETCH_MAX_MB, 200, 1, 2_048);
-  return {
-    allowedOrigins,
-    mediaAllowedOrigins,
-    remoteSearchPathTemplate: relativePathTemplate(
-      'NODE_FETCH_SEARCH_PATH_TEMPLATE',
-      env.NODE_FETCH_SEARCH_PATH_TEMPLATE,
-      '/search?q={query}',
-      'query',
-    ),
-    remoteResolvePathTemplate: relativePathTemplate(
-      'NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE',
-      env.NODE_FETCH_REMOTE_RESOLVE_PATH_TEMPLATE,
-      '/api/download?trackId={trackId}',
-      'trackId',
-    ),
-    metadataTimeoutMs: boundedInt(
-      'NODE_FETCH_METADATA_TIMEOUT_MS',
-      env.NODE_FETCH_METADATA_TIMEOUT_MS,
-      10_000,
-      1_000,
-      60_000,
-    ),
-    maxBytes: maxMb * 1024 * 1024,
-    timeoutMs: boundedInt(
-      'NODE_FETCH_TIMEOUT_MS',
-      env.NODE_FETCH_TIMEOUT_MS,
-      10 * 60_000,
-      60_000,
-      60 * 60_000,
-    ),
-    maxConcurrentJobs: boundedInt(
-      'NODE_FETCH_MAX_CONCURRENT',
-      env.NODE_FETCH_MAX_CONCURRENT,
-      2,
-      1,
-      4,
-    ),
-    maxQueuedJobs: boundedInt(
-      'NODE_FETCH_MAX_QUEUED',
-      env.NODE_FETCH_MAX_QUEUED,
-      20,
-      1,
-      100,
-    ),
-  };
-}
-
-/** Configuration sûre utilisée par les anciens objets AppConfig de tests. */
-export function defaultNodeFetchConfig(): NodeFetchConfig {
-  return loadNodeFetchConfig({});
+/** Cache de dérivées par défaut : storage/cache/offline-opus (cf. ARCHITECTURE.md), un seul encodage à la fois. */
+export function defaultOfflineConfig(): OfflineConfig {
+  return { derivedCacheDir: '../../storage/cache/offline-opus', encodeConcurrency: 1 };
 }
 
 const NODE_ENVS = ['development', 'production', 'test'] as const;
@@ -383,6 +276,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const lastfm = loadLastfmConfig(env);
   const appleMusic = loadAppleMusicConfig(env);
+  const backup: BackupConfig = {
+    enabled: parseBool(env.BACKUP_ENABLED, nodeEnv !== 'test'),
+    root: env.BACKUP_ROOT ?? '../../backups/server',
+    hourLocal: boundedInt('BACKUP_HOUR_LOCAL', env.BACKUP_HOUR_LOCAL, 3, 0, 23),
+    retentionCount: boundedInt(
+      'BACKUP_RETENTION_COUNT',
+      env.BACKUP_RETENTION_COUNT,
+      14,
+      2,
+      365,
+    ),
+  };
   return {
     nodeEnv,
     host: env.HOST ?? '127.0.0.1',
@@ -396,12 +301,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     importRoot: env.HOMESPOTIFY_IMPORT_ROOT ?? env.INCOMING_DIR ?? '../../storage/imports',
     coversDir: env.COVERS_DIR ?? '../../storage/covers',
     maxUploadBytes: Math.floor(maxUploadMb * 1024 * 1024),
+    offline: {
+      derivedCacheDir: env.OFFLINE_CACHE_DIR ?? '../../storage/cache/offline-opus',
+      encodeConcurrency: boundedInt('OFFLINE_ENCODE_CONCURRENCY', env.OFFLINE_ENCODE_CONCURRENCY, 1, 1, 4),
+    },
     authTokenSecret: loadAuthTokenSecret(env, nodeEnv),
     accessTokenTtlSeconds,
     refreshTokenTtlSeconds: refreshTokenTtlDays * 24 * 60 * 60,
+    backup,
     ...(lastfm ? { lastfm } : {}),
     ...(appleMusic ? { appleMusic } : {}),
     discovery: loadDiscoveryConfig(env),
-    nodeFetch: loadNodeFetchConfig(env),
   };
 }

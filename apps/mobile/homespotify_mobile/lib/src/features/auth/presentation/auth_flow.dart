@@ -23,8 +23,9 @@ class AuthFlowScreen extends ConsumerWidget {
       AuthStatus.passwordChangeRequired => const ChangePasswordScreen(),
       AuthStatus.locked => const LockScreen(),
       AuthStatus.error => _AuthErrorScreen(message: state.message),
-      // Ne devrait pas arriver (l'app principale prend le relais) : neutre.
+      // Ne devraient pas arriver (l'app principale prend le relais) : neutre.
       AuthStatus.authenticated => const _AuthLoadingScreen(),
+      AuthStatus.offline => const _AuthLoadingScreen(),
     };
   }
 }
