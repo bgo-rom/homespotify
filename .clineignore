@@ -1,0 +1,51 @@
+# Dépendances
+**/node_modules/
+**/.dart_tool/
+**/.gradle/
+**/.pub-cache/
+
+# Compilations
+**/build/
+**/dist/
+**/coverage/
+
+# IDE et caches
+**/.idea/
+**/.cache/
+
+# Bibliothèque audio
+*.flac
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.opus
+
+# Vidéos et archives
+*.mp4
+*.mkv
+*.zip
+*.rar
+*.7z
+
+# Bases de données actives
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+
+# Binaires
+*.apk
+*.aab
+*.exe
+*.dll
+*.so
