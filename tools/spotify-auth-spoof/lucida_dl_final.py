@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lucida.to Downloader — v9
+Lucida.to Downloader — v10.1 JSON
 =========================
 
 Flux reproduit:
@@ -15,11 +15,11 @@ Flux reproduit:
 8. Vérification finale des métadonnées et de la durée du fichier.
 
 Usage:
-  python lucida_dl_final_v9.py "Josman Intro"
-  python lucida_dl_final_v9.py "Josman Intro" --visible
-  python lucida_dl_final_v9.py "Josman Intro" --index 1
-  python lucida_dl_final_v9.py "Josman Intro" --lucida-index 0
-  python lucida_dl_final_v9.py "Josman Intro" --list
+  python lucida_dl_final.py "Josman Intro"
+  python lucida_dl_final.py "Josman Intro" --visible
+  python lucida_dl_final.py "Josman Intro" --index 1
+  python lucida_dl_final.py "Josman Intro" --lucida-index 0
+  python lucida_dl_final.py "Josman Intro" --list
 """
 
 from __future__ import annotations
@@ -34,6 +34,27 @@ import time
 import unicodedata
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
+from typing import Any, Callable
+
+
+def configure_machine_stdio() -> None:
+    """
+    Force stdout/stderr en UTF-8 quand le protocole NDJSON est demandé.
+
+    Sous Windows, un processus Python lancé avec stdout/stderr redirigés peut
+    sinon utiliser cp1252. Le backend et les tests décodent volontairement en
+    UTF-8 strict : cette configuration rend le contrat explicite et stable.
+    """
+    if "--json" not in sys.argv:
+        return
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
+
+
+configure_machine_stdio()
 
 try:
     from playwright.sync_api import (
@@ -43,13 +64,27 @@ try:
         sync_playwright,
     )
 except ImportError:
+    if "--json" in sys.argv:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "type": "error",
+                    "code": "INTERNAL_ERROR",
+                    "message": "Playwright est absent. Installe playwright puis Chromium.",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        sys.stdout.flush()
     print(
         "[!] Installe Playwright:\n"
         "    pip install playwright requests\n"
         "    playwright install chromium",
         file=sys.stderr,
     )
-    sys.exit(1)
+    sys.exit(5)
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -80,6 +115,31 @@ DOWNLOAD_FETCH_ERROR_MARKERS = (
     "try again in a moment",
 )
 
+
+
+EXIT_OK = 0
+EXIT_INVALID_ARGUMENT = 2
+EXIT_NO_RESULT = 3
+EXIT_EXTERNAL_ERROR = 4
+EXIT_INTERNAL_ERROR = 5
+
+EventCallback = Callable[[dict[str, Any]], None]
+
+
+def emit_event(event: dict[str, Any]) -> None:
+    """Écrit un événement NDJSON atomique sur stdout et force son envoi."""
+    sys.stdout.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def notify(callback: EventCallback | None, event_type: str, **payload: Any) -> None:
+    """Émet un événement seulement lorsqu'un consommateur machine est actif."""
+    if callback is not None:
+        callback({"type": event_type, **payload})
+
+
+def error_event(code: str, message: str, **payload: Any) -> dict[str, Any]:
+    return {"type": "error", "code": code, "message": message, **payload}
 
 def normalize_text(value: str | None) -> str:
     """Normalisation souple pour comparer titres, artistes et libellés."""
@@ -1544,6 +1604,7 @@ def download_from_lucida(
     download_timeout_seconds: int = 75,
     download_retries: int = 2,
     target_duration: int = 0,
+    event_callback: EventCallback | None = None,
 ) -> str | None:
     output_path = Path(output_dir)
     debug_dir = output_path / "debug"
@@ -1668,6 +1729,7 @@ def download_from_lucida(
             page.on("requestfailed", on_request_failed)
             page.on("response", on_response)
 
+            notify(event_callback, "stage", stage="opening_site", message="Ouverture de Lucida")
             print(f"  [1/6] Ouverture de {BASE_URL}...", file=sys.stderr)
             response = page.goto(
                 BASE_URL,
@@ -1682,6 +1744,7 @@ def download_from_lucida(
             )
 
             if status is not None and status >= 400:
+                notify(event_callback, "error", code="LUCIDA_ERROR", message=f"Lucida a répondu HTTP {status}")
                 save_debug(page, debug_dir, "http_error")
                 browser.close()
                 return None
@@ -1700,31 +1763,37 @@ def download_from_lucida(
             ).first
 
             if not search_input.count() or not search_input.is_visible():
+                notify(event_callback, "error", code="LUCIDA_ERROR", message="Champ de recherche Lucida introuvable")
                 print("  [!] Champ de recherche Lucida introuvable.", file=sys.stderr)
                 save_debug(page, debug_dir, "no_search_input")
                 browser.close()
                 return None
 
             if not go_button.count() or not go_button.is_visible():
+                notify(event_callback, "error", code="LUCIDA_ERROR", message="Bouton Go de Lucida introuvable")
                 print("  [!] Bouton Go de Lucida introuvable.", file=sys.stderr)
                 save_debug(page, debug_dir, "no_go_button")
                 browser.close()
                 return None
 
+            notify(event_callback, "stage", stage="lucida_search", message="Saisie de la recherche dans Lucida")
             print("  [2/6] Saisie de la recherche texte...", file=sys.stderr)
             search_input.fill(search_query)
 
+            notify(event_callback, "stage", stage="selecting_service", message=f"Sélection du service {search_service}")
             print(
                 f"  [3/6] Sélection du service {search_service}...",
                 file=sys.stderr,
             )
             if not select_search_service(page, search_service):
+                notify(event_callback, "error", code="LUCIDA_ERROR", message=f"Service {search_service} introuvable")
                 save_debug(page, debug_dir, "service_not_found")
                 browser.close()
                 return None
 
             save_debug(page, debug_dir, "02_search_ready")
 
+            notify(event_callback, "stage", stage="waiting_results", message="Recherche des résultats Qobuz")
             print("  [4/6] Clic sur Go et attente des résultats...", file=sys.stderr)
             go_button.click()
 
@@ -1734,12 +1803,14 @@ def download_from_lucida(
                 artist=target_artist,
                 timeout_seconds=90,
             ):
+                notify(event_callback, "error", code="SEARCH_FAILED", message="Lucida n’a pas retourné les résultats attendus")
                 save_debug(page, debug_dir, "search_failed")
                 browser.close()
                 return None
 
             save_debug(page, debug_dir, "03_results")
 
+            notify(event_callback, "stage", stage="verifying", message="Vérification stricte du titre, de l’artiste et de l’album")
             print("  [5/6] Vérification stricte du résultat...", file=sys.stderr)
             selection = find_lucida_result(
                 page=page,
@@ -1750,11 +1821,13 @@ def download_from_lucida(
             )
 
             if selection is None:
+                notify(event_callback, "error", code="NO_EXACT_MATCH", message="Aucune correspondance exacte titre, artiste et album")
                 save_debug(page, debug_dir, "no_exact_matching_result")
                 browser.close()
                 return None
 
             selection_kind = selection["kind"]
+            notify(event_callback, "stage", stage="opening_result", message=f"Ouverture de la fiche {selection_kind}", resultKind=selection_kind)
             selection["locator"].click(timeout=15_000)
 
             if not wait_for_media_page(
@@ -1762,6 +1835,7 @@ def download_from_lucida(
                 selection_kind=selection_kind,
                 timeout_seconds=60,
             ):
+                notify(event_callback, "error", code="LUCIDA_ERROR", message="La fiche du résultat exact ne s’est pas ouverte")
                 save_debug(page, debug_dir, "media_page_failed")
                 browser.close()
                 return None
@@ -1774,6 +1848,7 @@ def download_from_lucida(
                 file=sys.stderr,
             )
 
+            notify(event_callback, "stage", stage="downloading", message="Préparation du téléchargement")
             total_attempts = max(1, download_retries + 1)
 
             for attempt in range(1, total_attempts + 1):
@@ -1812,6 +1887,14 @@ def download_from_lucida(
                 download_attempt_state["download"] = None
                 download_attempt_state["fetch_error"] = None
 
+                notify(
+                    event_callback,
+                    "progress",
+                    stage="downloading",
+                    percent=0,
+                    attempt=attempt,
+                    maxAttempts=total_attempts,
+                )
                 print(
                     f"  [~] Tentative de téléchargement "
                     f"{attempt}/{total_attempts} "
@@ -1843,6 +1926,7 @@ def download_from_lucida(
                     destination = output_path / filename
                     download.save_as(destination)
 
+                    notify(event_callback, "stage", stage="validating", message="Vérification des métadonnées et de la durée")
                     if not verify_downloaded_file(
                         str(destination),
                         target_title,
@@ -1850,6 +1934,7 @@ def download_from_lucida(
                         target_album,
                         target_duration,
                     ):
+                        notify(event_callback, "error", code="FILE_VALIDATION_FAILED", message="Le fichier téléchargé ne correspond pas au morceau sélectionné")
                         save_debug(
                             page,
                             debug_dir,
@@ -1883,6 +1968,14 @@ def download_from_lucida(
 
                 if attempt < total_attempts:
                     delay_seconds = min(3 * attempt, 8)
+                    notify(
+                        event_callback,
+                        "retry",
+                        attempt=attempt + 1,
+                        maxAttempts=total_attempts,
+                        reason=str(payload) if payload is not None else outcome,
+                        delaySeconds=delay_seconds,
+                    )
                     print(
                         f"  [~] Nouvelle tentative automatique dans "
                         f"{delay_seconds}s...",
@@ -1944,6 +2037,7 @@ def download_from_lucida(
             return None
 
     except Exception as exc:
+        notify(event_callback, "error", code="INTERNAL_ERROR", message=str(exc)[:500])
         print(f"  [!] Erreur générale: {exc}", file=sys.stderr)
         import traceback
 
@@ -2203,23 +2297,54 @@ def main() -> None:
         action="store_true",
         help="Affiche Chromium pendant l'exécution",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Émet des événements NDJSON sur stdout pour le backend",
+    )
     args = parser.parse_args()
 
+    machine_state = {"error_emitted": False}
+
+    def machine_callback(event: dict[str, Any]) -> None:
+        if event.get("type") == "error":
+            machine_state["error_emitted"] = True
+        emit_event(event)
+
+    callback: EventCallback | None = machine_callback if args.json else None
+
     if args.download_timeout < 10:
-        parser.error("--download-timeout doit être au minimum de 10 secondes")
+        notify(callback, "error", code="INVALID_ARGUMENT", message="--download-timeout doit être au minimum de 10 secondes")
+        parser.print_usage(sys.stderr)
+        raise SystemExit(EXIT_INVALID_ARGUMENT)
     if args.download_retries < 0 or args.download_retries > 10:
-        parser.error("--download-retries doit être compris entre 0 et 10")
+        notify(callback, "error", code="INVALID_ARGUMENT", message="--download-retries doit être compris entre 0 et 10")
+        parser.print_usage(sys.stderr)
+        raise SystemExit(EXIT_INVALID_ARGUMENT)
+    if normalize_text(args.service) != "qobuz":
+        notify(callback, "error", code="INVALID_ARGUMENT", message="Seul le service Qobuz est autorisé")
+        raise SystemExit(EXIT_INVALID_ARGUMENT)
 
     print("=" * 66, file=sys.stderr)
-    print("  LUCIDA.TO DOWNLOADER — v9", file=sys.stderr)
+    print("  LUCIDA.TO DOWNLOADER — v10.1 JSON", file=sys.stderr)
     print("=" * 66, file=sys.stderr)
     print(f"  Recherche utilisateur: {args.query}", file=sys.stderr)
 
+    notify(callback, "stage", stage="searching", message="Recherche du morceau")
     results = search_deezer(args.query)
 
     if results:
         print("\n  Résultats Deezer servant à identifier le titre:", file=sys.stderr)
         for index, result in enumerate(results):
+            notify(
+                callback,
+                "search_result",
+                index=index,
+                title=result["title"],
+                artist=result["artist_name"],
+                album=result["album_title"],
+                duration=result["duration"],
+            )
             marker = " <<" if index == args.index else ""
             duration = result["duration"]
             minutes, seconds = divmod(duration, 60)
@@ -2230,15 +2355,17 @@ def main() -> None:
             )
 
         if args.list:
+            notify(callback, "complete", mode="list", count=len(results))
             return
 
         if args.index < 0 or args.index >= len(results):
+            notify(callback, "error", code="INVALID_ARGUMENT", message=f"Index Deezer invalide: {args.index}")
             print(
                 f"\n  [!] Index Deezer invalide: {args.index}. "
                 f"Choisis entre 0 et {len(results) - 1}.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            raise SystemExit(EXIT_INVALID_ARGUMENT)
 
         selected = results[args.index]
         target_title = selected["title_short"] or selected["title"]
@@ -2248,8 +2375,9 @@ def main() -> None:
         lucida_query = f"{target_artist} {target_title}".strip()
     else:
         if args.list:
+            notify(callback, "error", code="NO_RESULTS", message="Aucun résultat Deezer")
             print("  Aucun résultat Deezer.", file=sys.stderr)
-            return
+            raise SystemExit(EXIT_NO_RESULT)
 
         # Le téléchargement reste possible même si l'API Deezer est indisponible.
         target_title = args.query
@@ -2257,6 +2385,17 @@ def main() -> None:
         target_album = ""
         target_duration = 0
         lucida_query = args.query
+
+    notify(
+        callback,
+        "selected",
+        index=args.index,
+        title=target_title,
+        artist=target_artist,
+        album=target_album,
+        duration=target_duration,
+        service=args.service,
+    )
 
     print("\n  Sélection:", file=sys.stderr)
     print(f"  Titre:    {target_title}", file=sys.stderr)
@@ -2276,18 +2415,34 @@ def main() -> None:
         download_timeout_seconds=args.download_timeout,
         download_retries=args.download_retries,
         target_duration=target_duration,
+        event_callback=callback,
     )
 
     if not result_path or not Path(result_path).exists():
+        # Une erreur précise est privilégiée; éviter deux événements error successifs.
+        if not machine_state["error_emitted"]:
+            notify(callback, "error", code="DOWNLOAD_FAILED", message="Le téléchargement n’a pas produit de fichier valide")
         print(
             f"\n  [!] Échec. Fichiers de diagnostic: {args.output}/debug/",
             file=sys.stderr,
         )
-        sys.exit(1)
+        raise SystemExit(EXIT_EXTERNAL_ERROR)
+
+    info = analyze_audio(result_path)
+    notify(
+        callback,
+        "success",
+        filepath=str(Path(result_path).resolve()),
+        title=target_title,
+        artist=target_artist,
+        album=target_album,
+        duration=target_duration,
+    )
 
     print("\n  Analyse du fichier:", file=sys.stderr)
     print(f"  Chemin: {result_path}", file=sys.stderr)
-    print_audio_info(analyze_audio(result_path))
+    if not args.json:
+        print_audio_info(info)
     print("\nTerminé.", file=sys.stderr)
 
 
