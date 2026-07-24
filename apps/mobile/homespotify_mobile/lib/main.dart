@@ -5,6 +5,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:just_audio/just_audio.dart';
 
 import 'src/app/router.dart';
 import 'src/core/logging/app_logger.dart';
@@ -18,10 +19,12 @@ import 'src/features/auth/data/token_store.dart';
 import 'src/features/auth/presentation/auth_flow.dart';
 import 'src/features/listening/application/listening_activity_tracker.dart';
 import 'src/features/offline/application/offline_index.dart';
+import 'src/features/offline/application/offline_batch_download_manager.dart';
 import 'src/features/offline/presentation/offline_mode_banner.dart';
 import 'src/features/player/audio/audio_diagnostics.dart';
 import 'src/features/player/audio/background_audio_config.dart';
 import 'src/features/player/audio/homespotify_audio_handler.dart';
+import 'src/features/player/audio/replay_gain.dart';
 import 'src/features/player/data/playback_settings_api.dart';
 import 'src/features/player/data/playback_session_store.dart';
 
@@ -71,8 +74,13 @@ Future<void> main() async {
   // Son constructeur reste sans appel natif bloquant : l'initialisation
   // obligatoire du service ne réintroduit donc pas l'ancien ANR au démarrage.
   final artworkCache = AuthenticatedArtworkCache(apiClient);
+  final loudnessEnhancer = AndroidLoudnessEnhancer();
+  final audioPlayer = createHomeSpotifyAudioPlayer(
+    audioPipeline: AudioPipeline(androidAudioEffects: [loudnessEnhancer]),
+  );
   final audioHandler = await AudioService.init<HomeSpotifyAudioHandler>(
     builder: () => HomeSpotifyAudioHandler(
+      player: audioPlayer,
       playbackSettingsRepository: PlaybackSettingsApi(apiClient),
       authorizationRefresh: sessionManager.refreshSession,
       currentAuthorizationExpiresIn: () => sessionManager.accessTokenExpiresIn,
@@ -104,6 +112,15 @@ Future<void> main() async {
     ),
     config: homeSpotifyAudioServiceConfig,
   );
+  final replayGainController = ReplayGainController(
+    repository: CachedReplayGainRepository.withDefaults(apiClient),
+    engine: AndroidReplayGainEngine(
+      loudnessEnhancer,
+      attenuationApplier: audioHandler.setReplayGainAttenuationDb,
+    ),
+    mediaItems: audioHandler.mediaItem,
+  );
+  await replayGainController.initialize();
 
   // Le JWT est renouvelé avant son expiration, mais les AudioSource Media3
   // ont leurs headers figés au moment de leur création. Chaque rotation doit
@@ -145,6 +162,7 @@ Future<void> main() async {
       retry: (retryCount, error) => null,
       overrides: [
         audioHandlerProvider.overrideWithValue(audioHandler),
+        replayGainControllerProvider.overrideWithValue(replayGainController),
         tokenStoreProvider.overrideWithValue(tokenStore),
         authSessionManagerProvider.overrideWithValue(sessionManager),
         // Bridge hors ligne → auth : le compte courant alimente l'index local,
@@ -279,6 +297,12 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
       // Le tracker vit avec le compte authentifié et est détruit au logout.
       // Son initialisation et ses écritures restent entièrement asynchrones.
       ref.watch(listeningActivityTrackerProvider(userId));
+    }
+    if (userId != null) {
+      // Reprend les groupes interrompus au prochain lancement et à chaque
+      // retour d'un transport réseau autorisé. Un échec reste visible dans le
+      // manifeste ; il ne bloque jamais le montage de l'application.
+      ref.watch(offlineBatchBootstrapProvider(userId));
     }
 
     return MaterialApp.router(

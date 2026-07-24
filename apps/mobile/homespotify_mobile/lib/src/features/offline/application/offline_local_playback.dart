@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../domain/offline_models.dart';
+import '../data/offline_manifest_store.dart';
 import 'offline_index.dart';
 
 /// Construit un élément de file DEPUIS LE MANIFESTE LOCAL, sans aucun appel
@@ -22,6 +23,10 @@ PlayerQueueItem? localQueueItemForEntry(
     id: '${record.trackId}',
     userId: record.userId,
     streamUri: Uri.file(absolutePath),
+    localFallbackUri: Uri.file(absolutePath),
+    localFallbackMimeType: record.profile == OfflineProfile.original
+        ? record.codec
+        : 'audio/ogg',
     headers: null, // jamais d'Authorization vers file://
     title: record.title ?? 'Piste ${record.trackId}',
     artist: record.artist,
@@ -51,8 +56,8 @@ List<PlayerQueueItem> buildLocalQueue(OfflineIndex index) {
 }
 
 /// Lance la lecture locale à partir d'une piste de l'écran Téléchargements.
-/// La file contient toutes les copies disponibles ; la décision de source est
-/// prise ICI, à la construction — jamais pendant un titre.
+/// Une file créée sans catalogue réseau reste volontairement locale ; les
+/// files de bibliothèque conservent leurs deux sources via leur contrôleur.
 Future<void> playLocalQueueFromTrack(
   WidgetRef ref,
   OfflineIndex index,
@@ -62,6 +67,12 @@ Future<void> playLocalQueueFromTrack(
   final initialIndex = items.indexWhere((item) => item.id == '$trackId');
   if (items.isEmpty || initialIndex < 0) {
     throw StateError('Aucune copie locale lisible pour cette piste.');
+  }
+  final selected = index.availableByTrackId[trackId]?.record;
+  if (selected != null) {
+    await ref
+        .read(offlineManifestStoreProvider)
+        .touch(selected.userId, selected.trackId, selected.profile);
   }
   await ref
       .read(audioHandlerProvider)

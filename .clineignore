@@ -4,48 +4,61 @@
 **/.gradle/
 **/.pub-cache/
 
-# Compilations
+# Génération et compilation
 **/build/
 **/dist/
 **/coverage/
-
-# IDE et caches
-**/.idea/
+**/.next/
 **/.cache/
 
-# Bibliothèque audio
-*.flac
-*.wav
-*.mp3
-*.m4a
-*.aac
-*.ogg
-*.opus
-
-# Vidéos et archives
-*.mp4
-*.mkv
-*.zip
-*.rar
-*.7z
-
-# Bases de données actives
-*.sqlite
-*.sqlite3
-*.db
-*.db-wal
-*.db-shm
+# IDE et Git
+**/.git/
+**/.idea/
+**/.vscode/
 
 # Secrets
 .env
 .env.*
+**/.env
+**/.env.*
 *.pem
 *.key
+*.p12
 *.pfx
 
-# Binaires
-*.apk
-*.aab
+# Bases de données
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Médias et gros fichiers
+*.flac
+*.wav
+*.mp3
+*.aac
+*.m4a
+*.opus
+*.mp4
+*.mkv
+
+# Archives et binaires
+*.zip
+*.7z
+*.rar
 *.exe
 *.dll
 *.so
+*.apk
+*.aab
+
+# Logs
+*.log
+**/logs/
+
+# Clés SSH et secrets
+romainvast
+romainvast.pub
+*.pem
+*.key
+**/.ssh/

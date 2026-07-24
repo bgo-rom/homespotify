@@ -17,6 +17,7 @@ import 'package:homespotify_mobile/src/features/offline/data/offline_manifest_st
 import 'package:homespotify_mobile/src/features/offline/domain/offline_models.dart';
 import 'package:homespotify_mobile/src/features/offline/presentation/offline_download_sheet.dart';
 import 'package:homespotify_mobile/src/features/library/data/library_api.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'support/fake_auth.dart';
@@ -654,33 +655,43 @@ void main() {
       },
     );
 
-    test('la source est fixée À LA CONSTRUCTION de la file : un item local '
-        'garde son URI fichier, un item réseau son URI stream', () {
-      final api = LibraryApi(Dio(), 'http://test');
-      final local = playerQueueItemForTrack(
-        track: makeTrack(),
-        api: api,
-        userId: 7,
-        authorizationHeaders: const {'Authorization': 'Bearer x'},
-        localSource: ResolvedLocalSource(
-          uri: Uri.file('/tmp/1-opus_256.ogg'),
-          profile: OfflineProfile.opus256,
-          mimeType: 'audio/ogg',
-        ),
-      );
-      expect(local.streamUri.scheme, 'file');
-      expect(local.headers, isNull); // jamais de Bearer vers un fichier local
-      expect(local.mimeType, 'audio/ogg');
+    test(
+      'la source initiale est choisie À LA CONSTRUCTION de la file : '
+      'un item local garde son URI fichier, un item réseau son URI stream',
+      () {
+        final api = LibraryApi(Dio(), 'http://test');
+        final local = playerQueueItemForTrack(
+          track: makeTrack(),
+          api: api,
+          userId: 7,
+          authorizationHeaders: const {'Authorization': 'Bearer x'},
+          localSource: ResolvedLocalSource(
+            uri: Uri.file('/tmp/1-opus_256.ogg'),
+            profile: OfflineProfile.opus256,
+            mimeType: 'audio/ogg',
+          ),
+          preferLocalSource: true,
+        );
+        expect(local.streamUri.scheme, 'file');
+        expect(
+          (local.toAudioSource() as UriAudioSource).headers,
+          isNull,
+        ); // jamais de Bearer envoyé vers un fichier local
+        expect(local.headers, const {
+          'Authorization': 'Bearer x',
+        }); // conservé uniquement pour un éventuel retour au réseau
+        expect(local.mimeType, 'audio/ogg');
 
-      final network = playerQueueItemForTrack(
-        track: makeTrack(),
-        api: api,
-        userId: 7,
-        authorizationHeaders: const {'Authorization': 'Bearer x'},
-      );
-      expect(network.streamUri.scheme, 'http');
-      expect(network.headers, isNotNull);
-    });
+        final network = playerQueueItemForTrack(
+          track: makeTrack(),
+          api: api,
+          userId: 7,
+          authorizationHeaders: const {'Authorization': 'Bearer x'},
+        );
+        expect(network.streamUri.scheme, 'http');
+        expect(network.headers, isNotNull);
+      },
+    );
   });
 
   group('feuille de téléchargement — trois choix véraces', () {

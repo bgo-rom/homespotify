@@ -71,6 +71,12 @@ import {
   type OpusEncoderRunner,
 } from './audio/offline-variant-service.js';
 import { registerOfflineRoutes } from './routes/offline.js';
+import {
+  FfmpegR128Analyzer,
+  TrackLoudnessAnalysisService,
+  type TrackLoudnessAnalyzer,
+} from './audio/loudness-analysis.js';
+import { registerLoudnessAnalysisRoutes } from './routes/loudness-analysis.js';
 
 const pkg = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
@@ -95,6 +101,8 @@ export interface BuildAppOptions {
   previewValidator?: (url: string) => Promise<import('./discovery/media-validation.js').PreviewValidationResult>;
   /** Analyse BPM injectable : les tests ne lancent jamais ffmpeg. */
   bpmAnalyzer?: TrackBpmAnalyzer;
+  /** Mesure R128 injectable : les tests ne lancent jamais ffmpeg. */
+  loudnessAnalyzer?: TrackLoudnessAnalyzer;
   /** Tests : false empêche fs.watch, tout en créant les dossiers manquants. */
   importWatcher?: boolean;
   /** Providers de recherche catalogue injectables (tests : aucun réseau réel). */
@@ -421,6 +429,11 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     config.musicDir,
     options.bpmAnalyzer ?? new MetadataThenFfmpegBpmAnalyzer(),
   );
+  const loudnessAnalysis = new TrackLoudnessAnalysisService(
+    dbHandle,
+    config.musicDir,
+    options.loudnessAnalyzer ?? new FfmpegR128Analyzer(),
+  );
 
   app.register(async (instance) => {
     const guards = createAuthGuards(instance);
@@ -472,6 +485,7 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     registerMusicRequestRoutes(instance, guards);
     registerPlayEventRoutes(instance, guards);
     registerPlaybackSettingsRoutes(instance, guards, audioAnalysis);
+    registerLoudnessAnalysisRoutes(instance, guards, loudnessAnalysis);
     registerImportRoutes(instance, guards, importService);
   });
 

@@ -1,0 +1,1077 @@
+export namespace app {
+	
+	export class EndpointStatus {
+	    name: string;
+	    url: string;
+	    status: string;
+	    latencyMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EndpointStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.url = source["url"];
+	        this.status = source["status"];
+	        this.latencyMs = source["latencyMs"];
+	    }
+	}
+	export class UpdateInfo {
+	    hasUpdate: boolean;
+	    version: string;
+	    url: string;
+	    releaseUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasUpdate = source["hasUpdate"];
+	        this.version = source["version"];
+	        this.url = source["url"];
+	        this.releaseUrl = source["releaseUrl"];
+	    }
+	}
+
+}
+
+export namespace core {
+	
+	export class AnalysisResult {
+	    filePath: string;
+	    fileName: string;
+	    isTrueLossless: boolean;
+	    confidence: number;
+	    spectrumCutoff: number;
+	    expectedCutoff: number;
+	    verdict: string;
+	    verdictLabel: string;
+	    details: string;
+	    sampleRate: number;
+	    bitDepth: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AnalysisResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filePath = source["filePath"];
+	        this.fileName = source["fileName"];
+	        this.isTrueLossless = source["isTrueLossless"];
+	        this.confidence = source["confidence"];
+	        this.spectrumCutoff = source["spectrumCutoff"];
+	        this.expectedCutoff = source["expectedCutoff"];
+	        this.verdict = source["verdict"];
+	        this.verdictLabel = source["verdictLabel"];
+	        this.details = source["details"];
+	        this.sampleRate = source["sampleRate"];
+	        this.bitDepth = source["bitDepth"];
+	    }
+	}
+	export class Config {
+	    tidalClientId?: string;
+	    tidalClientSecret?: string;
+	    downloadFolder?: string;
+	    downloadQuality?: string;
+	    fileNameFormat?: string;
+	    organizeFolders?: boolean;
+	    folderTemplate?: string;
+	    embedCover: boolean;
+	    saveCoverFile: boolean;
+	    saveFolderCover: boolean;
+	    concurrentDownloads?: number;
+	    theme: string;
+	    accentColor?: string;
+	    soundEffects: boolean;
+	    soundVolume: number;
+	    embedLyrics: boolean;
+	    preferSyncedLyrics: boolean;
+	    saveLyricsFile: boolean;
+	    autoAnalyze: boolean;
+	    autoQualityFallback: boolean;
+	    autoStopOnCooldown: boolean;
+	    tidalEnabled: boolean;
+	    qobuzEnabled: boolean;
+	    soulseekEnabled: boolean;
+	    soulseekUsername?: string;
+	    soulseekPassword?: string;
+	    soulseekBinaryPath?: string;
+	    qobuzAppId?: string;
+	    qobuzAppSecret?: string;
+	    qobuzAuthToken?: string;
+	    preferredSource?: string;
+	    tidalHifiEndpoints?: string[];
+	    qobuzEndpoints?: string[];
+	    tidalCustomEndpoint?: string;
+	    qobuzCustomEndpoint?: string;
+	    tidalPriorityEndpoints?: string[];
+	    qobuzPriorityEndpoints?: string[];
+	    amazonPriorityEndpoints?: string[];
+	    sourceOrder?: string[];
+	    qualityOrder?: string[];
+	    generateM3u8: boolean;
+	    skipUnavailableTracks: boolean;
+	    firstArtistOnly: boolean;
+	    artistSeparator?: string;
+	    artistTagMode?: string;
+	    playlistSubfolder: boolean;
+	    skipExisting: boolean;
+	    externalLibraryPaths?: string[];
+	    jellyfinEnabled: boolean;
+	    jellyfinUrl?: string;
+	    jellyfinApiKey?: string;
+	    separateSingles: boolean;
+	    countryCode?: string;
+	    fontFamily?: string;
+	    proxyUrl?: string;
+	    enableYouTubeFallback: boolean;
+	    autoSelectService: boolean;
+	    amazonEnabled: boolean;
+	    amazonProxyEndpoints?: string[];
+	    qobuzProxyEndpoints?: string[];
+	    qobuzProvidersDisabled?: string[];
+	    parallelEndpointRequests: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tidalClientId = source["tidalClientId"];
+	        this.tidalClientSecret = source["tidalClientSecret"];
+	        this.downloadFolder = source["downloadFolder"];
+	        this.downloadQuality = source["downloadQuality"];
+	        this.fileNameFormat = source["fileNameFormat"];
+	        this.organizeFolders = source["organizeFolders"];
+	        this.folderTemplate = source["folderTemplate"];
+	        this.embedCover = source["embedCover"];
+	        this.saveCoverFile = source["saveCoverFile"];
+	        this.saveFolderCover = source["saveFolderCover"];
+	        this.concurrentDownloads = source["concurrentDownloads"];
+	        this.theme = source["theme"];
+	        this.accentColor = source["accentColor"];
+	        this.soundEffects = source["soundEffects"];
+	        this.soundVolume = source["soundVolume"];
+	        this.embedLyrics = source["embedLyrics"];
+	        this.preferSyncedLyrics = source["preferSyncedLyrics"];
+	        this.saveLyricsFile = source["saveLyricsFile"];
+	        this.autoAnalyze = source["autoAnalyze"];
+	        this.autoQualityFallback = source["autoQualityFallback"];
+	        this.autoStopOnCooldown = source["autoStopOnCooldown"];
+	        this.tidalEnabled = source["tidalEnabled"];
+	        this.qobuzEnabled = source["qobuzEnabled"];
+	        this.soulseekEnabled = source["soulseekEnabled"];
+	        this.soulseekUsername = source["soulseekUsername"];
+	        this.soulseekPassword = source["soulseekPassword"];
+	        this.soulseekBinaryPath = source["soulseekBinaryPath"];
+	        this.qobuzAppId = source["qobuzAppId"];
+	        this.qobuzAppSecret = source["qobuzAppSecret"];
+	        this.qobuzAuthToken = source["qobuzAuthToken"];
+	        this.preferredSource = source["preferredSource"];
+	        this.tidalHifiEndpoints = source["tidalHifiEndpoints"];
+	        this.qobuzEndpoints = source["qobuzEndpoints"];
+	        this.tidalCustomEndpoint = source["tidalCustomEndpoint"];
+	        this.qobuzCustomEndpoint = source["qobuzCustomEndpoint"];
+	        this.tidalPriorityEndpoints = source["tidalPriorityEndpoints"];
+	        this.qobuzPriorityEndpoints = source["qobuzPriorityEndpoints"];
+	        this.amazonPriorityEndpoints = source["amazonPriorityEndpoints"];
+	        this.sourceOrder = source["sourceOrder"];
+	        this.qualityOrder = source["qualityOrder"];
+	        this.generateM3u8 = source["generateM3u8"];
+	        this.skipUnavailableTracks = source["skipUnavailableTracks"];
+	        this.firstArtistOnly = source["firstArtistOnly"];
+	        this.artistSeparator = source["artistSeparator"];
+	        this.artistTagMode = source["artistTagMode"];
+	        this.playlistSubfolder = source["playlistSubfolder"];
+	        this.skipExisting = source["skipExisting"];
+	        this.externalLibraryPaths = source["externalLibraryPaths"];
+	        this.jellyfinEnabled = source["jellyfinEnabled"];
+	        this.jellyfinUrl = source["jellyfinUrl"];
+	        this.jellyfinApiKey = source["jellyfinApiKey"];
+	        this.separateSingles = source["separateSingles"];
+	        this.countryCode = source["countryCode"];
+	        this.fontFamily = source["fontFamily"];
+	        this.proxyUrl = source["proxyUrl"];
+	        this.enableYouTubeFallback = source["enableYouTubeFallback"];
+	        this.autoSelectService = source["autoSelectService"];
+	        this.amazonEnabled = source["amazonEnabled"];
+	        this.amazonProxyEndpoints = source["amazonProxyEndpoints"];
+	        this.qobuzProxyEndpoints = source["qobuzProxyEndpoints"];
+	        this.qobuzProvidersDisabled = source["qobuzProvidersDisabled"];
+	        this.parallelEndpointRequests = source["parallelEndpointRequests"];
+	    }
+	}
+	export class ConversionFormat {
+	    id: string;
+	    name: string;
+	    extension: string;
+	    qualities: string[];
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConversionFormat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.extension = source["extension"];
+	        this.qualities = source["qualities"];
+	        this.description = source["description"];
+	    }
+	}
+	export class ConversionResult {
+	    sourcePath: string;
+	    outputPath: string;
+	    success: boolean;
+	    error?: string;
+	    outputSize?: number;
+	    sourceSize?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConversionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourcePath = source["sourcePath"];
+	        this.outputPath = source["outputPath"];
+	        this.success = source["success"];
+	        this.error = source["error"];
+	        this.outputSize = source["outputSize"];
+	        this.sourceSize = source["sourceSize"];
+	    }
+	}
+	export class DownloadRecord {
+	    id: number;
+	    tidalContentId: string;
+	    tidalContentName: string;
+	    contentType: string;
+	    // Go type: time
+	    lastDownloadAt: any;
+	    tracksTotal: number;
+	    tracksDownloaded: number;
+	    tracksFailed: number;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.tidalContentId = source["tidalContentId"];
+	        this.tidalContentName = source["tidalContentName"];
+	        this.contentType = source["contentType"];
+	        this.lastDownloadAt = this.convertValues(source["lastDownloadAt"], null);
+	        this.tracksTotal = source["tracksTotal"];
+	        this.tracksDownloaded = source["tracksDownloaded"];
+	        this.tracksFailed = source["tracksFailed"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DownloadResult {
+	    trackId: number;
+	    title: string;
+	    artist: string;
+	    album: string;
+	    filePath: string;
+	    fileSize: number;
+	    quality: string;
+	    requestedQuality?: string;
+	    qualityMismatch?: boolean;
+	    coverUrl: string;
+	    success: boolean;
+	    error?: string;
+	    analysis?: AnalysisResult;
+	    source?: string;
+	    attempts?: string[];
+	    bytesDownloaded?: number;
+	    bytesTotal?: number;
+	    speed?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.trackId = source["trackId"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.album = source["album"];
+	        this.filePath = source["filePath"];
+	        this.fileSize = source["fileSize"];
+	        this.quality = source["quality"];
+	        this.requestedQuality = source["requestedQuality"];
+	        this.qualityMismatch = source["qualityMismatch"];
+	        this.coverUrl = source["coverUrl"];
+	        this.success = source["success"];
+	        this.error = source["error"];
+	        this.analysis = this.convertValues(source["analysis"], AnalysisResult);
+	        this.source = source["source"];
+	        this.attempts = source["attempts"];
+	        this.bytesDownloaded = source["bytesDownloaded"];
+	        this.bytesTotal = source["bytesTotal"];
+	        this.speed = source["speed"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DownloadedFileInfo {
+	    path: string;
+	    name: string;
+	    size: number;
+	    modTime: string;
+	    title: string;
+	    artist: string;
+	    album: string;
+	    source: string;
+	    quality: string;
+	    format: string;
+	    discNumber: number;
+	    trackNumber: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadedFileInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.size = source["size"];
+	        this.modTime = source["modTime"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.album = source["album"];
+	        this.source = source["source"];
+	        this.quality = source["quality"];
+	        this.format = source["format"];
+	        this.discNumber = source["discNumber"];
+	        this.trackNumber = source["trackNumber"];
+	    }
+	}
+	export class EndpointStat {
+	    url: string;
+	    state: string;
+	    fails: number;
+	    revivals: number;
+	    latencyMs?: number;
+	    cooldownSecs?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EndpointStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.state = source["state"];
+	        this.fails = source["fails"];
+	        this.revivals = source["revivals"];
+	        this.latencyMs = source["latencyMs"];
+	        this.cooldownSecs = source["cooldownSecs"];
+	    }
+	}
+	export class FLACMetadata {
+	    path: string;
+	    title: string;
+	    artist: string;
+	    album: string;
+	    trackNumber: string;
+	    date: string;
+	    genre: string;
+	    isrc: string;
+	    albumArtist?: string;
+	    discNumber?: string;
+	    copyright?: string;
+	    label?: string;
+	    composer?: string;
+	    comment: string;
+	    size: number;
+	    duration: number;
+	    sampleRate: number;
+	    bitDepth: number;
+	    channels: number;
+	    bitrate: number;
+	    hasCover: boolean;
+	    coverMime?: string;
+	    coverSize?: number;
+	    totalSamples: number;
+	    lyrics?: string;
+	    syncedLyrics?: string;
+	    hasLyrics: boolean;
+	    upc?: string;
+	    popularity?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FLACMetadata(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.album = source["album"];
+	        this.trackNumber = source["trackNumber"];
+	        this.date = source["date"];
+	        this.genre = source["genre"];
+	        this.isrc = source["isrc"];
+	        this.albumArtist = source["albumArtist"];
+	        this.discNumber = source["discNumber"];
+	        this.copyright = source["copyright"];
+	        this.label = source["label"];
+	        this.composer = source["composer"];
+	        this.comment = source["comment"];
+	        this.size = source["size"];
+	        this.duration = source["duration"];
+	        this.sampleRate = source["sampleRate"];
+	        this.bitDepth = source["bitDepth"];
+	        this.channels = source["channels"];
+	        this.bitrate = source["bitrate"];
+	        this.hasCover = source["hasCover"];
+	        this.coverMime = source["coverMime"];
+	        this.coverSize = source["coverSize"];
+	        this.totalSamples = source["totalSamples"];
+	        this.lyrics = source["lyrics"];
+	        this.syncedLyrics = source["syncedLyrics"];
+	        this.hasLyrics = source["hasLyrics"];
+	        this.upc = source["upc"];
+	        this.popularity = source["popularity"];
+	    }
+	}
+	export class LogEntry {
+	    timestamp: string;
+	    level: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LogEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.timestamp = source["timestamp"];
+	        this.level = source["level"];
+	        this.message = source["message"];
+	    }
+	}
+	export class Lyrics {
+	    plain: string;
+	    synced: string;
+	    source: string;
+	    hasSynced: boolean;
+	    instrumental: boolean;
+	    trackName: string;
+	    artistName: string;
+	    albumName: string;
+	    duration: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Lyrics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.plain = source["plain"];
+	        this.synced = source["synced"];
+	        this.source = source["source"];
+	        this.hasSynced = source["hasSynced"];
+	        this.instrumental = source["instrumental"];
+	        this.trackName = source["trackName"];
+	        this.artistName = source["artistName"];
+	        this.albumName = source["albumName"];
+	        this.duration = source["duration"];
+	    }
+	}
+	export class MatchFailure {
+	    id: number;
+	    tidalTrackId: string;
+	    isrc: string;
+	    title: string;
+	    artist: string;
+	    album: string;
+	    reason: string;
+	    attempts: number;
+	    // Go type: time
+	    lastAttemptAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new MatchFailure(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.tidalTrackId = source["tidalTrackId"];
+	        this.isrc = source["isrc"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.album = source["album"];
+	        this.reason = source["reason"];
+	        this.attempts = source["attempts"];
+	        this.lastAttemptAt = this.convertValues(source["lastAttemptAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SpotifyTrack {
+	    id: string;
+	    name: string;
+	    artists: string;
+	    album: string;
+	    durationMs: number;
+	    uri: string;
+	    isrc?: string;
+	    preview_url?: string;
+	    popularity?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpotifyTrack(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.artists = source["artists"];
+	        this.album = source["album"];
+	        this.durationMs = source["durationMs"];
+	        this.uri = source["uri"];
+	        this.isrc = source["isrc"];
+	        this.preview_url = source["preview_url"];
+	        this.popularity = source["popularity"];
+	    }
+	}
+	export class TidalTrack {
+	    id: number;
+	    title: string;
+	    artist: string;
+	    artists: string;
+	    albumArtist?: string;
+	    album: string;
+	    albumId: number;
+	    isrc: string;
+	    duration: number;
+	    trackNumber: number;
+	    discNumber?: number;
+	    totalDiscs?: number;
+	    releaseDate?: string;
+	    coverUrl: string;
+	    explicit: boolean;
+	    tidalUrl: string;
+	    available: boolean;
+	    previewUrl?: string;
+	    copyright?: string;
+	    label?: string;
+	    popularity?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TidalTrack(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.artists = source["artists"];
+	        this.albumArtist = source["albumArtist"];
+	        this.album = source["album"];
+	        this.albumId = source["albumId"];
+	        this.isrc = source["isrc"];
+	        this.duration = source["duration"];
+	        this.trackNumber = source["trackNumber"];
+	        this.discNumber = source["discNumber"];
+	        this.totalDiscs = source["totalDiscs"];
+	        this.releaseDate = source["releaseDate"];
+	        this.coverUrl = source["coverUrl"];
+	        this.explicit = source["explicit"];
+	        this.tidalUrl = source["tidalUrl"];
+	        this.available = source["available"];
+	        this.previewUrl = source["previewUrl"];
+	        this.copyright = source["copyright"];
+	        this.label = source["label"];
+	        this.popularity = source["popularity"];
+	    }
+	}
+	export class MatchResult {
+	    tidalTrack: TidalTrack;
+	    spotifyTrack?: SpotifyTrack;
+	    matched: boolean;
+	    matchMethod: string;
+	    confidence: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MatchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tidalTrack = this.convertValues(source["tidalTrack"], TidalTrack);
+	        this.spotifyTrack = this.convertValues(source["spotifyTrack"], SpotifyTrack);
+	        this.matched = source["matched"];
+	        this.matchMethod = source["matchMethod"];
+	        this.confidence = source["confidence"];
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RenamePreview {
+	    oldPath: string;
+	    oldName: string;
+	    newName: string;
+	    newPath: string;
+	    hasError: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RenamePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.oldPath = source["oldPath"];
+	        this.oldName = source["oldName"];
+	        this.newName = source["newName"];
+	        this.newPath = source["newPath"];
+	        this.hasError = source["hasError"];
+	        this.error = source["error"];
+	    }
+	}
+	export class RenameResult {
+	    oldPath: string;
+	    newPath: string;
+	    success: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RenameResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.oldPath = source["oldPath"];
+	        this.newPath = source["newPath"];
+	        this.success = source["success"];
+	        this.error = source["error"];
+	    }
+	}
+	export class SourceTrack {
+	    id: string;
+	    title: string;
+	    artist: string;
+	    artists: string[];
+	    album: string;
+	    albumId: string;
+	    isrc: string;
+	    duration: number;
+	    trackNumber: number;
+	    totalTracks: number;
+	    discNumber: number;
+	    year: string;
+	    genre: string;
+	    coverUrl: string;
+	    explicit: boolean;
+	    sourceUrl: string;
+	    source: string;
+	    quality: string;
+	    previewUrl?: string;
+	    upc?: string;
+	    popularity?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SourceTrack(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.artists = source["artists"];
+	        this.album = source["album"];
+	        this.albumId = source["albumId"];
+	        this.isrc = source["isrc"];
+	        this.duration = source["duration"];
+	        this.trackNumber = source["trackNumber"];
+	        this.totalTracks = source["totalTracks"];
+	        this.discNumber = source["discNumber"];
+	        this.year = source["year"];
+	        this.genre = source["genre"];
+	        this.coverUrl = source["coverUrl"];
+	        this.explicit = source["explicit"];
+	        this.sourceUrl = source["sourceUrl"];
+	        this.source = source["source"];
+	        this.quality = source["quality"];
+	        this.previewUrl = source["previewUrl"];
+	        this.upc = source["upc"];
+	        this.popularity = source["popularity"];
+	    }
+	}
+	export class SourceAlbum {
+	    id: string;
+	    title: string;
+	    artist: string;
+	    artists: string[];
+	    year: string;
+	    genre: string;
+	    coverUrl: string;
+	    trackCount: number;
+	    tracks: SourceTrack[];
+	    source: string;
+	    sourceUrl: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SourceAlbum(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.artists = source["artists"];
+	        this.year = source["year"];
+	        this.genre = source["genre"];
+	        this.coverUrl = source["coverUrl"];
+	        this.trackCount = source["trackCount"];
+	        this.tracks = this.convertValues(source["tracks"], SourceTrack);
+	        this.source = source["source"];
+	        this.sourceUrl = source["sourceUrl"];
+	        this.description = source["description"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SourceHealth {
+	    name: string;
+	    displayName: string;
+	    status: string;
+	    latencyMs: number;
+	    reason?: string;
+	    endpoints?: EndpointStat[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SourceHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.displayName = source["displayName"];
+	        this.status = source["status"];
+	        this.latencyMs = source["latencyMs"];
+	        this.reason = source["reason"];
+	        this.endpoints = this.convertValues(source["endpoints"], EndpointStat);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SourceInfo {
+	    name: string;
+	    displayName: string;
+	    available: boolean;
+	    urlPattern: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.displayName = source["displayName"];
+	        this.available = source["available"];
+	        this.urlPattern = source["urlPattern"];
+	    }
+	}
+	export class SourcePlaylist {
+	    id: string;
+	    title: string;
+	    description: string;
+	    creator: string;
+	    coverUrl: string;
+	    trackCount: number;
+	    tracks: SourceTrack[];
+	    source: string;
+	    sourceUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SourcePlaylist(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.creator = source["creator"];
+	        this.coverUrl = source["coverUrl"];
+	        this.trackCount = source["trackCount"];
+	        this.tracks = this.convertValues(source["tracks"], SourceTrack);
+	        this.source = source["source"];
+	        this.sourceUrl = source["sourceUrl"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class TidalAlbum {
+	    id: number;
+	    title: string;
+	    artist: string;
+	    releaseDate: string;
+	    trackCount: number;
+	    coverUrl: string;
+	    albumType?: string;
+	    copyright?: string;
+	    label?: string;
+	    tracks: TidalTrack[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TidalAlbum(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.artist = source["artist"];
+	        this.releaseDate = source["releaseDate"];
+	        this.trackCount = source["trackCount"];
+	        this.coverUrl = source["coverUrl"];
+	        this.albumType = source["albumType"];
+	        this.copyright = source["copyright"];
+	        this.label = source["label"];
+	        this.tracks = this.convertValues(source["tracks"], TidalTrack);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TidalArtist {
+	    id: number;
+	    name: string;
+	    pictureUrl?: string;
+	    albums: TidalAlbum[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TidalArtist(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.pictureUrl = source["pictureUrl"];
+	        this.albums = this.convertValues(source["albums"], TidalAlbum);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TidalPlaylist {
+	    uuid: string;
+	    title: string;
+	    description: string;
+	    creator: string;
+	    coverUrl: string;
+	    numberOfTracks: number;
+	    tracks: TidalTrack[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TidalPlaylist(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uuid = source["uuid"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.creator = source["creator"];
+	        this.coverUrl = source["coverUrl"];
+	        this.numberOfTracks = source["numberOfTracks"];
+	        this.tracks = this.convertValues(source["tracks"], TidalTrack);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+

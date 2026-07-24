@@ -461,3 +461,48 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
 - **Contexte** : la première implémentation hors ligne validait correctement chaque dérivée avant publication, mais ne réparait pas une ligne `READY` dont le fichier avait ensuite disparu. L'annulation mobile ne couvrait que le flux HTTP et la sélection locale ne comparait pas le hash mémorisé au hash courant de la piste.
 - **Leçon** : la fiabilité d'un cache dépend de toute sa chaîne de vie. Il faut revérifier l'existence physique avant de servir, propager l'annulation à la préparation comme au transfert, conserver l'identité source jusqu'à la lecture et coordonner l'arrêt d'un processus externe avec la fermeture de la base.
 - **Conséquence** : variante absente réarmée automatiquement, durée/débit ffprobe obligatoires, arrêt FFmpeg attendu avant SQLite, annulation du polling, erreurs disque explicites et rejet des copies locales liées à une ancienne empreinte source.
+
+### L-082 — Un téléchargement groupé doit composer les jobs unitaires idempotents (2026-07-24)
+- **Contexte** : album et playlist demandent progression globale, reprise et erreurs partielles, mais le backend possède déjà un contrat par piste avec single-flight, contrôle d'accès, Range et hash.
+- **Leçon** : ajouter une seconde API batch ou un second pipeline d'encodage duplique les invariants les plus sensibles. Le groupe est une intention persistante côté appareil ; chaque item reste un job unitaire vérifiable.
+- **Conséquence** : Phase 1B stocke groupe + items avant transfert, limite la concurrence mobile à un, réutilise `OfflineTrackDownloader` et relance uniquement les items non valides. Aucun nouveau contrat backend n'est nécessaire.
+
+### L-083 — La reprise après crash exige une réconciliation physique, pas seulement un statut (2026-07-24)
+- **Contexte** : le processus peut mourir après le renommage atomique du fichier mais avant le passage de l'item à `READY`, ou une purge peut retirer plus tard une copie appartenant à un groupe marqué terminé.
+- **Leçon** : les deux sens de divergence existent. L'état persistant doit pouvoir adopter une copie valide comme rétrograder une copie absente ; existence, taille et empreinte source forment la vérité.
+- **Conséquence** : chaque reprise et chaque purge réconcilient les items. Un `running` abandonné redevient `queued`, une copie publiée est adoptée, et un groupe privé d'une copie devient `partial` au lieu de mentir à l'interface.
+
+### L-084 — Un fallback ne peut pas être inventé après la panne (2026-07-24)
+- **Contexte** : la sélection Phase 1A remplaçait l'URI réseau par une URI locale
+  uniquement lorsque `/health` échouait au chargement de la file. Une file
+  créée en ligne perdait donc toute connaissance de sa copie locale ; après une
+  panne, le handler ne pouvait que réessayer le même flux ou sauter la piste.
+  La persistance rejetait en plus toute session dont la source active était
+  `file://`.
+- **Leçon** : les alternatives autorisées doivent faire partie de l'identité de
+  chaque item avant l'incident. Une bascule fiable conserve source canonique,
+  copie locale déjà vérifiée et position, sans reconstruire ces faits depuis le
+  réseau au moment où celui-ci vient précisément de disparaître.
+- **Conséquence** : la file et la session stockent les deux URI sans secret. Une
+  vraie erreur réseau reprend localement au même index/position ; un simple
+  signal de connectivité laisse finir le titre, et le retour réseau est appliqué
+  à la transition suivante. Toute tentative de fallback qui échoue restaure la
+  file précédente avant d'activer la récupération normale.
+
+### L-085 — Un minuteur audio ne doit pas dépendre d'un écran (2026-07-24)
+- **Contexte** : un `Timer` détenu par le lecteur visuel serait détruit dès que
+  l'utilisateur revient à la bibliothèque ou qu'Android recrée la route, alors
+  que la lecture continue dans le service de premier plan.
+- **Leçon** : toute intention qui doit survivre écran éteint — sommeil, fin du
+  titre, pause différée — appartient à la même autorité que la session média.
+  L'UI ne fait qu'armer, afficher et annuler. Le mode « fin du titre » doit
+  écouter la complétion logique ET le changement d'index natif, puisque Media3
+  peut avancer avant que Dart traite l'état `completed`.
+- **Conséquence** : `HomeSpotifyAudioHandler` possède le timer et son état
+  observable. L'expiration conserve file/position, les purges l'annulent et
+  aucune intention ancienne n'est restaurée après mort du processus.
+
+### L-086 — Un effet d’amplification Android ne remplace pas un gain signé (2026-07-24)
+- **Contexte** : ReplayGain peut demander aussi bien une atténuation qu’une amplification. `AndroidLoudnessEnhancer` expose un gain cible maximal pour augmenter le niveau ; l’utiliser comme si son domaine couvrait les valeurs négatives rendrait l’application dépendante d’un comportement non garanti et mélangerait le volume de l’utilisateur avec la normalisation.
+- **Leçon** : un gain signé doit être séparé selon les capacités réelles du pipeline. La baisse se fait par multiplication linéaire du volume effectif, la hausse par l’effet Android, tandis que le volume affiché et choisi par l’utilisateur reste inchangé. La remise à zéro doit être sérialisée avant la mesure du titre suivant pour empêcher une ancienne opération asynchrone d’écraser le nouveau gain.
+- **Conséquence** : HomeSpotify n’envoie jamais de valeur négative au `LoudnessEnhancer`, conserve une atténuation ReplayGain distincte dans le handler et teste explicitement la course changement de titre/remise à zéro. Sans mesure EBU R128 valide, aucun des deux chemins n’est activé.

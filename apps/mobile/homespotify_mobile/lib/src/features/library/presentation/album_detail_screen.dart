@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../player/presentation/widgets/mini_player.dart';
+import '../../offline/domain/offline_models.dart';
+import '../../offline/presentation/offline_group_download_sheet.dart';
 import '../data/library_api.dart';
 import '../domain/track.dart';
 import 'library_albums.dart';
@@ -48,6 +50,21 @@ class _AlbumDetailScreenState extends ConsumerState<AlbumDetailScreen> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
+        actions: [
+          if (album != null && album.tracks.isNotEmpty)
+            IconButton(
+              key: const ValueKey('album-download-all'),
+              tooltip: 'Télécharger l’album',
+              onPressed: () => showOfflineGroupDownloadSheet(
+                context,
+                type: OfflineGroupType.album,
+                sourceId: album.key,
+                title: album.title,
+                tracks: album.tracks,
+              ),
+              icon: const Icon(Icons.download_for_offline_outlined),
+            ),
+        ],
       ),
       body: album == null
           ? const _AlbumNotFound()

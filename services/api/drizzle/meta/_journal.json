@@ -127,6 +127,13 @@
       "when": 1784850000000,
       "tag": "0017_discovery_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1784898000000,
+      "tag": "0018_track_loudness_analysis",
+      "breakpoints": true
     }
   ]
 }

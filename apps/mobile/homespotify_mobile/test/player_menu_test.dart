@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,7 @@ import 'package:homespotify_mobile/src/features/player/presentation/player_scree
 import 'support/fake_library_repositories.dart';
 
 void main() {
+  late _MenuAudioHandler menuAudioHandler;
   const genesis = Track(
     id: 1,
     title: 'Genesis',
@@ -37,7 +39,12 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
   }
 
-  overrides({String artist = 'Justice', Map<String, dynamic>? extras}) => [
+  overrides({
+    required _MenuAudioHandler audioHandler,
+    String artist = 'Justice',
+    Map<String, dynamic>? extras,
+  }) => [
+    audioHandlerProvider.overrideWithValue(audioHandler),
     libraryProvider.overrideWith((ref) => Future.value(const [genesis])),
     favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
     playlistsApiProvider.overrideWithValue(
@@ -111,10 +118,16 @@ void main() {
     Map<String, dynamic>? extras,
   }) async {
     await usePhoneSurface(tester);
+    menuAudioHandler = _MenuAudioHandler();
+    addTearDown(menuAudioHandler.dispose);
     final router = buildRouter();
     await tester.pumpWidget(
       ProviderScope(
-        overrides: overrides(artist: artist, extras: extras),
+        overrides: overrides(
+          audioHandler: menuAudioHandler,
+          artist: artist,
+          extras: extras,
+        ),
         child: MaterialApp.router(routerConfig: router),
       ),
     );
@@ -138,7 +151,34 @@ void main() {
     expect(find.text('Ajouter aux favoris'), findsOneWidget);
     expect(find.text('Ajouter à une playlist'), findsOneWidget);
     expect(find.text('Détails du fichier'), findsOneWidget);
+    expect(find.text('Minuteur de sommeil'), findsOneWidget);
     expect(find.text('Partager'), findsOneWidget);
+  });
+
+  testWidgets('le minuteur est armé puis annulé depuis le lecteur', (
+    tester,
+  ) async {
+    await pumpPlayer(tester);
+
+    await tester.tap(find.byIcon(Icons.more_vert_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Minuteur de sommeil'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('15 min'), findsOneWidget);
+    expect(find.text('À la fin du titre'), findsOneWidget);
+    await tester.tap(find.text('15 min'));
+    await tester.pumpAndSettle();
+    expect(menuAudioHandler.sleepTimerState.mode, SleepTimerMode.timed);
+
+    await tester.tap(find.byIcon(Icons.more_vert_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Minuteur de sommeil'));
+    await tester.pumpAndSettle();
+    expect(find.text('Annuler le minuteur'), findsOneWidget);
+    await tester.tap(find.text('Annuler le minuteur'));
+    await tester.pumpAndSettle();
+    expect(menuAudioHandler.sleepTimerState.mode, SleepTimerMode.off);
   });
 
   testWidgets('Détails du fichier affiche les métadonnées puis se ferme', (
@@ -331,4 +371,45 @@ void main() {
     expect(find.text('EN LECTURE'), findsOneWidget);
     expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
   });
+}
+
+class _MenuAudioHandler implements HomeSpotifyAudioHandler {
+  final ValueNotifier<SleepTimerState> _sleepTimer =
+      ValueNotifier<SleepTimerState>(const SleepTimerState.off());
+
+  @override
+  ValueListenable<SleepTimerState> get sleepTimerListenable => _sleepTimer;
+
+  @override
+  SleepTimerState get sleepTimerState => _sleepTimer.value;
+
+  @override
+  void armSleepTimer(Duration duration) {
+    _sleepTimer.value = SleepTimerState(
+      mode: SleepTimerMode.timed,
+      endsAt: DateTime.now().add(duration),
+    );
+  }
+
+  @override
+  void armSleepTimerAtEndOfTrack() {
+    _sleepTimer.value = const SleepTimerState(
+      mode: SleepTimerMode.endOfTrack,
+      armedTrackId: '1',
+    );
+  }
+
+  @override
+  void cancelSleepTimer({String reason = 'user'}) {
+    _sleepTimer.value = const SleepTimerState.off();
+  }
+
+  @override
+  Future<void> dispose() async {
+    _sleepTimer.dispose();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('${invocation.memberName}');
 }

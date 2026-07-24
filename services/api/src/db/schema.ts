@@ -688,6 +688,40 @@ export const trackAudioAnalysis = sqliteTable(
   ],
 );
 
+// Mesure de sonie EBU R128 partagée par tous les comptes. L'analyse décode le
+// fichier en flux, ne crée aucun intermédiaire et ne modifie jamais l'original.
+export const trackLoudnessAnalysis = sqliteTable(
+  'track_loudness_analysis',
+  {
+    trackId: integer('track_id')
+      .primaryKey()
+      .references(() => tracks.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('PENDING'), // PENDING | ANALYZING | READY | FAILED
+    integratedLufs: real('integrated_lufs'),
+    truePeakDbfs: real('true_peak_dbfs'),
+    replayGainDb: real('replay_gain_db'),
+    targetLufs: real('target_lufs').notNull().default(-18),
+    peakCeilingDbfs: real('peak_ceiling_dbfs').notNull().default(-1),
+    errorMessage: text('error_message'),
+    analyzedAt: text('analyzed_at'),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'track_loudness_analysis_lufs_check',
+      sql`${table.integratedLufs} IS NULL OR (${table.integratedLufs} >= -70 AND ${table.integratedLufs} <= 5)`,
+    ),
+    check(
+      'track_loudness_analysis_peak_check',
+      sql`${table.truePeakDbfs} IS NULL OR (${table.truePeakDbfs} >= -120 AND ${table.truePeakDbfs} <= 20)`,
+    ),
+    check(
+      'track_loudness_analysis_gain_check',
+      sql`${table.replayGainDb} IS NULL OR (${table.replayGainDb} >= -24 AND ${table.replayGainDb} <= 12)`,
+    ),
+  ],
+);
+
 // Favoris par utilisateur (remplace le favorites.json local du mobile).
 export const favorites = sqliteTable(
   'favorites',

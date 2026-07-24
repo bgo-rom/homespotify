@@ -94,7 +94,37 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 - Les dérivées Opus sont volontairement **lossy** et affichées « Hors ligne · Opus 128 kb/s » ou « Hors ligne · Opus 256 kb/s ». Elles n'héritent jamais du badge lossless de la source. L'option originale conserve le badge issu de l'analyse technique de la source. Les métadonnées sont conservées dans le manifeste mobile ; la pochette est un fichier durable adjacent, partitionné par compte et référencé par convention interne, indépendamment des tags du fichier dérivé.
 - Lecture 100 % locale lorsque le serveur est injoignable. Au retour d'un serveur réellement joignable, la sélection de source repasse à l'original WAV/FLAC au prochain chargement de piste ; le morceau Opus déjà commencé se termine localement pour éviter une coupure ou une dérive de position.
 - **Session locale hors connexion (Phase 1A.1)** : après une connexion réussie, une identité minimale du compte (jamais de token) est mémorisée dans le stockage sécurisé. Si le serveur est injoignable au démarrage mais qu'une session locale existe, l'application s'ouvre en « Mode hors connexion » (bandeau discret) et donne accès à l'écran Téléchargements, à la bibliothèque reconstruite depuis le manifeste et à la lecture locale. Une panne réseau, un timeout ou un 5xx ne sont jamais un logout ; seuls un logout explicite ou un refus 401 confirmé par un serveur joignable terminent la session. Le retour du serveur rétablit le fonctionnement en ligne sans redémarrer l'application. L'écran Téléchargements, les pochettes locales et les badges de bibliothèque sont alimentés par l'index local partitionné par compte, sans dépendre de `GET /api/tracks` pour s'afficher.
-- Phase 1A ne change pas de source au milieu d'un titre. La bascule d'un flux original en erreur vers une copie locale au même index et à la position la plus proche est planifiée en Phase 1C, après qualification du handler. La politique cellulaire explicite est également ultérieure ; le mode actuel reste original en ligne.
+- **Lots album/playlist (Phase 1B)** : l'intention et les items sont persistés
+  dans `offline_download_groups` et `offline_download_group_items` avant tout
+  octet. Le mobile orchestre séquentiellement le pipeline unitaire existant ;
+  il ne crée pas d'API batch ni de second encodeur. Une réconciliation compare
+  chaque item aux fichiers/empreintes réellement disponibles après redémarrage,
+  purge LRU ou remplacement de source. Les échecs partiels sont relançables
+  sans retélécharger les items valides.
+- **Politique de stockage (Phase 1B)** : Wi-Fi uniquement par défaut, cellulaire
+  seulement sur choix explicite, plafond de cache configurable et contrôle de
+  l'espace physique Android par `StatFs` avec réserve de sécurité. Le nettoyage
+  LRU utilise `last_accessed_at`, nécessite une confirmation et ne supprime
+  jamais l'original serveur, une relation de bibliothèque ou une dérivée
+  serveur partagée.
+- Phase 1C conserve dans chaque entrée de file l'original réseau et la meilleure
+  copie locale vérifiée. Une erreur transitoire du flux original recharge le
+  même index à la même position depuis le fichier local ; un simple signal de
+  connectivité ne coupe pas le titre courant. Au retour du réseau, le titre
+  local se termine puis la piste suivante reprend l'original. Une source locale
+  invalide retombe sur le réseau avant le saut borné. Les deux URI, jamais les
+  headers, sont persistées pour la reprise après redémarrage.
+- Le minuteur de sommeil Phase 1C appartient au handler audio de premier plan,
+  jamais au cycle de vie d'un écran. Il propose quatre durées ou la fin du titre
+  courant, puis met en pause en conservant file et position. Stop, logout et
+  purge l'annulent ; il n'est volontairement pas restauré après un redémarrage
+  de processus.
+- La normalisation Phase 1C est facultative et désactivée par défaut. Le serveur
+  mesure la piste complète avec FFmpeg/EBU R128 dans une file de fond à
+  concurrence 1 et persiste LUFS, true peak et gain dans
+  `track_loudness_analysis`. La route authentifiée ne bloque jamais sur
+  l’analyse. Le mobile applique uniquement une mesure `READY` validée et
+  cachée, sans tag supposé ni modification du fichier source.
 - Purge LRU configurable par plafond d'espace. Les variantes serveur sont régénérables et suivent une rétention distincte ; supprimer une variante ne supprime jamais l'original.
 
 ## Authentification

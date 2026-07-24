@@ -13,6 +13,7 @@ import '../../library/presentation/library_favorites.dart';
 import '../../library/presentation/library_playlists.dart';
 import '../../library/presentation/library_summary.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
+import '../../player/audio/replay_gain.dart';
 import '../data/settings_server_checker.dart';
 
 /// Formatage compact octets → Go/Mo/Ko pour la section Compte.
@@ -157,6 +158,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     final discoverySettings = ref.watch(discoverySettingsProvider);
     final audioHandler = ref.watch(audioHandlerProvider);
+    final replayGainController = ref.watch(replayGainControllerProvider);
 
     return Scaffold(
       backgroundColor: _background,
@@ -500,7 +502,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 label: 'Formats pris en charge',
                 value: 'WAV / FLAC',
               ),
-              const _InfoRow(label: 'Normalisation', value: 'Désactivée'),
+              _ReplayGainSetting(controller: replayGainController),
               _InfoRow(
                 label: 'Time-stretch',
                 value: audioHandler.currentTimeStretchEngineName,
@@ -660,6 +662,73 @@ class _InfoRow extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _ReplayGainSetting extends StatelessWidget {
+  const _ReplayGainSetting({required this.controller});
+
+  final ReplayGainController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<ReplayGainState>(
+      valueListenable: controller.state,
+      builder: (context, state, _) {
+        return SwitchListTile(
+          key: const ValueKey('settings-replay-gain'),
+          contentPadding: EdgeInsets.zero,
+          activeThumbColor: _accent,
+          value: state.enabled,
+          title: const Text(
+            'Volume homogène (ReplayGain)',
+            style: TextStyle(color: Colors.white, fontSize: 15),
+          ),
+          subtitle: Text(
+            _subtitle(state),
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          onChanged: (enabled) async {
+            try {
+              await controller.setEnabled(enabled);
+            } catch (_) {
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Le réglage ReplayGain n’a pas pu être enregistré.',
+                  ),
+                ),
+              );
+            }
+          },
+        );
+      },
+    );
+  }
+
+  static String _subtitle(ReplayGainState state) {
+    if (!state.enabled) {
+      return 'Désactivé par défaut · mesure R128, aucun fichier modifié.';
+    }
+    final analysis = state.analysis;
+    return switch (state.phase) {
+      ReplayGainPhase.applied =>
+        'Actif sur ce titre · ${_signed(analysis?.replayGainDb)} dB '
+            '(${analysis?.integratedLufs?.toStringAsFixed(1) ?? '?'} LUFS).',
+      ReplayGainPhase.analyzing => 'Analyse R128 du titre en arrière-plan…',
+      ReplayGainPhase.unavailable =>
+        state.message ?? 'Mesure indisponible pour ce titre.',
+      ReplayGainPhase.error =>
+        state.message ?? 'Le réglage est temporairement indisponible.',
+      _ => 'Activé · cible -18 LUFS, plafond -1 dBTP.',
+    };
+  }
+
+  static String _signed(double? value) {
+    if (value == null) return '?';
+    final fixed = value.toStringAsFixed(1);
+    return value > 0 ? '+$fixed' : fixed;
   }
 }
 

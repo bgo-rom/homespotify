@@ -151,6 +151,8 @@ class OfflineTrackRecord {
     this.album,
     this.durationSeconds,
     this.errorMessage,
+    this.updatedAt,
+    this.lastAccessedAt,
   });
 
   final int userId;
@@ -173,6 +175,8 @@ class OfflineTrackRecord {
   final String? album;
   final double? durationSeconds;
   final String? errorMessage;
+  final DateTime? updatedAt;
+  final DateTime? lastAccessedAt;
 
   OfflineTrackRecord copyWith({
     OfflineDownloadStatus? status,
@@ -181,6 +185,7 @@ class OfflineTrackRecord {
     int? sizeBytes,
     String? relativePath,
     String? errorMessage,
+    DateTime? lastAccessedAt,
   }) => OfflineTrackRecord(
     userId: userId,
     trackId: trackId,
@@ -200,6 +205,8 @@ class OfflineTrackRecord {
     album: album,
     durationSeconds: durationSeconds,
     errorMessage: errorMessage ?? this.errorMessage,
+    updatedAt: updatedAt,
+    lastAccessedAt: lastAccessedAt ?? this.lastAccessedAt,
   );
 }
 
@@ -220,4 +227,144 @@ class OfflineDownloadProgress {
   double? get ratio => totalBytes == null || totalBytes! <= 0
       ? null
       : (receivedBytes / totalBytes!).clamp(0.0, 1.0);
+}
+
+enum OfflineGroupType { album, playlist }
+
+enum OfflineGroupStatus {
+  queued,
+  waitingNetwork,
+  running,
+  paused,
+  completed,
+  partial,
+  cancelled,
+}
+
+enum OfflineGroupItemStatus { queued, running, ready, failed, cancelled }
+
+/// Job persistant regroupant les copies locales d'un album ou d'une playlist.
+/// L'encodage reste unitaire et mutualisé côté serveur ; ce job orchestre
+/// uniquement la préparation et les transferts du téléphone.
+class OfflineDownloadGroup {
+  const OfflineDownloadGroup({
+    required this.id,
+    required this.userId,
+    required this.type,
+    required this.sourceId,
+    required this.title,
+    required this.profile,
+    required this.status,
+    required this.totalItems,
+    required this.completedItems,
+    required this.failedItems,
+    required this.estimatedBytes,
+    required this.exactBytes,
+    required this.createdAt,
+    required this.updatedAt,
+    this.errorMessage,
+  });
+
+  final String id;
+  final int userId;
+  final OfflineGroupType type;
+  final String sourceId;
+  final String title;
+  final OfflineProfile profile;
+  final OfflineGroupStatus status;
+  final int totalItems;
+  final int completedItems;
+  final int failedItems;
+  final int estimatedBytes;
+  final int exactBytes;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final String? errorMessage;
+
+  int get remainingItems =>
+      (totalItems - completedItems - failedItems).clamp(0, totalItems).toInt();
+
+  double get ratio => totalItems <= 0
+      ? 0
+      : ((completedItems + failedItems) / totalItems)
+            .clamp(0.0, 1.0)
+            .toDouble();
+
+  OfflineDownloadGroup copyWith({
+    OfflineGroupStatus? status,
+    int? completedItems,
+    int? failedItems,
+    int? exactBytes,
+    DateTime? updatedAt,
+    String? errorMessage,
+    bool clearError = false,
+  }) => OfflineDownloadGroup(
+    id: id,
+    userId: userId,
+    type: type,
+    sourceId: sourceId,
+    title: title,
+    profile: profile,
+    status: status ?? this.status,
+    totalItems: totalItems,
+    completedItems: completedItems ?? this.completedItems,
+    failedItems: failedItems ?? this.failedItems,
+    estimatedBytes: estimatedBytes,
+    exactBytes: exactBytes ?? this.exactBytes,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
+  );
+}
+
+class OfflineDownloadGroupItem {
+  const OfflineDownloadGroupItem({
+    required this.groupId,
+    required this.position,
+    required this.trackId,
+    required this.status,
+    required this.title,
+    required this.artist,
+    required this.album,
+    required this.sourceSha256,
+    this.durationSeconds,
+    this.sizeBytes,
+    this.mimeType,
+    this.extension,
+    this.errorMessage,
+  });
+
+  final String groupId;
+  final int position;
+  final int trackId;
+  final OfflineGroupItemStatus status;
+  final String title;
+  final String artist;
+  final String album;
+  final String sourceSha256;
+  final double? durationSeconds;
+  final int? sizeBytes;
+  final String? mimeType;
+  final String? extension;
+  final String? errorMessage;
+
+  OfflineDownloadGroupItem copyWith({
+    OfflineGroupItemStatus? status,
+    String? errorMessage,
+    bool clearError = false,
+  }) => OfflineDownloadGroupItem(
+    groupId: groupId,
+    position: position,
+    trackId: trackId,
+    status: status ?? this.status,
+    title: title,
+    artist: artist,
+    album: album,
+    sourceSha256: sourceSha256,
+    durationSeconds: durationSeconds,
+    sizeBytes: sizeBytes,
+    mimeType: mimeType,
+    extension: extension,
+    errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
+  );
 }

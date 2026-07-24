@@ -18,6 +18,7 @@ import '../../library/presentation/widgets/track_favorite_button.dart';
 import '../../auth/application/auth_controller.dart';
 import '../audio/homespotify_audio_handler.dart';
 import 'player_providers.dart';
+import 'sleep_timer_sheet.dart';
 import 'widgets/file_details_sheet.dart';
 import 'widgets/seek_bar.dart';
 import 'track_speed_sheet.dart';
@@ -256,6 +257,7 @@ enum _PlayerMenuAction {
   favorite('Ajouter aux favoris', Icons.favorite_border_rounded),
   playlist('Ajouter à une playlist', Icons.playlist_add_rounded),
   speed('Vitesse du titre', Icons.speed_rounded),
+  sleepTimer('Minuteur de sommeil', Icons.bedtime_rounded),
   fileDetails('Détails du fichier', Icons.info_outline_rounded),
   share('Partager', Icons.share_rounded),
 
@@ -272,8 +274,7 @@ enum _PlayerMenuAction {
   final IconData icon;
 }
 
-/// Menu « 3 points » du lecteur complet. Aucune action ici ne touche à la
-/// lecture audio : navigation ou SnackBar seulement.
+/// Menu « 3 points » du lecteur complet.
 class _PlayerMenu extends ConsumerWidget {
   const _PlayerMenu({required this.mediaItem});
 
@@ -309,6 +310,7 @@ class _PlayerMenu extends ConsumerWidget {
         ),
         _item(_PlayerMenuAction.playlist, enabled: hasTrack),
         _item(_PlayerMenuAction.speed, enabled: hasTrack && trackId != null),
+        _item(_PlayerMenuAction.sleepTimer, enabled: hasTrack),
         _item(_PlayerMenuAction.fileDetails, enabled: hasTrack),
         _item(_PlayerMenuAction.share, enabled: hasTrack),
         const PopupMenuDivider(),
@@ -416,6 +418,8 @@ class _PlayerMenu extends ConsumerWidget {
         if (item != null) {
           showFileDetailsSheet(context, mediaItem: item);
         }
+      case _PlayerMenuAction.sleepTimer:
+        showSleepTimerSheet(context, ref);
       case _PlayerMenuAction.share:
         _comingSoon(context, '${action.label} : bientôt disponible');
       case _PlayerMenuAction.libraryMembership:

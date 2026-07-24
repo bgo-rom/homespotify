@@ -104,3 +104,10 @@ Thumbs.db
 # --- IDE ---
 .vscode/
 .idea/
+
+# Clés SSH et secrets
+romainvast
+romainvast.pub
+*.pem
+*.key
+**/.ssh/

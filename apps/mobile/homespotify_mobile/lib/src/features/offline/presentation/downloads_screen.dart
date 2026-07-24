@@ -9,8 +9,10 @@ import '../../auth/application/auth_controller.dart';
 import '../../library/domain/track.dart';
 import '../../library/presentation/widgets/current_track_indicator.dart';
 import '../application/offline_artwork_cache.dart';
+import '../application/offline_batch_download_manager.dart';
 import '../application/offline_index.dart';
 import '../application/offline_local_playback.dart';
+import '../application/offline_storage_policy.dart';
 import '../application/offline_track_downloader.dart';
 import '../domain/offline_models.dart';
 import 'offline_download_sheet.dart' show formatOfflineSize;
@@ -69,6 +71,10 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
   @override
   Widget build(BuildContext context) {
     final index = ref.watch(offlineIndexProvider);
+    final groups =
+        ref.watch(offlineGroupsProvider).asData?.value ??
+        const <OfflineDownloadGroup>[];
+    final liveGroups = ref.watch(offlineBatchProgressProvider);
     return Scaffold(
       backgroundColor: HomeDesign.background,
       appBar: AppBar(title: const Text('Téléchargements')),
@@ -80,12 +86,17 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
           message: 'Lecture du manifeste local impossible.',
           onRetry: () => ref.invalidate(offlineIndexProvider),
         ),
-        data: (data) => _buildBody(context, data),
+        data: (data) => _buildBody(context, data, groups, liveGroups),
       ),
     );
   }
 
-  Widget _buildBody(BuildContext context, OfflineIndex index) {
+  Widget _buildBody(
+    BuildContext context,
+    OfflineIndex index,
+    List<OfflineDownloadGroup> groups,
+    Map<String, OfflineBatchLiveProgress> liveGroups,
+  ) {
     if (ref.read(authControllerProvider).status == AuthStatus.authenticated) {
       _scheduleArtworkSync(index);
     }
@@ -99,7 +110,44 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
-          SliverToBoxAdapter(child: _Header(index: index)),
+          SliverToBoxAdapter(
+            child: _Header(
+              index: index,
+              onSettings: _showStorageSettings,
+              onCleanup: index.availableCount == 0
+                  ? null
+                  : () => _confirmLruCleanup(index),
+            ),
+          ),
+          if (groups.isNotEmpty) ...[
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(16, 14, 16, 4),
+                child: Text(
+                  'Albums et playlists',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+            SliverList.builder(
+              itemCount: groups.length,
+              itemBuilder: (context, index) {
+                final group = groups[index];
+                return _DownloadGroupCard(
+                  group: group,
+                  liveProgress: liveGroups[group.id],
+                  onPause: () => _pauseGroup(group),
+                  onResume: () => _resumeGroup(group),
+                  onCancel: () => _cancelGroup(group),
+                  onDelete: () => _deleteGroup(group),
+                );
+              },
+            ),
+          ],
           SliverToBoxAdapter(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -162,6 +210,210 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _pauseGroup(OfflineDownloadGroup group) async {
+    await ref
+        .read(offlineBatchDownloadManagerProvider)
+        .pause(group.userId, group.id);
+  }
+
+  Future<void> _resumeGroup(OfflineDownloadGroup group) async {
+    final manager = ref.read(offlineBatchDownloadManagerProvider);
+    if (group.status == OfflineGroupStatus.partial ||
+        group.status == OfflineGroupStatus.cancelled) {
+      await manager.retryFailed(group.userId, group.id);
+    } else {
+      await manager.start(group.userId, group.id);
+    }
+  }
+
+  Future<void> _cancelGroup(OfflineDownloadGroup group) async {
+    await ref
+        .read(offlineBatchDownloadManagerProvider)
+        .cancel(group.userId, group.id);
+  }
+
+  Future<void> _deleteGroup(OfflineDownloadGroup group) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: HomeDesign.surface,
+        title: const Text('Supprimer ces copies locales ?'),
+        content: Text(
+          'Les copies de « ${group.title} » avec le profil '
+          '${offlineProfileShortLabel(group.profile)} seront supprimées de '
+          'cet appareil. La bibliothèque serveur reste intacte.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          TextButton(
+            key: const ValueKey('downloads-group-delete-confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Supprimer',
+              style: TextStyle(color: Color(0xFFE57373)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ref
+        .read(offlineBatchDownloadManagerProvider)
+        .removeGroupCopies(group.userId, group.id);
+  }
+
+  Future<void> _showStorageSettings() async {
+    final store = ref.read(offlineDownloadPreferencesStoreProvider);
+    var preferences = await store.load();
+    if (!mounted) return;
+    final saved = await showDialog<OfflineDownloadPreferences>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: HomeDesign.surface,
+          title: const Text('Téléchargements hors ligne'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Wi‑Fi uniquement'),
+                subtitle: const Text(
+                  'En partage de connexion ou 4G/5G, la file attendra.',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                value:
+                    preferences.networkPolicy == OfflineNetworkPolicy.wifiOnly,
+                onChanged: (wifiOnly) => setDialogState(() {
+                  preferences = preferences.copyWith(
+                    networkPolicy: wifiOnly
+                        ? OfflineNetworkPolicy.wifiOnly
+                        : OfflineNetworkPolicy.wifiAndCellular,
+                  );
+                }),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<int>(
+                initialValue: preferences.maxStorageBytes,
+                decoration: const InputDecoration(labelText: 'Limite du cache'),
+                items: const [
+                  DropdownMenuItem(
+                    value: 2 * 1024 * 1024 * 1024,
+                    child: Text('2 Go'),
+                  ),
+                  DropdownMenuItem(
+                    value: 5 * 1024 * 1024 * 1024,
+                    child: Text('5 Go'),
+                  ),
+                  DropdownMenuItem(
+                    value: 10 * 1024 * 1024 * 1024,
+                    child: Text('10 Go'),
+                  ),
+                  DropdownMenuItem(
+                    value: 20 * 1024 * 1024 * 1024,
+                    child: Text('20 Go'),
+                  ),
+                  DropdownMenuItem(value: 0, child: Text('Sans limite')),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  setDialogState(() {
+                    preferences = preferences.copyWith(maxStorageBytes: value);
+                  });
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Annuler'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, preferences),
+              child: const Text('Enregistrer'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == null) return;
+    await store.save(saved);
+    final userId = ref.read(offlineUserIdProvider);
+    if (userId != null) {
+      await ref.read(offlineBatchDownloadManagerProvider).resumeForUser(userId);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _confirmLruCleanup(OfflineIndex index) async {
+    final candidates = index.entries.where((entry) => entry.available).toList()
+      ..sort((a, b) {
+        final left =
+            a.record.lastAccessedAt ??
+            a.record.updatedAt ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final right =
+            b.record.lastAccessedAt ??
+            b.record.updatedAt ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        return left.compareTo(right);
+      });
+    if (candidates.isEmpty) return;
+    const target = 1024 * 1024 * 1024;
+    var selectedBytes = 0;
+    final selected = <OfflineIndexEntry>[];
+    for (final candidate in candidates) {
+      selected.add(candidate);
+      selectedBytes += candidate.record.sizeBytes ?? 0;
+      if (selectedBytes >= target) break;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: HomeDesign.surface,
+        title: const Text('Libérer de l’espace ?'),
+        content: Text(
+          '${selected.length} anciennes copies locales '
+          '(${formatOfflineSize(selectedBytes, 'exact')}) seront supprimées. '
+          'Aucun fichier du serveur ne sera modifié.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Libérer',
+              style: TextStyle(color: Color(0xFFE57373)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final downloader = ref.read(offlineTrackDownloaderProvider);
+    for (final entry in selected) {
+      await downloader.removeLocal(
+        entry.record.userId,
+        entry.record.trackId,
+        entry.record.profile,
+      );
+    }
+    final userId = ref.read(offlineUserIdProvider);
+    if (userId != null) {
+      await ref
+          .read(offlineBatchDownloadManagerProvider)
+          .reconcileForUser(userId);
+    }
+    ref.invalidate(offlineIndexProvider);
   }
 
   void _scheduleArtworkSync(OfflineIndex index) {
@@ -282,6 +534,9 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
     await ref
         .read(offlineTrackDownloaderProvider)
         .removeLocal(record.userId, record.trackId, record.profile);
+    await ref
+        .read(offlineBatchDownloadManagerProvider)
+        .reconcileForUser(record.userId);
     ref.invalidate(offlineIndexProvider);
   }
 
@@ -293,14 +548,22 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({required this.index});
+class _Header extends ConsumerWidget {
+  const _Header({
+    required this.index,
+    required this.onSettings,
+    required this.onCleanup,
+  });
 
   final OfflineIndex index;
+  final VoidCallback onSettings;
+  final VoidCallback? onCleanup;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final count = index.availableCount;
+    final storage = ref.watch(offlineStoragePlatformProvider);
+    final preferences = ref.watch(offlineDownloadPreferencesStoreProvider);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
       child: Row(
@@ -330,10 +593,184 @@ class _Header extends StatelessWidget {
                   key: const ValueKey('downloads-header-size'),
                   style: const TextStyle(color: Colors.white54, fontSize: 12.5),
                 ),
+                FutureBuilder<(int?, OfflineDownloadPreferences)>(
+                  future: (() async =>
+                      (await storage.freeBytes(), await preferences.load()))(),
+                  builder: (context, snapshot) {
+                    final data = snapshot.data;
+                    if (data == null) return const SizedBox.shrink();
+                    final free = data.$1;
+                    final limit = data.$2.maxStorageBytes;
+                    return Text(
+                      [
+                        if (free != null)
+                          '${formatOfflineSize(free, 'exact')} libres',
+                        limit <= 0
+                            ? 'cache sans limite'
+                            : 'limite ${formatOfflineSize(limit, 'exact')}',
+                      ].join(' · '),
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11.5,
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
+          IconButton(
+            tooltip: 'Libérer de l’espace',
+            onPressed: onCleanup,
+            icon: const Icon(Icons.cleaning_services_outlined),
+          ),
+          IconButton(
+            key: const ValueKey('downloads-storage-settings'),
+            tooltip: 'Réseau et stockage',
+            onPressed: onSettings,
+            icon: const Icon(Icons.tune_rounded),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _DownloadGroupCard extends StatelessWidget {
+  const _DownloadGroupCard({
+    required this.group,
+    required this.liveProgress,
+    required this.onPause,
+    required this.onResume,
+    required this.onCancel,
+    required this.onDelete,
+  });
+
+  final OfflineDownloadGroup group;
+  final OfflineBatchLiveProgress? liveProgress;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final VoidCallback onCancel;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final running = group.status == OfflineGroupStatus.running;
+    final resumable =
+        group.status == OfflineGroupStatus.paused ||
+        group.status == OfflineGroupStatus.waitingNetwork ||
+        group.status == OfflineGroupStatus.partial ||
+        group.status == OfflineGroupStatus.queued ||
+        group.status == OfflineGroupStatus.cancelled;
+    final status = switch (group.status) {
+      OfflineGroupStatus.queued => 'En attente',
+      OfflineGroupStatus.waitingNetwork => 'En attente du réseau autorisé',
+      OfflineGroupStatus.running =>
+        liveProgress == null
+            ? 'Préparation'
+            : 'Piste ${liveProgress!.trackId} · téléchargement',
+      OfflineGroupStatus.paused => 'En pause',
+      OfflineGroupStatus.completed => 'Terminé',
+      OfflineGroupStatus.partial =>
+        group.failedItems > 0
+            ? '${group.failedItems} échec${group.failedItems > 1 ? 's' : ''}'
+            : 'Copies manquantes',
+      OfflineGroupStatus.cancelled => 'Annulé',
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Material(
+        color: HomeDesign.surface,
+        borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 6, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    group.type == OfflineGroupType.album
+                        ? Icons.album_rounded
+                        : Icons.queue_music_rounded,
+                    color: HomeDesign.accent,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          group.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          '${offlineProfileShortLabel(group.profile)} · '
+                          '${group.completedItems}/${group.totalItems} · $status',
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (running)
+                    IconButton(
+                      tooltip: 'Mettre en pause',
+                      onPressed: onPause,
+                      icon: const Icon(Icons.pause_rounded),
+                    ),
+                  if (resumable)
+                    IconButton(
+                      tooltip: 'Reprendre',
+                      onPressed: onResume,
+                      icon: const Icon(Icons.play_arrow_rounded),
+                    ),
+                  if (running || group.status == OfflineGroupStatus.queued)
+                    IconButton(
+                      tooltip: 'Annuler',
+                      onPressed: onCancel,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  IconButton(
+                    key: ValueKey('downloads-group-delete-${group.id}'),
+                    tooltip: 'Supprimer les copies locales',
+                    onPressed: running ? null : onDelete,
+                    icon: const Icon(Icons.delete_outline_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              LinearProgressIndicator(
+                value: liveProgress?.progress.ratio == null
+                    ? group.ratio
+                    : ((group.completedItems + liveProgress!.progress.ratio!) /
+                              group.totalItems)
+                          .clamp(0.0, 1.0),
+                color: HomeDesign.accent,
+                backgroundColor: Colors.white12,
+                minHeight: 4,
+              ),
+              if (group.errorMessage != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    group.errorMessage!,
+                    style: const TextStyle(
+                      color: Color(0xFFE57373),
+                      fontSize: 11.5,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -1,0 +1,86 @@
+# Build output
+build/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+flacidal
+server
+tidal-to-spotify
+
+# Temp files
+diff.odt
+diff.txt
+
+# Frontend
+frontend/dist/
+frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+
+# Root-level test/dev clutter
+node_modules/
+test-results/
+playwright-report/
+.playwright-mcp/
+*.incomplete
+*.mp3
+*.flac
+
+# Go
+*.test
+*.out
+go.work
+go.work.sum
+
+# Wails
+wails.json.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Config (user-specific)
+# ~/.flacidal/ is the config directory, not tracked
+
+# Logs
+*.log
+
+# Test coverage
+coverage.out
+coverage.html
+
+
+
+
+# AI session tracking (internal context files, not for repo)
+docs/plans/
+docs/superpowers/
+task_plan.md
+task_plan_phase*.md
+findings.md
+findings_phase*.md
+progress.md
+progress_phase*.md
+
+# Git worktrees
+.worktrees/
+
+# Superpowers brainstorm
+.superpowers/
+
+# flacidal-core is a sibling repo at ../FLACidal-Core, linked via go.work (gitignored)
+# go.mod uses published version for CI; go.work activates local source for dev

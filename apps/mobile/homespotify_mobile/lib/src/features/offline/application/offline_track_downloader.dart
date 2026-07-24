@@ -12,9 +12,14 @@ import '../domain/offline_models.dart';
 
 /// Erreur de téléchargement présentable. `canRetry` guide l'UI.
 class OfflineDownloadException implements Exception {
-  OfflineDownloadException(this.message, {this.canRetry = true});
+  OfflineDownloadException(
+    this.message, {
+    this.canRetry = true,
+    this.waitingForNetwork = false,
+  });
   final String message;
   final bool canRetry;
+  final bool waitingForNetwork;
   @override
   String toString() => message;
 }
@@ -74,6 +79,24 @@ class OfflineTrackDownloader {
     final relativePath = '${track.id}-${profile.wire}$extension';
     final finalFile = File('${dir.path}/$relativePath');
     final partFile = File('${finalFile.path}.part');
+    final existing = await _store.find(userId, track.id, profile);
+    if (existing != null &&
+        existing.status == OfflineDownloadStatus.ready &&
+        existing.sourceSha256 == target.sourceSha256 &&
+        existing.expectedSha256 == target.expectedSha256 &&
+        existing.relativePath == relativePath &&
+        finalFile.existsSync() &&
+        (existing.sizeBytes == null ||
+            finalFile.lengthSync() == existing.sizeBytes)) {
+      report(
+        OfflineDownloadProgress(
+          status: OfflineDownloadStatus.ready,
+          receivedBytes: existing.sizeBytes ?? finalFile.lengthSync(),
+          totalBytes: existing.sizeBytes,
+        ),
+      );
+      return existing;
+    }
 
     var record = OfflineTrackRecord(
       userId: userId,
@@ -97,7 +120,7 @@ class OfflineTrackDownloader {
     // Reprise : le `.part` n'est réutilisé que si l'IDENTITÉ n'a pas changé
     // (même hash source et même hash attendu). Sinon repart de zéro.
     try {
-      final previous = await _store.find(userId, track.id, profile);
+      final previous = existing;
       var fromByte = 0;
       if (previous != null &&
           previous.sourceSha256 == target.sourceSha256 &&
@@ -170,7 +193,10 @@ class OfflineTrackDownloader {
         'Téléchargement interrompu : ${error.type.name}.',
         keepPart: true,
       );
-      throw OfflineDownloadException('Téléchargement interrompu. Réessaie.');
+      throw OfflineDownloadException(
+        'Téléchargement interrompu. Réessaie.',
+        waitingForNetwork: true,
+      );
     } on OfflineDownloadException catch (error) {
       await _fail(record, partFile, error.message, keepPart: error.canRetry);
       rethrow;
@@ -185,6 +211,27 @@ class OfflineTrackDownloader {
         'Impossible d’écrire la musique sur cet appareil. Vérifie l’espace disponible.',
       );
     }
+  }
+
+  /// Vérifie la présence physique avant de considérer une copie comme déjà
+  /// satisfaite dans un groupe. Le manifeste seul n'est jamais suffisant.
+  Future<bool> isLocalReady(
+    int userId,
+    int trackId,
+    OfflineProfile profile,
+    String sourceSha256,
+  ) async {
+    final record = await _store.find(userId, trackId, profile);
+    if (record == null ||
+        record.status != OfflineDownloadStatus.ready ||
+        record.sourceSha256 != sourceSha256 ||
+        record.relativePath == null) {
+      return false;
+    }
+    final dir = await _userDir(userId);
+    final file = File('${dir.path}/${record.relativePath}');
+    if (!file.existsSync()) return false;
+    return record.sizeBytes == null || file.lengthSync() == record.sizeBytes;
   }
 
   /// Supprime la copie locale (fichier + manifeste). Jamais le serveur.

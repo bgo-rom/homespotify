@@ -10,6 +10,9 @@ class PersistedQueueItem {
     required this.id,
     required this.streamUri,
     required this.title,
+    this.networkStreamUri,
+    this.localFallbackUri,
+    this.localFallbackMimeType,
     this.userId,
     this.artist,
     this.album,
@@ -31,6 +34,9 @@ class PersistedQueueItem {
   final String id;
   final int? userId;
   final Uri streamUri;
+  final Uri? networkStreamUri;
+  final Uri? localFallbackUri;
+  final String? localFallbackMimeType;
   final String title;
   final String? artist;
   final String? album;
@@ -52,6 +58,9 @@ class PersistedQueueItem {
     'id': id,
     'userId': userId,
     'streamUri': streamUri.toString(),
+    'networkStreamUri': networkStreamUri?.toString(),
+    'localFallbackUri': localFallbackUri?.toString(),
+    'localFallbackMimeType': localFallbackMimeType,
     'title': title,
     'artist': artist,
     'album': album,
@@ -75,16 +84,19 @@ class PersistedQueueItem {
     final json = Map<String, Object?>.from(raw);
     final id = _nonEmptyString(json['id']);
     final title = _nonEmptyString(json['title']);
-    final streamUri = _networkUri(json['streamUri']);
+    final streamUri = _audioUri(json['streamUri']);
     if (id == null || title == null || streamUri == null) return null;
     return PersistedQueueItem(
       id: id,
       userId: _positiveInt(json['userId']),
       streamUri: streamUri,
+      networkStreamUri: _networkUri(json['networkStreamUri']),
+      localFallbackUri: _fileUri(json['localFallbackUri']),
+      localFallbackMimeType: _optionalString(json['localFallbackMimeType']),
       title: title,
       artist: _optionalString(json['artist']),
       album: _optionalString(json['album']),
-      artUri: _networkUri(json['artUri']),
+      artUri: _audioUri(json['artUri']),
       durationMs: _positiveInt(json['durationMs']),
       mimeType: _optionalString(json['mimeType']),
       extension: _optionalString(json['extension']),
@@ -277,3 +289,13 @@ Uri? _networkUri(Object? raw) {
   if (uri == null || !uri.hasAuthority) return null;
   return uri.scheme == 'https' || uri.scheme == 'http' ? uri : null;
 }
+
+Uri? _fileUri(Object? raw) {
+  final value = _nonEmptyString(raw);
+  if (value == null) return null;
+  final uri = Uri.tryParse(value);
+  if (uri == null || uri.scheme != 'file' || !uri.isAbsolute) return null;
+  return uri.path.isEmpty ? null : uri;
+}
+
+Uri? _audioUri(Object? raw) => _networkUri(raw) ?? _fileUri(raw);

@@ -350,7 +350,7 @@ flutter run --profile --dart-define=HOMESPOTIFY_API_BASE_URL=http://<IP_LAN_DU_P
 - `GET /api/tracks/:id/cover` : pochette HD enrichie ou fallback embarqué.
 - `GET /api/sync/manifest` : manifeste léger avec ETag global.
 
-Le client mobile doit démarrer par le manifeste : si `If-None-Match` retourne `304`, il conserve son état local ; sinon il met à jour SQLite puis réconcilie les fichiers présents sur disque par `track_id` + hash source + profil/version. La sélection audio préfère le WAV/FLAC original quand le serveur est joignable, sauf politique cellulaire explicite, sinon la copie locale vérifiée ; une reconnexion ne remplace jamais la source au milieu d'un morceau.
+Le client mobile doit démarrer par le manifeste : si `If-None-Match` retourne `304`, il conserve son état local ; sinon il met à jour SQLite puis réconcilie les fichiers présents sur disque par `track_id` + hash source + profil/version. La sélection audio préfère le WAV/FLAC original quand le serveur est joignable et conserve simultanément la meilleure copie locale vérifiée. Une vraie erreur réseau reprend le même titre et la même position en local ; une reconnexion ne coupe pas le morceau et remet l'original à la transition suivante.
 
 ### État d'implémentation Phase 1A (2026-07-22, qualification runtime différée)
 
@@ -390,11 +390,54 @@ Range + SHA-256 en flux via `package:crypto` + rename atomique ; gestion
 choix jamais masqué), `offline_download_sheet.dart` (trois choix véraces —
 Opus toujours « compressé (lossy) », tailles « estimée »/exactes distinguées)
 et `offline_source_resolver.dart` (sonde `/health` 2 s ; original en ligne,
-meilleure copie locale vérifiée hors ligne — original > 256 > 128 ; décision
-UNIQUEMENT à la construction de la file, jamais en cours de titre). Entrée UI :
+meilleure copie locale vérifiée hors ligne — original > 256 > 128 ; depuis
+Phase 1C les deux URI restent attachées à l'item de file). Entrée UI :
 « Télécharger » dans le menu contextuel de piste. La réconciliation par
-`GET /api/sync/manifest`, les téléchargements groupés et la purge LRU restent
-Phase 1B.
+`GET /api/sync/manifest` reste un futur mécanisme de synchronisation serveur.
+
+Phase 1B ajoute `offline_batch_download_manager.dart` : les albums et playlists
+réutilisent strictement `OfflineTrackDownloader`, avec une file persistante
+globale à concurrence 1, pause/annulation, reprise au boot/retour réseau et
+relance des seuls items en erreur. `offline_download_groups` et
+`offline_download_group_items` sont partitionnées par compte dans la même base
+SQLite et enregistrées avant le premier transfert. La réconciliation transforme
+un item `running` abandonné en attente, adopte une copie atomiquement publiée
+avant un crash et rétrograde un lot terminé si un fichier a disparu ou si son
+hash source ne correspond plus.
+
+Phase 1C étend `PlayerQueueItem` avec la source réseau canonique, la copie locale
+vérifiée et son MIME. `HomeSpotifyAudioHandler` reconstruit toute la timeline
+Media3 avec `preload: true` au même index/position lors d'une erreur réseau ;
+les fichiers `file://` ne reçoivent jamais de Bearer. Au retour du réseau, le
+titre local courant se termine puis le changement d'index recharge l'original.
+Une erreur de fichier local suit le chemin inverse avant tout saut de piste. Le
+stockage de session accepte HTTP(S) et `file://`, persiste les deux alternatives
+sans header et reste compatible avec les sessions v1.
+
+Le menu du lecteur ouvre `sleep_timer_sheet.dart`. La feuille affiche l'état et
+le temps restant, mais l'autorité est `HomeSpotifyAudioHandler` :
+`SleepTimerState` + timer natif Dart restent actifs tant que le service audio
+vit, même si l'écran est fermé. L'expiration appelle `pause()` et ne vide jamais
+la file. Le mode « fin du titre » est également déclenché si Media3 publie
+directement l'index suivant.
+
+`replay_gain.dart` porte la normalisation facultative. Le contrôleur suit le
+`MediaItem`, demande sans bloquer l’analyse R128 de la piste, met en cache
+uniquement une réponse `READY` bornée et remet toujours le gain à zéro avant le
+titre suivant. Le réglage est désactivé par défaut dans Réglages. Une baisse de
+niveau est appliquée par le handler comme facteur séparé du volume utilisateur ;
+une hausse utilise l’`AndroidLoudnessEnhancer` attaché à l’unique
+`AudioPipeline`. L’absence de réseau réutilise seulement une mesure locale
+validée ; sinon la piste est lue sans normalisation. Aucun fichier audio n’est
+réécrit.
+
+`offline_storage_policy.dart` mémorise la politique Wi-Fi/cellulaire et le
+plafond de cache par appareil. Le canal Android `com.homespotify/storage` expose
+uniquement `StatFs.availableBytes`; le manager vérifie plafond, espace libre et
+réserve de 200 Mo avant un lot. L'écran Téléchargements présente les lots,
+l'espace utilisé/libre, pause/reprise/annulation, réglages et une purge LRU
+confirmée fondée sur `last_accessed_at`. Lire une copie locale met à jour cette
+date. Supprimer ou purger une copie ne touche jamais le serveur.
 
 ## Références Officielles
 

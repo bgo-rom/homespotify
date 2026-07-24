@@ -210,7 +210,7 @@ Avant encodage, l'interface affiche une **estimation** de taille Opus calculée 
 
 Le téléchargement mobile est Range-resumable et n'est marqué disponible qu'après comparaison SHA-256. L'identité et les métadonnées vivent dans le manifeste SQLite ; l'audio et la pochette durable restent des fichiers du sandbox applicatif, partitionnés par compte. Une variante serveur peut être partagée physiquement entre utilisateurs, mais chaque création, manifeste et téléchargement revérifie l'accès à la piste.
 
-La politique de sélection préfère l'original WAV/FLAC lorsque le serveur est réellement joignable, et la copie locale lorsqu'il ne l'est pas. Une reconnexion ne remplace pas la source en plein morceau : le titre courant se termine sans discontinuité et le prochain chargement utilise automatiquement l'original. La politique cellulaire explicite et la reprise d'une copie locale au même index/position après erreur du flux original sont des objectifs Phase 1C, non implémentés en Phase 1A.
+La politique de sélection préfère l'original WAV/FLAC lorsque le serveur est réellement joignable, et la copie locale lorsqu'il ne l'est pas. Une reconnexion ne remplace pas la source en plein morceau : le titre courant se termine sans discontinuité et le prochain chargement utilise automatiquement l'original. Historique Phase 1A : la reprise locale au même index/position n'était pas encore implémentée ; elle l'est désormais par `TD-Offline-Continuity-2026-07-24`.
 
 # TD-Offline-Impl-2026-07-22 — Implémentation Phase 1A (verticale une piste)
 
@@ -221,8 +221,8 @@ Réalisée le 2026-07-22 sous la mention « Implémentation Phase 1A autorisée 
 - **Politique d'accès** : identique à stream/download — piste de SA bibliothèque OU publiée au catalogue ; tombstone (`is_visible=false` partout) → 404 pour tous. La variante physique est mutualisée, l'autorisation revérifiée à chaque route.
 - **Encodeur** : `FfmpegOpusEncoderRunner` (`FFMPEG_PATH`/`FFPROBE_PATH` sinon PATH), libopus VBR `-application audio`, conteneur Ogg, runner injectable dans les tests (jamais de ffmpeg réel en CI). `libopus` prouvé présent dans le FFmpeg 8.1.2 de la machine de dev ; l'environnement de service H24 reste `À vérifier`.
 - **Cache dérivées** : `storage/cache/offline-opus` (`OFFLINE_CACHE_DIR`), concurrence `OFFLINE_ENCODE_CONCURRENCY` bornée 1..4 (défaut 1). `.part` confiné, publication uniquement après ffprobe (conteneur Ogg + codec opus + durée ±max(2 s, 5 %)) puis SHA-256 et rename atomique.
-- **Mobile** : feature `offline/` (API interfaceée, manifeste sqflite `offline_library.db` partitionné par `user_id` sans token, downloader `.part` + reprise Range + SHA-256 (`package:crypto`) + rename atomique, feuille 3 profils avec préférence appareil `shared_preferences`, résolveur de source sonde `/health` 2 s — décision UNIQUEMENT à la construction de la file). Dépendances ajoutées : `crypto` (runtime), `sqflite_common_ffi` (dev, tests du manifeste réel).
-- **Hors périmètre 1A assumé** : bascule mi-lecture sur erreur du flux original (Phase 1C), téléchargements groupés et purge LRU (Phase 1B). Les pochettes hors ligne et l'écran Téléchargements unitaire ont été livrés dans le complément UX 1A.1.
+- **Mobile** : feature `offline/` (API interfaceée, manifeste sqflite `offline_library.db` partitionné par `user_id` sans token, downloader `.part` + reprise Range + SHA-256 (`package:crypto`) + rename atomique, feuille 3 profils avec préférence appareil `shared_preferences`, résolveur de source sonde `/health` 2 s — décision initiale à la construction de la file, étendue en Phase 1C par `TD-Offline-Continuity-2026-07-24`). Dépendances ajoutées : `crypto` (runtime), `sqflite_common_ffi` (dev, tests du manifeste réel).
+- **Hors périmètre 1A historique** : bascule mi-lecture sur erreur du flux original (livrée dans le noyau Phase 1C le 2026-07-24), téléchargements groupés et purge LRU (livrés en Phase 1B). Les pochettes hors ligne et l'écran Téléchargements unitaire ont été livrés dans le complément UX 1A.1.
 - **Durcissement du 2026-07-22** : un `READY` dont le fichier physique a disparu est automatiquement réarmé ; ffprobe doit fournir durée et débit valides ; l'arrêt du serveur annule puis attend les encodages actifs avant fermeture SQLite. Le mobile annule aussi pendant le polling, refuse un cache dont le hash source n'est plus courant, borne réellement la sonde `/health` à 2 s et transforme les erreurs de stockage en échecs explicites.
 
 Statut : temporaire (qualification runtime différée — cf. TD-Gates-2026-07-22).
@@ -238,7 +238,7 @@ Décisions :
 - **Écran Téléchargements** (`/downloads`) : 100 % local pour son affichage (manifeste SQLite), aucun appel API requis pour s'afficher. Lecture locale, reprise/réessai (reconstruit la piste depuis le manifeste, pas depuis `GET /api/tracks`), suppression locale confirmée qui ne touche jamais le serveur, et indicateur de piste active branché sur la même session audio que le reste de l'app.
 - **Bibliothèque hors ligne** : la liste distante et les pistes minimales du manifeste sont fusionnées par `track_id` (métadonnées serveur prioritaires). Une panne de `GET /api/tracks` ne masque donc plus les copies locales et le filtre « Téléchargées » reste fonctionnel.
 - **Pochettes** : cache fichier durable sous `offline/u<userId>/covers/`, nom dérivé uniquement d'identifiants internes, écriture `.part` puis renommage atomique, taille bornée et MIME JPEG/PNG vérifié. L'absence de pochette n'invalide jamais l'audio ; les anciennes copies sont enrichies sobrement au prochain passage en ligne. L'URI `file://` alimente aussi `MediaItem.artUri`.
-- **Lecture locale** : `buildLocalQueue` construit la file depuis le manifeste, URI `file://` sans en-tête `Authorization`, métadonnées du manifeste et pochette locale ; une copie absente ou tronquée est exclue. La décision de source reste prise à la construction de la file (jamais en cours de titre — la bascule mi-lecture reste Phase 1C).
+- **Lecture locale** : `buildLocalQueue` construit la file depuis le manifeste, URI `file://` sans en-tête `Authorization`, métadonnées du manifeste et pochette locale ; une copie absente ou tronquée est exclue. Historique 1A.1 : la source était figée à la construction ; la double source et la reprise mi-lecture sont désormais définies par `TD-Offline-Continuity-2026-07-24`.
 - **Isolation** : manifeste et index partitionnés par `user_id`, fichiers sous `offline/u<userId>/` ; logout invalide l'index (cache immédiatement inaccessible) sans supprimer les fichiers ; retour sur le compte A restaure sa visibilité ; aucun fallback vers un autre `userId`.
 
 Statut : temporaire (qualification runtime différée — cf. TD-Gates-2026-07-22 ; test téléphone Phase 1A.1 obligatoire avant production).
@@ -248,3 +248,111 @@ Statut : temporaire (qualification runtime différée — cf. TD-Gates-2026-07-2
 Le séquencement des phases distingue désormais deux gates. Le **gate de développement** (tests automatisés verts + architecture validée) autorise, sur autorisation explicite du propriétaire, à développer la phase suivante. Le **gate de production** (critères runtime observés sur le vrai environnement — pour Phase 0 : session téléphone de 4 h post-correctif, restauration complète service arrêté, tableau OWNER sain) reste obligatoire avant de déclarer une phase terminée, une fonctionnalité prête pour production, ou tout déploiement officiel. Autorisation du 2026-07-22 : « Implémentation Phase 1A autorisée sous réserve de qualification runtime » ; le test de 4 h est reporté, pas supprimé. Statut : définitive (2026-07-22).
 
 Par la même décision, les passages non sourcés autorisant cookies de contournement, endpoints opaques ou proxy vers URL dynamiques « parce qu'issus du .env » sont retirés de `CLAUDE.md` et de ce fichier (cf. L-078) : un secret externalisé reste soumis aux règles de sécurité et à la légitimité de l'API.
+
+# TD-Offline-Batch-2026-07-24 — Lots album/playlist et budget de stockage (Phase 1B)
+
+Les téléchargements d'album et de playlist sont une orchestration **mobile** des
+contrats unitaires Phase 1A. Aucun endpoint batch n'est ajouté : chaque item
+rejoint la variante single-flight existante, conserve ses garanties Range,
+SHA-256 et publication atomique, et reste autorisé indépendamment. Cette
+composition évite deux implémentations concurrentes du même téléchargement.
+
+Le manifeste SQLite passe en version 2 et ajoute
+`offline_download_groups`/`offline_download_group_items`, toujours partitionnés
+par `user_id` au niveau du groupe et sans secret. Groupe et items sont écrits
+avant le premier octet. Un seul groupe et une seule piste sont transférés à la
+fois sur l'appareil pour limiter CPU, radio et disque ; la concurrence serveur
+reste bornée séparément. Un groupe survit à la mort du processus, attend le
+réseau autorisé, revient en attente si le serveur disparaît au milieu du lot,
+se met en pause faute d'espace et permet de relancer uniquement les items en
+erreur.
+
+La reprise commence par une réconciliation physique : fichier présent, taille
+cohérente et même empreinte source. Elle adopte un fichier publié juste avant un
+crash, remet un item `running` sans fichier en attente, et rétrograde un groupe
+terminé en `partial` après purge ou remplacement de source. Le manifeste seul
+n'est jamais une preuve de disponibilité.
+
+La politique réseau par défaut est Wi-Fi/ethernet uniquement. L'utilisateur
+peut autoriser explicitement le cellulaire et choisir un plafond de 2, 5, 10 ou
+20 Go, ou aucun plafond applicatif. Android expose l'espace libre du sandbox par
+un MethodChannel `StatFs`; une réserve de 200 Mo demeure obligatoire. La purge
+LRU utilise `last_accessed_at`, n'agit qu'après confirmation et supprime
+uniquement fichier + manifeste locaux. Elle ne touche ni la bibliothèque, ni la
+source canonique, ni la variante serveur partagée.
+
+Statut : temporaire, jusqu'à qualification téléphone des reprises, du mode avion
+et des limites de stockage.
+
+# TD-Offline-Continuity-2026-07-24 — Double source et reprise Phase 1C
+
+Une entrée de file audio n'est plus seulement une URI active : elle conserve
+l'URI HTTP(S) canonique et, si elle existe, la meilleure copie `file://`
+vérifiée par le manifeste, la taille et le hash source courant. Le probe
+`/health` choisit la source initiale mais ne détruit jamais l'alternative.
+
+Un signal de connectivité seul ne reconstruit pas le titre en cours. Si le flux
+réseau produit une erreur transitoire, le handler recharge toute la timeline
+Media3 au même index et à la position observée, avec la copie locale et
+`preload: true`. Au retour du réseau, le titre local courant se termine ; le
+premier changement d'index recharge l'original et prépare la suite. Une erreur
+de fichier local suit le chemin inverse avant la politique de saut borné. Ces
+reconstructions sont single-flight, diagnostiquées et annulent toute attente de
+reprise réseau devenue inutile.
+
+Les headers restent mémorisés uniquement en mémoire pour les sources distantes :
+`toAudioSource` force toujours `headers=null` pour `file://`. La session
+persistée accepte désormais HTTP(S) et fichiers locaux absolus, stocke les deux
+URI et le MIME local, mais aucun header ni token. Le schéma JSON reste en version
+1 car les champs sont additifs et les anciennes sessions restent lisibles.
+
+Le gapless n'est jamais promis universellement : HomeSpotify conserve le
+préchargement natif de la file et laisse Media3 enchaîner sans coupure seulement
+si codecs, conteneurs et timelines le permettent. Une reconstruction de secours
+peut produire une très courte remise en tampon ; elle est préférée à un arrêt,
+un saut ou une reprise au début.
+
+Statut : temporaire jusqu'aux tests téléphone réels (coupure serveur au milieu
+d'un titre, position de reprise, écran éteint, retour réseau et fichier local
+supprimé).
+
+Le minuteur Phase 1C vit exclusivement dans `HomeSpotifyAudioHandler` afin de
+rester actif écran éteint et application en arrière-plan. Les durées autorisées
+par l'UI sont 15, 30, 45 et 60 minutes, avec une option « fin du titre ». Son
+expiration met en pause sans vider la file ni perdre la position. Le mode fin de
+titre intercepte à la fois la complétion logique et un changement d'index natif,
+ce qui couvre le watchdog Media3 ; un stop, une purge, un logout ou le
+remplacement complet de la file annule l'intention « fin du titre ». L'état
+n'est pas persisté après mort du processus : une
+ancienne intention de sommeil ne doit jamais interrompre une nouvelle session.
+Les armements, annulations et expirations sont diagnostiqués sans donnée
+personnelle.
+
+## TD-ReplayGain-2026-07-24 — Normalisation mesurée, facultative et non destructive
+
+La normalisation est désactivée par défaut. Lorsqu’elle est activée, l’API
+planifie une analyse complète de la piste avec le filtre FFmpeg `loudnorm` et
+persiste séparément la sonie intégrée EBU R128, le true peak et le gain calculé
+dans `track_loudness_analysis`. La cible est -18 LUFS, avec un plafond
+true-peak de -1 dBFS ; le gain final est le minimum entre l’écart à la cible et
+la marge au plafond, borné à -24/+12 dB. Une mesure absente, silencieuse,
+invalide ou échouée n’autorise aucun gain inventé.
+
+L’analyse est une file de fond à concurrence 1, reprise après redémarrage. Une
+requête authentifiée ne bloque jamais sur le décodage : elle reçoit
+`PENDING|ANALYZING|READY|FAILED`. FFmpeg lit en flux, ne produit aucun fichier
+intermédiaire, est tué au timeout et ne modifie jamais la source. Les mesures
+`READY` sont partagées techniquement, mais l’autorisation d’accès à la piste est
+revérifiée à chaque lecture de l’API.
+
+Le mobile conserve uniquement les mesures `READY` validées pour pouvoir
+appliquer le même gain hors connexion. Le volume choisi par l’utilisateur reste
+une valeur indépendante : un gain négatif devient un facteur linéaire dans le
+handler audio, tandis qu’un gain positif utilise `AndroidLoudnessEnhancer`.
+L’effet Android n’accepte donc jamais une atténuation négative. À chaque
+changement de piste, la remise à zéro est attendue avant l’application de la
+nouvelle mesure afin d’éviter toute course. Aucune valeur n’est dérivée d’un
+tag, d’un nom de fichier ou d’une extension.
+
+Statut : implémenté et testé automatiquement ; validation perceptive sur
+téléphone, Bluetooth et changement de vitesse encore requise avant production.

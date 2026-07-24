@@ -37,7 +37,7 @@ void main() {
   test('une URL non HTTP ou un mélange de comptes est refusé', () {
     final invalidUri = {
       'id': '1',
-      'streamUri': 'file:///secret.flac',
+      'streamUri': 'ftp://example.test/secret.flac',
       'title': 'Secret',
     };
     expect(PersistedQueueItem.fromJson(invalidUri), isNull);
@@ -62,5 +62,26 @@ void main() {
       'updatedAt': '2026-07-21T00:00:00.000Z',
     };
     expect(PersistedPlaybackSession.fromJson(mixedAccount), isNull);
+  });
+
+  test('une double source réseau et locale est restaurée sans secret', () {
+    final item = PersistedQueueItem(
+      id: '7',
+      userId: 9,
+      streamUri: Uri.file(r'C:\offline\u9\7.ogg'),
+      networkStreamUri: Uri.parse('https://music.example/api/tracks/7/stream'),
+      localFallbackUri: Uri.file(r'C:\offline\u9\7.ogg'),
+      localFallbackMimeType: 'audio/ogg',
+      title: 'Titre local',
+    );
+
+    final encoded = jsonEncode(item.toJson());
+    expect(encoded, isNot(contains('Authorization')));
+    expect(encoded, isNot(contains('Bearer')));
+    final decoded = PersistedQueueItem.fromJson(jsonDecode(encoded));
+    expect(decoded?.streamUri.scheme, 'file');
+    expect(decoded?.networkStreamUri?.scheme, 'https');
+    expect(decoded?.localFallbackUri?.scheme, 'file');
+    expect(decoded?.localFallbackMimeType, 'audio/ogg');
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:developer' as developer;
+import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
@@ -59,15 +60,18 @@ class _DefaultPlaybackSettingsRepository implements PlaybackSettingsRepository {
       TrackAudioAnalysis(trackId: trackId, status: 'PENDING');
 }
 
-/// Métadonnées et URL natives d'une entrée de file audio.
+/// Métadonnées et sources autorisées d'une entrée de file audio.
 ///
-/// Aucune donnée audio n'est conservée ici : [streamUri] est l'URL du fichier
-/// original servi par le backend, que just_audio lit progressivement.
+/// Aucune donnée audio n'est conservée ici : [streamUri] est la source active,
+/// tandis que les alternatives réseau/locale permettent une reprise Phase 1C.
 class PlayerQueueItem {
   const PlayerQueueItem({
     required this.id,
     required this.streamUri,
     required this.title,
+    this.networkStreamUri,
+    this.localFallbackUri,
+    this.localFallbackMimeType,
     this.userId,
     this.artist,
     this.album,
@@ -90,6 +94,9 @@ class PlayerQueueItem {
   final String id;
   final int? userId;
   final Uri streamUri;
+  final Uri? networkStreamUri;
+  final Uri? localFallbackUri;
+  final String? localFallbackMimeType;
   final String title;
   final String? artist;
   final String? album;
@@ -108,14 +115,40 @@ class PlayerQueueItem {
   final Map<String, String>? headers;
   final String? artworkIdentity;
 
+  bool get usesLocalSource => streamUri.scheme == 'file';
+
+  Uri? get availableNetworkUri {
+    if (networkStreamUri != null) return networkStreamUri;
+    return streamUri.scheme == 'http' || streamUri.scheme == 'https'
+        ? streamUri
+        : null;
+  }
+
+  Uri? get availableLocalUri =>
+      localFallbackUri ?? (usesLocalSource ? streamUri : null);
+
+  bool get canUseLocalFallback => !usesLocalSource && availableLocalUri != null;
+
+  bool get canUseNetworkFallback =>
+      usesLocalSource && availableNetworkUri != null;
+
+  String? get activeMimeType =>
+      usesLocalSource ? (localFallbackMimeType ?? mimeType) : mimeType;
+
+  String? get activeExtension =>
+      usesLocalSource && localFallbackMimeType == 'audio/ogg'
+      ? '.ogg'
+      : extension;
+
   String get format {
-    final normalizedExtension = extension?.replaceFirst('.', '').trim();
+    final normalizedExtension = activeExtension?.replaceFirst('.', '').trim();
     if (normalizedExtension != null && normalizedExtension.isNotEmpty) {
       return normalizedExtension.toUpperCase();
     }
-    return switch (mimeType) {
+    return switch (activeMimeType) {
       'audio/wav' => 'WAV',
       'audio/flac' => 'FLAC',
+      'audio/ogg' => 'OGG',
       _ => 'inconnu',
     };
   }
@@ -135,8 +168,9 @@ class PlayerQueueItem {
       duration: resolvedDuration ?? duration,
       extras: <String, dynamic>{
         'streamUri': streamUri.toString(),
-        if (mimeType != null) 'mimeType': mimeType,
-        if (extension != null) 'extension': extension,
+        'source': usesLocalSource ? 'local' : 'network',
+        if (activeMimeType != null) 'mimeType': activeMimeType,
+        if (activeExtension != null) 'extension': activeExtension,
         'format': format,
         if (sampleRate != null && sampleRate! > 0) 'sampleRate': sampleRate,
         if (bitDepth != null && bitDepth! > 0) 'bitDepth': bitDepth,
@@ -154,7 +188,8 @@ class PlayerQueueItem {
   AudioSource toAudioSource({Map<String, String>? requestHeaders}) {
     return AudioSource.uri(
       streamUri,
-      headers: requestHeaders ?? headers,
+      // Un Bearer ne doit jamais sortir vers une URI file://.
+      headers: usesLocalSource ? null : (requestHeaders ?? headers),
       tag: toMediaItem(includeArtwork: false),
     );
   }
@@ -164,6 +199,9 @@ class PlayerQueueItem {
       id: id,
       userId: userId,
       streamUri: streamUri,
+      networkStreamUri: networkStreamUri,
+      localFallbackUri: localFallbackUri,
+      localFallbackMimeType: localFallbackMimeType,
       title: title,
       artist: artist,
       album: album,
@@ -180,6 +218,46 @@ class PlayerQueueItem {
       artistKey: artistKey,
       albumKey: albumKey,
       headers: value == null || value.isEmpty ? null : value,
+      artworkIdentity: artworkIdentity,
+    );
+  }
+
+  PlayerQueueItem useLocalFallback() {
+    final localUri = availableLocalUri;
+    if (localUri == null) return this;
+    return _copyWithSource(localUri);
+  }
+
+  PlayerQueueItem useNetworkSource() {
+    final networkUri = availableNetworkUri;
+    if (networkUri == null) return this;
+    return _copyWithSource(networkUri);
+  }
+
+  PlayerQueueItem _copyWithSource(Uri value) {
+    return PlayerQueueItem(
+      id: id,
+      userId: userId,
+      streamUri: value,
+      networkStreamUri: availableNetworkUri,
+      localFallbackUri: availableLocalUri,
+      localFallbackMimeType: localFallbackMimeType,
+      title: title,
+      artist: artist,
+      album: album,
+      artUri: artUri,
+      duration: duration,
+      mimeType: mimeType,
+      extension: extension,
+      sampleRate: sampleRate,
+      bitDepth: bitDepth,
+      channels: channels,
+      bitrate: bitrate,
+      fileSize: fileSize,
+      origin: origin,
+      artistKey: artistKey,
+      albumKey: albumKey,
+      headers: headers,
       artworkIdentity: artworkIdentity,
     );
   }
@@ -240,6 +318,30 @@ class PlayerPositionData {
   );
 }
 
+enum SleepTimerMode { off, timed, endOfTrack }
+
+class SleepTimerState {
+  const SleepTimerState({required this.mode, this.endsAt, this.armedTrackId});
+
+  const SleepTimerState.off()
+    : mode = SleepTimerMode.off,
+      endsAt = null,
+      armedTrackId = null;
+
+  final SleepTimerMode mode;
+  final DateTime? endsAt;
+  final String? armedTrackId;
+
+  bool get isActive => mode != SleepTimerMode.off;
+
+  Duration remainingAt(DateTime now) {
+    final end = endsAt;
+    if (mode != SleepTimerMode.timed || end == null) return Duration.zero;
+    final remaining = end.difference(now);
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+}
+
 /// combineLatest à 3 sources, sans dépendre de rxdart (non déclaré en direct).
 /// Émet dès que les trois sources ont produit au moins une valeur.
 Stream<R> _combineLatest3<A, B, C, R>(
@@ -294,6 +396,27 @@ Stream<R> _combineLatest3<A, B, C, R>(
   return controller.stream;
 }
 
+/// Construit le lecteur natif avec l'unique configuration de buffering de
+/// production. [audioPipeline] permet d'attacher un effet de sortie facultatif
+/// sans dupliquer ces seuils dans `main.dart`.
+AudioPlayer createHomeSpotifyAudioPlayer({AudioPipeline? audioPipeline}) {
+  return AudioPlayer(
+    // Flux authentifiés : Android doit envoyer le header Bearer directement au
+    // serveur HTTPS. Le proxy localhost exige du cleartext, bloqué en release.
+    useProxyForRequestHeaders: false,
+    audioPipeline: audioPipeline,
+    audioLoadConfiguration: const AudioLoadConfiguration(
+      androidLoadControl: AndroidLoadControl(
+        minBufferDuration: Duration(seconds: 15),
+        maxBufferDuration: Duration(seconds: 60),
+        bufferForPlaybackDuration: Duration(milliseconds: 750),
+        bufferForPlaybackAfterRebufferDuration: Duration(milliseconds: 1500),
+        prioritizeTimeOverSizeThresholds: true,
+      ),
+    ),
+  );
+}
+
 class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   HomeSpotifyAudioHandler({
     AudioPlayer? player,
@@ -310,33 +433,16 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     Duration recoveryCooldown = const Duration(seconds: 30),
     Duration endOfTrackGracePeriod = const Duration(seconds: 2),
     Duration playbackGuardInterval = const Duration(seconds: 1),
+    Timer Function(Duration duration, void Function() callback)?
+    sleepTimerFactory,
   }) : _clock = clock ?? DateTime.now,
        _authorizationRecoveryCooldown = recoveryCooldown,
        _endOfTrackGracePeriod = endOfTrackGracePeriod,
        _playbackGuardInterval = playbackGuardInterval,
-       _player =
-           player ??
-           AudioPlayer(
-             // Flux authentifiés : Android doit envoyer le header Bearer
-             // directement au serveur HTTPS. Le proxy localhost de just_audio
-             // exige du cleartext, bloqué en release (voir manifest debug).
-             useProxyForRequestHeaders: false,
-             audioLoadConfiguration: const AudioLoadConfiguration(
-               androidLoadControl: AndroidLoadControl(
-                 // L'ancien seuil imposait 2,5 s de media avant le premier
-                 // son, meme sur un reseau rapide. Le prechargement natif de
-                 // la piste suivante reste actif, avec un tampon de securite
-                 // borne pour les FLAC/WAV distants.
-                 minBufferDuration: Duration(seconds: 15),
-                 maxBufferDuration: Duration(seconds: 60),
-                 bufferForPlaybackDuration: Duration(milliseconds: 750),
-                 bufferForPlaybackAfterRebufferDuration: Duration(
-                   milliseconds: 1500,
-                 ),
-                 prioritizeTimeOverSizeThresholds: true,
-               ),
-             ),
-           ),
+       _sleepTimerFactory =
+           sleepTimerFactory ??
+           ((duration, callback) => Timer(duration, callback)),
+       _player = player ?? createHomeSpotifyAudioPlayer(),
        _playbackSettingsRepository =
            playbackSettingsRepository ??
            const _DefaultPlaybackSettingsRepository(),
@@ -379,6 +485,10 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   final Map<int, double> _trackSpeedCache = <int, double>{};
   final Map<int, double> _sessionOnlyTrackSpeeds = <int, double>{};
   final Set<int> _speedWritesInFlight = <int>{};
+  final StreamController<double> _userVolumeController =
+      StreamController<double>.broadcast();
+  double _userVolume = 1;
+  double? _replayGainAttenuationDb;
 
   final Future<void>? _providedAudioSessionSetup;
   final Future<bool> Function()? _authorizationRefresh;
@@ -399,6 +509,8 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   final Duration _authorizationRecoveryCooldown;
   final Duration _endOfTrackGracePeriod;
   final Duration _playbackGuardInterval;
+  final Timer Function(Duration duration, void Function() callback)
+  _sleepTimerFactory;
 
   int _loadRequest = 0;
   DateTime? _lastAuthorizationRecoveryAttemptAt;
@@ -452,6 +564,11 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   Duration _networkRecoveryPosition = Duration.zero;
   Timer? _networkRecoveryTimer;
   Future<bool>? _networkRecoveryInFlight;
+  Future<bool>? _sourceFallbackInFlight;
+  final ValueNotifier<SleepTimerState> _sleepTimerState =
+      ValueNotifier<SleepTimerState>(const SleepTimerState.off());
+  Timer? _sleepTimer;
+  int? _sleepTimerTrackIndex;
 
   static const Duration _positionPersistenceInterval = Duration(seconds: 5);
   static const Duration _networkRecoveryMaximumDelay = Duration(seconds: 30);
@@ -480,6 +597,9 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     }
     if (initialIndex < 0 || initialIndex >= items.length) {
       throw RangeError.index(initialIndex, items, 'initialIndex');
+    }
+    if (_sleepTimerState.value.mode == SleepTimerMode.endOfTrack) {
+      cancelSleepTimer(reason: 'queue-replaced');
     }
 
     _cancelEndOfTrackWatchdog();
@@ -623,6 +743,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       if (request != _loadRequest) return;
       if (_isTransientNetworkFailure(error)) {
         _playbackRequested = true;
+        if (await _tryLocalSourceFallback(
+          request: request,
+          reason: 'initial-load-failure',
+        )) {
+          return;
+        }
         _enterNetworkRecovery(request, error, stackTrace: stackTrace);
         return;
       }
@@ -671,6 +797,11 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
     final items = persisted.queue
         .map((item) => _queueItemFromPersisted(item, userId))
+        .map(
+          (item) => _networkAvailable
+              ? item.useNetworkSource()
+              : item.useLocalFallback(),
+        )
         .toList(growable: false);
     final request = ++_loadRequest;
     _restoringPlaybackSession = true;
@@ -770,6 +901,9 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     id: item.id,
     userId: item.userId ?? userId,
     streamUri: item.streamUri,
+    networkStreamUri: item.networkStreamUri,
+    localFallbackUri: item.localFallbackUri,
+    localFallbackMimeType: item.localFallbackMimeType,
     title: item.title,
     artist: item.artist,
     album: item.album,
@@ -796,6 +930,9 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         id: item.id,
         userId: item.userId,
         streamUri: item.streamUri,
+        networkStreamUri: item.availableNetworkUri,
+        localFallbackUri: item.availableLocalUri,
+        localFallbackMimeType: item.localFallbackMimeType,
         title: item.title,
         artist: item.artist,
         album: item.album,
@@ -899,9 +1036,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   /// Volume interne du lecteur (0.0–1.0), sans boost applicatif.
-  double get volume => _player.volume;
+  double get volume => _userVolume;
 
-  Stream<double> get volumeStream => _player.volumeStream;
+  Stream<double> get volumeStream async* {
+    yield _userVolume;
+    yield* _userVolumeController.stream;
+  }
 
   double get currentTrackSpeed => _player.speed;
 
@@ -947,8 +1087,24 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     'timeStretchLatencyMs': currentTimeStretchLatencyMs,
   };
 
-  Future<void> setVolume(double volume) {
-    return _player.setVolume(volume.clamp(0.0, 1.0).toDouble());
+  Future<void> setVolume(double volume) async {
+    _userVolume = volume.clamp(0.0, 1.0).toDouble();
+    _userVolumeController.add(_userVolume);
+    await _applyEffectiveVolume();
+  }
+
+  /// Atténuation ReplayGain séparée du volume utilisateur. Les valeurs
+  /// positives sont refusées ici : elles appartiennent à l'effet Android
+  /// LoudnessEnhancer, tandis que ce chemin multiplie uniquement le volume.
+  Future<void> setReplayGainAttenuationDb(double? gainDb) async {
+    _replayGainAttenuationDb = gainDb?.clamp(-24.0, 0.0).toDouble();
+    await _applyEffectiveVolume();
+  }
+
+  Future<void> _applyEffectiveVolume() {
+    final gainDb = _replayGainAttenuationDb ?? 0;
+    final factor = math.pow(10, gainDb / 20).toDouble();
+    return _player.setVolume((_userVolume * factor).clamp(0.0, 1.0).toDouble());
   }
 
   Future<void> setTrackSpeed(int trackId, double ratio) async {
@@ -1474,8 +1630,92 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  ValueListenable<SleepTimerState> get sleepTimerListenable => _sleepTimerState;
+
+  SleepTimerState get sleepTimerState => _sleepTimerState.value;
+
+  void armSleepTimer(Duration duration) {
+    if (duration < const Duration(seconds: 1) ||
+        duration > const Duration(hours: 24)) {
+      throw ArgumentError.value(
+        duration,
+        'duration',
+        'Le minuteur doit être compris entre 1 seconde et 24 heures.',
+      );
+    }
+    _sleepTimer?.cancel();
+    _sleepTimerTrackIndex = null;
+    final endsAt = _clock().add(duration);
+    _sleepTimerState.value = SleepTimerState(
+      mode: SleepTimerMode.timed,
+      endsAt: endsAt,
+    );
+    _sleepTimer = _sleepTimerFactory(
+      duration,
+      () => unawaited(_expireSleepTimer(reason: 'duration-elapsed')),
+    );
+    AudioDiagnostics.instance.log('AUDIO_SLEEP_TIMER_ARMED', {
+      ..._queueDiagnosticFields(),
+      'mode': SleepTimerMode.timed.name,
+      'durationMs': duration.inMilliseconds,
+      'endsAt': endsAt.toUtc().toIso8601String(),
+    });
+  }
+
+  void armSleepTimerAtEndOfTrack() {
+    final index = _activeQueueIndex;
+    final item = _currentItem;
+    if (index == null || item == null) {
+      throw StateError('Aucune piste en cours pour armer le minuteur.');
+    }
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepTimerTrackIndex = index;
+    _sleepTimerState.value = SleepTimerState(
+      mode: SleepTimerMode.endOfTrack,
+      armedTrackId: item.id,
+    );
+    AudioDiagnostics.instance.log('AUDIO_SLEEP_TIMER_ARMED', {
+      ..._queueDiagnosticFields(currentIndex: index),
+      'mode': SleepTimerMode.endOfTrack.name,
+      'trackId': item.id,
+    });
+  }
+
+  void cancelSleepTimer({String reason = 'user'}) {
+    if (!_sleepTimerState.value.isActive) return;
+    final previous = _sleepTimerState.value;
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepTimerTrackIndex = null;
+    _sleepTimerState.value = const SleepTimerState.off();
+    AudioDiagnostics.instance.log('AUDIO_SLEEP_TIMER_CANCELLED', {
+      ..._queueDiagnosticFields(),
+      'reason': reason,
+      'mode': previous.mode.name,
+    });
+  }
+
+  Future<void> _expireSleepTimer({required String reason}) async {
+    if (!_sleepTimerState.value.isActive) return;
+    final previous = _sleepTimerState.value;
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepTimerTrackIndex = null;
+    _sleepTimerState.value = const SleepTimerState.off();
+    AudioDiagnostics.instance.log('AUDIO_SLEEP_TIMER_EXPIRED', {
+      ..._queueDiagnosticFields(),
+      'reason': reason,
+      'mode': previous.mode.name,
+    });
+    if (_playbackRequested || _player.playing) {
+      await pause();
+    }
+  }
+
   @override
   Future<void> stop() async {
+    cancelSleepTimer(reason: 'playback-stopped');
     _playbackRequested = false;
     _networkRecoveryTimer?.cancel();
     _cancelEndOfTrackWatchdog();
@@ -1497,6 +1737,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   /// jamais réafficher un état périmé.
   Future<void> clearQueueAndStop({bool deletePersisted = true}) async {
     final persistedUserId = _playbackSessionUserId;
+    cancelSleepTimer(reason: 'queue-cleared');
     _playbackPersistenceTimer?.cancel();
     _networkRecoveryTimer?.cancel();
     _cancelEndOfTrackWatchdog();
@@ -1566,6 +1807,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
 
   Future<void> dispose() async {
     AudioDiagnostics.instance.log('AUDIO_HANDLER_DISPOSED', diagnosticState);
+    _sleepTimer?.cancel();
     _playbackPersistenceTimer?.cancel();
     _networkRecoveryTimer?.cancel();
     _cancelEndOfTrackWatchdog();
@@ -1579,6 +1821,8 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     await _positionPersistenceSubscription.cancel();
     await _timeStretchEngine.dispose();
     await _player.dispose();
+    await _userVolumeController.close();
+    _sleepTimerState.dispose();
     AudioDiagnostics.instance.log('PLAYER_DISPOSED');
     await AudioDiagnostics.instance.flush();
   }
@@ -1619,9 +1863,9 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   Future<void> _configurePlayback() async {
-    // Le gain applicatif reste à l'unité. Aucun DSP, ReplayGain ou
-    // normalisation n'est appliqué.
-    await _player.setVolume(1.0);
+    // Le volume utilisateur démarre à l'unité. Le ReplayGain facultatif est un
+    // effet de sortie séparé : il ne réécrit ni le flux ni cette préférence.
+    await _applyEffectiveVolume();
     await (_providedAudioSessionSetup ?? _configureAudioSession());
   }
 
@@ -1707,6 +1951,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         'shuffleMode': _player.shuffleModeEnabled,
         'processingState': _player.processingState.name,
         'playing': _player.playing,
+        'source': _currentItem?.usesLocalSource == true ? 'local' : 'network',
       };
 
   Future<void> _refreshAuthorizationBeforeLoadIfNeeded(int request) async {
@@ -2009,6 +2254,164 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  Future<bool> _tryLocalSourceFallback({
+    required int request,
+    required String reason,
+  }) {
+    final item = _currentItem;
+    if (request != _loadRequest || item == null || !item.canUseLocalFallback) {
+      return Future<bool>.value(false);
+    }
+    return _switchQueueSource(
+      request: request,
+      targetIndex: _activeQueueIndex ?? 0,
+      targetPosition: _player.position,
+      preferLocal: true,
+      reason: reason,
+    );
+  }
+
+  Future<bool> _tryNetworkSourceFallback({
+    required int request,
+    required String reason,
+  }) {
+    final item = _currentItem;
+    if (request != _loadRequest ||
+        item == null ||
+        !item.canUseNetworkFallback ||
+        !_networkAvailable) {
+      return Future<bool>.value(false);
+    }
+    return _switchQueueSource(
+      request: request,
+      targetIndex: _activeQueueIndex ?? 0,
+      targetPosition: _player.position,
+      preferLocal: false,
+      reason: reason,
+    );
+  }
+
+  Future<bool> _switchQueueSource({
+    required int request,
+    required int targetIndex,
+    required Duration targetPosition,
+    required bool preferLocal,
+    required String reason,
+  }) {
+    final active = _sourceFallbackInFlight;
+    if (active != null) return active;
+    final operation =
+        _performQueueSourceSwitch(
+          request: request,
+          targetIndex: targetIndex,
+          targetPosition: targetPosition,
+          preferLocal: preferLocal,
+          reason: reason,
+        ).whenComplete(() {
+          _sourceFallbackInFlight = null;
+        });
+    _sourceFallbackInFlight = operation;
+    return operation;
+  }
+
+  Future<bool> _performQueueSourceSwitch({
+    required int request,
+    required int targetIndex,
+    required Duration targetPosition,
+    required bool preferLocal,
+    required String reason,
+  }) async {
+    if (_queueItems.isEmpty || request != _loadRequest) return false;
+    final index = targetIndex.clamp(0, _queueItems.length - 1);
+    final current = _queueItems[index];
+    final replacement = preferLocal
+        ? current.useLocalFallback()
+        : current.useNetworkSource();
+    if (identical(replacement, current) ||
+        replacement.streamUri == current.streamUri) {
+      return false;
+    }
+    final resumePlayback = _playbackRequested || _player.playing;
+    final eventPrefix = preferLocal
+        ? 'AUDIO_LOCAL_FALLBACK'
+        : 'AUDIO_NETWORK_SOURCE_RESTORE';
+    final previousItems = List<PlayerQueueItem>.of(_queueItems);
+    AudioDiagnostics.instance.log('${eventPrefix}_STARTED', {
+      ..._queueDiagnosticFields(currentIndex: index),
+      'reason': reason,
+      'positionMs': targetPosition.inMilliseconds,
+      'from': current.usesLocalSource ? 'local' : 'network',
+      'to': preferLocal ? 'local' : 'network',
+    });
+    try {
+      await _player.pause();
+      if (request != _loadRequest) return false;
+      final switchedItems = <PlayerQueueItem>[
+        for (var itemIndex = 0; itemIndex < _queueItems.length; itemIndex++)
+          if (preferLocal)
+            _queueItems[itemIndex].availableLocalUri == null
+                ? _queueItems[itemIndex]
+                : _queueItems[itemIndex].useLocalFallback()
+          else
+            _queueItems[itemIndex].availableNetworkUri == null
+                ? _queueItems[itemIndex]
+                : _queueItems[itemIndex].useNetworkSource(),
+      ];
+      _queueItems
+        ..clear()
+        ..addAll(switchedItems);
+      _applyCurrentAuthorizationHeaders();
+      await _player.setAudioSources(
+        _createAudioSources(
+          reason: preferLocal ? 'local-fallback' : 'network-source-restore',
+        ),
+        initialIndex: index,
+        initialPosition: targetPosition,
+        preload: true,
+      );
+      if (request != _loadRequest) return false;
+      _sourceReady = true;
+      _currentQueueIndex = _player.currentIndex ?? index;
+      _publishedMediaKey = null;
+      _networkRecoveryPending = false;
+      _networkRecoveryTimer?.cancel();
+      _publishQueue();
+      _publishCurrentMediaItem(includeArtwork: true);
+      _broadcastPlaybackState(_player.playbackEvent);
+      _scheduleCurrentTrackSpeed();
+      _schedulePlaybackPersistence(immediate: true);
+      if (resumePlayback) {
+        await _startPlayback();
+      }
+      AudioDiagnostics.instance.log('${eventPrefix}_COMPLETED', {
+        ..._queueDiagnosticFields(),
+        'reason': reason,
+        'positionMs': targetPosition.inMilliseconds,
+      });
+      return true;
+    } catch (error, stackTrace) {
+      if (request == _loadRequest) {
+        _queueItems
+          ..clear()
+          ..addAll(previousItems);
+        _applyCurrentAuthorizationHeaders();
+        _publishQueue();
+      }
+      _sourceReady = false;
+      AudioDiagnostics.instance.log('${eventPrefix}_FAILED', {
+        ..._queueDiagnosticFields(currentIndex: index),
+        'reason': reason,
+        'error': error,
+      });
+      _debugAudioLog(
+        'bascule de source impossible index=$index reason=$reason',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    }
+  }
+
   static bool _isTransientNetworkFailure(Object error) {
     final status = _extractHttpStatus(error);
     if (status == 408 || status == 425 || status == 429) return true;
@@ -2079,11 +2482,34 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       return;
     }
     if (_isTransientNetworkFailure(error)) {
-      _enterNetworkRecovery(request, error, stackTrace: stackTrace);
+      unawaited(
+        _tryLocalSourceFallback(
+          request: request,
+          reason: 'network-source-error',
+        ).then((recovered) {
+          if (!recovered && request == _loadRequest) {
+            _enterNetworkRecovery(request, error, stackTrace: stackTrace);
+          }
+        }),
+      );
       return;
     }
     final item = _currentItem;
     if (item == null) return;
+    if (item.canUseNetworkFallback && _networkAvailable) {
+      unawaited(
+        _tryNetworkSourceFallback(
+          request: request,
+          reason: 'local-source-error',
+        ).then((recovered) {
+          if (!recovered && request == _loadRequest) {
+            if (_tryScheduleErrorSkip(request, item, error)) return;
+            _recordPlaybackFailure(item, error, stackTrace);
+          }
+        }),
+      );
+      return;
+    }
     final fingerprint =
         '${_activeQueueIndex ?? -1}|'
         '${_extractHttpStatus(error) ?? -1}|${error.runtimeType}|$error';
@@ -2395,6 +2821,27 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         'previousIndex': previousIndex,
         'trackId': _queueItems[index].id,
       });
+      final sleepAtPreviousTrack =
+          _sleepTimerState.value.mode == SleepTimerMode.endOfTrack &&
+          _sleepTimerTrackIndex == previousIndex;
+      if (sleepAtPreviousTrack) {
+        unawaited(_expireSleepTimer(reason: 'native-track-transition'));
+      } else if (!_networkAvailable && _queueItems[index].canUseLocalFallback) {
+        unawaited(
+          _tryLocalSourceFallback(
+            request: _loadRequest,
+            reason: 'next-track-without-network',
+          ),
+        );
+      } else if (_networkAvailable &&
+          _queueItems[index].canUseNetworkFallback) {
+        unawaited(
+          _tryNetworkSourceFallback(
+            request: _loadRequest,
+            reason: 'next-track-after-network-return',
+          ),
+        );
+      }
     }
     if (_authorizationHasRotatedSinceSourceCreation()) {
       unawaited(handleAuthorizationChanged(reason: 'track-change'));
@@ -2840,8 +3287,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         previous != null &&
         duration != null &&
         duration > Duration.zero &&
-        previous.inMilliseconds >=
-            (duration.inMilliseconds * 0.9).round() &&
+        previous.inMilliseconds >= (duration.inMilliseconds * 0.9).round() &&
         position <= _endOfTrackWrapDestinationTolerance;
     if (!wrapped ||
         !_sourceReady ||
@@ -2906,6 +3352,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   void _handleCompletedState({required String reason}) {
     _cancelEndOfTrackWatchdog();
     final current = _activeQueueIndex;
+    if (_sleepTimerState.value.mode == SleepTimerMode.endOfTrack &&
+        current != null &&
+        _sleepTimerTrackIndex == current) {
+      unawaited(_expireSleepTimer(reason: 'end-of-track:$reason'));
+      return;
+    }
     final target = _repeatMode == AudioServiceRepeatMode.one
         ? current
         : _relativeQueueIndex(1);

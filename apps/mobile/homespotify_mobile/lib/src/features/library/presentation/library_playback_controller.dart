@@ -14,17 +14,20 @@ PlayerQueueItem playerQueueItemForTrack({
   required int userId,
   required Map<String, String> authorizationHeaders,
   String origin = 'Bibliothèque',
-  // Copie locale VÉRIFIÉE à utiliser à la place du flux réseau (serveur
-  // injoignable). Décidée AVANT le chargement de la file — jamais en cours de
-  // titre (TD-Offline-Opus).
+  // Copie locale VÉRIFIÉE attachée au flux canonique. Elle devient la source
+  // initiale si le serveur est injoignable et reste disponible comme repli 1C.
   ResolvedLocalSource? localSource,
+  bool preferLocalSource = false,
 }) => PlayerQueueItem(
   id: '${track.id}',
   userId: userId,
-  streamUri: localSource?.uri ?? api.streamUri(track.id),
-  headers: localSource != null || authorizationHeaders.isEmpty
-      ? null
-      : authorizationHeaders,
+  streamUri: preferLocalSource && localSource != null
+      ? localSource.uri
+      : api.streamUri(track.id),
+  networkStreamUri: api.streamUri(track.id),
+  localFallbackUri: localSource?.uri,
+  localFallbackMimeType: localSource?.mimeType,
+  headers: authorizationHeaders.isEmpty ? null : authorizationHeaders,
   artworkIdentity: track.etag,
   title: track.title,
   artist: track.artist,
@@ -73,17 +76,19 @@ class HomeSpotifyLibraryPlaybackController
     required List<Track> tracks,
     required int initialIndex,
   }) async {
-    // Sélection de source AVANT de charger la file : serveur joignable →
-    // original réseau pour toutes les pistes ; injoignable → copies locales
-    // vérifiées. Aucune bascule ensuite pendant un titre.
+    // La file conserve les deux sources. Le probe choisit seulement la source
+    // initiale ; le handler gère ensuite les transitions et erreurs réelles.
     var localSources = const <int, ResolvedLocalSource>{};
+    var serverReachable = true;
     final resolver = _sourceResolver;
     if (resolver != null) {
       try {
-        localSources = await resolver.resolveLocalSources(
+        final resolution = await resolver.resolvePlaybackSources(
           userId: _userId,
           tracks: tracks,
         );
+        localSources = resolution.localSources;
+        serverReachable = resolution.serverReachable;
       } catch (_) {
         // Résolution locale en échec : on garde le comportement réseau existant.
         localSources = const {};
@@ -98,6 +103,7 @@ class HomeSpotifyLibraryPlaybackController
               userId: _userId,
               authorizationHeaders: _authorizationHeaders,
               localSource: localSources[track.id],
+              preferLocalSource: !serverReachable,
             ),
           )
           .toList(growable: false),

@@ -1,0 +1,149 @@
+{
+  "gid": "8a37517ba69f47c3aeeee164eecee933",
+  "name": "Never Gonna Give You Up",
+  "album": {
+    "gid": "c4b0cd8295e24936b36fbfb7c7e9cf90",
+    "name": "Whenever You Need Somebody",
+    "artist": [
+      {
+        "gid": "08c41b6999304e0595e03913a1566059",
+        "name": "Rick Astley"
+      }
+    ],
+    "type": "ALBUM",
+    "label": "BMG Rights Management (UK) Ltd",
+    "date": {
+      "year": 1987,
+      "month": 11,
+      "day": 12
+    },
+    "cover_group": {
+      "image": [
+        {
+          "file_id": "ab67616d00001e02baf89eb11ec7c657805d2da0",
+          "size": "DEFAULT",
+          "width": 300,
+          "height": 300
+        },
+        {
+          "file_id": "ab67616d00004851baf89eb11ec7c657805d2da0",
+          "size": "SMALL",
+          "width": 64,
+          "height": 64
+        },
+        {
+          "file_id": "ab67616d0000b273baf89eb11ec7c657805d2da0",
+          "size": "LARGE",
+          "width": 640,
+          "height": 640
+        }
+      ]
+    },
+    "licensor": {
+      "uuid": "8337a6aeaca744a7b32050f0c66e138f"
+    },
+    "prerelease_config": {
+      "earliest_reveal_date": {
+        "year": 2023,
+        "month": 11,
+        "day": 13,
+        "hour": 11
+      },
+      "earliest_coverart_reveal_date": {
+        "year": 2023,
+        "month": 11,
+        "day": 13,
+        "hour": 11
+      }
+    }
+  },
+  "artist": [
+    {
+      "gid": "08c41b6999304e0595e03913a1566059",
+      "name": "Rick Astley"
+    }
+  ],
+  "number": 1,
+  "disc_number": 1,
+  "duration": 213573,
+  "popularity": 9,
+  "external_id": [
+    {
+      "type": "isrc",
+      "id": "GBARL9300135"
+    }
+  ],
+  "restriction": [
+    {
+      "countries_allowed": "",
+      "catalogue_str": [
+        "free",
+        "premium",
+        "shuffle"
+      ]
+    }
+  ],
+  "alternative": [
+    {
+      "gid": "9eee45bc2afa4414a78eadd8bdde5b2e",
+      "restriction": [
+        {
+          "countries_forbidden": "",
+          "catalogue_str": [
+            "free",
+            "premium",
+            "shuffle"
+          ]
+        }
+      ],
+      "original_audio": {
+        "uuid": "ad3a7457424544d1a3f2c3e25334f81d",
+        "format": "AUDIO_FORMAT_STEREO"
+      }
+    }
+  ],
+  "earliest_live_timestamp": 1617184800,
+  "licensor": {
+    "uuid": "8337a6aeaca744a7b32050f0c66e138f"
+  },
+  "language_of_performance": [
+    "en"
+  ],
+  "original_audio": {
+    "uuid": "1583333d44b7462f8f41d5d2c7e63309",
+    "format": "AUDIO_FORMAT_STEREO"
+  },
+  "original_title": "Never Gonna Give You Up",
+  "artist_with_role": [
+    {
+      "artist_gid": "08c41b6999304e0595e03913a1566059",
+      "artist_name": "Rick Astley",
+      "role": "ARTIST_ROLE_MAIN_ARTIST"
+    }
+  ],
+  "canonical_uri": "spotify:track:4PTG3Z6ehGkBFwjybzWkR8",
+  "prerelease_config": {
+    "earliest_reveal_date": {
+      "year": 2023,
+      "month": 11,
+      "day": 13,
+      "hour": 11
+    }
+  },
+  "content_authorization_attributes": "0a2c180352280a2438333337613661652d616361372d343461372d623332302d3530663063363665313338661003",
+  "audio_formats": [
+    {
+      "original_audio": {
+        "uuid": "1583333d44b7462f8f41d5d2c7e63309",
+        "format": "AUDIO_FORMAT_STEREO"
+      }
+    }
+  ],
+  "media_type": "AUDIO",
+  "implementation_details": {
+    "catalog_insertion_date": {
+      "seconds": 1615834665,
+      "nanos": 456000000
+    }
+  }
+}

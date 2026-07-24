@@ -32,12 +32,23 @@ void main() {
   PlayerException sourceError([String cause = 'FileDataSourceException']) =>
       PlayerException(0, 'Source error <- $cause: unreadable', null);
 
-  List<PlayerQueueItem> makeQueue(int count, {int? userId}) => [
+  List<PlayerQueueItem> makeQueue(
+    int count, {
+    int? userId,
+    bool withLocalFallback = false,
+  }) => [
     for (var index = 0; index < count; index++)
       PlayerQueueItem(
         id: '${index + 1}',
         userId: userId,
         streamUri: Uri.parse('https://homespotify.test/${index + 1}/stream'),
+        networkStreamUri: Uri.parse(
+          'https://homespotify.test/${index + 1}/stream',
+        ),
+        localFallbackUri: withLocalFallback
+            ? Uri.file('C:/offline/${index + 1}.ogg')
+            : null,
+        localFallbackMimeType: withLocalFallback ? 'audio/ogg' : null,
         title: 'Piste ${index + 1}',
         headers: const {'Authorization': 'Bearer initial'},
       ),
@@ -61,6 +72,7 @@ void main() {
     PlaybackSessionStore? playbackSessionStore,
     Duration endOfTrackGracePeriod = const Duration(seconds: 2),
     Duration playbackGuardInterval = const Duration(seconds: 1),
+    Timer Function(Duration, void Function())? sleepTimerFactory,
   }) {
     final player = _LongSessionFakePlayer();
     final clock = _FakeClock();
@@ -84,6 +96,7 @@ void main() {
       playbackSessionStore: playbackSessionStore,
       endOfTrackGracePeriod: endOfTrackGracePeriod,
       playbackGuardInterval: playbackGuardInterval,
+      sleepTimerFactory: sleepTimerFactory,
     );
     addTearDown(handler.dispose);
     return (
@@ -94,6 +107,23 @@ void main() {
       rotateAuthorization: () => tokenGeneration += 1,
     );
   }
+
+  test(
+    'l’atténuation ReplayGain reste séparée du volume utilisateur',
+    () async {
+      final rig = makeRig();
+
+      await rig.handler.setVolume(0.8);
+      await rig.handler.setReplayGainAttenuationDb(-6);
+
+      expect(rig.handler.volume, 0.8);
+      expect(rig.player.volume, closeTo(0.40095, 0.001));
+
+      await rig.handler.setReplayGainAttenuationDb(null);
+      expect(rig.handler.volume, 0.8);
+      expect(rig.player.volume, closeTo(0.8, 0.001));
+    },
+  );
 
   test('20 pistes s’enchaînent sans arrêt ni erreur (index 0 → 19)', () async {
     final rig = makeRig();
@@ -152,6 +182,70 @@ void main() {
     expect(rig.player.setAudioSourcesCalls, 1);
   });
 
+  test('le minuteur temporisé met en pause et conserve la file', () async {
+    _ManualTimer? timer;
+    final rig = makeRig(
+      sleepTimerFactory: (duration, callback) {
+        timer = _ManualTimer(callback);
+        return timer!;
+      },
+    );
+    await rig.handler.setQueueAndPlay(items: makeQueue(4), initialIndex: 1);
+    await settleUntil(() => rig.player.playCalls == 1);
+
+    rig.handler.armSleepTimer(const Duration(minutes: 30));
+    expect(rig.handler.sleepTimerState.mode, SleepTimerMode.timed);
+    expect(rig.handler.sleepTimerState.isActive, isTrue);
+    timer!.fire();
+    await settleUntil(() => !rig.player.playing);
+
+    expect(rig.handler.sleepTimerState.mode, SleepTimerMode.off);
+    expect(rig.handler.queue.value.length, 4);
+    expect(rig.player.currentIndex, 1);
+    expect(
+      AudioDiagnostics.instance.snapshot().join('\n'),
+      contains('AUDIO_SLEEP_TIMER_EXPIRED'),
+    );
+  });
+
+  test(
+    'fin du titre empêche le démarrage durable de la piste suivante',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(3), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      rig.handler.armSleepTimerAtEndOfTrack();
+      expect(rig.handler.sleepTimerState.mode, SleepTimerMode.endOfTrack);
+      rig.player.advanceToIndex(1);
+      await settleUntil(() => !rig.player.playing);
+
+      expect(rig.handler.sleepTimerState.mode, SleepTimerMode.off);
+      expect(rig.player.currentIndex, 1);
+      expect(rig.player.playCalls, 1);
+    },
+  );
+
+  test('annuler le minuteur neutralise son callback', () async {
+    _ManualTimer? timer;
+    final rig = makeRig(
+      sleepTimerFactory: (duration, callback) {
+        timer = _ManualTimer(callback);
+        return timer!;
+      },
+    );
+    await rig.handler.setQueueAndPlay(items: makeQueue(2), initialIndex: 0);
+    await settleUntil(() => rig.player.playCalls == 1);
+
+    rig.handler.armSleepTimer(const Duration(minutes: 15));
+    rig.handler.cancelSleepTimer();
+    timer!.fire();
+    await settleUntil(() => rig.player.playing);
+
+    expect(rig.handler.sleepTimerState.mode, SleepTimerMode.off);
+    expect(rig.player.playing, isTrue);
+  });
+
   test('une durée inconnue ne bloque pas l’enchaînement', () async {
     final rig = makeRig();
     rig.player.loadedDuration = null;
@@ -202,6 +296,39 @@ void main() {
     ]);
   });
 
+  test('la restauration choisit la source adaptée au réseau courant', () async {
+    final store = _MemoryPlaybackSessionStore();
+    final initial = makeRig(playbackSessionStore: store);
+    final networkUri = Uri.parse('https://homespotify.test/1/stream');
+    final localUri = Uri.file('C:/offline/1.ogg');
+    await initial.handler.setQueueAndPlay(
+      items: [
+        PlayerQueueItem(
+          id: '1',
+          userId: 7,
+          streamUri: localUri,
+          networkStreamUri: networkUri,
+          localFallbackUri: localUri,
+          localFallbackMimeType: 'audio/ogg',
+          title: 'Piste',
+        ),
+      ],
+      initialIndex: 0,
+    );
+    await initial.handler.pause();
+    await settleUntil(() => store.sessions[7] != null);
+
+    final online = makeRig(playbackSessionStore: store);
+    expect(await online.handler.restorePlaybackSessionForUser(7), isTrue);
+    expect(online.player.lastUri, networkUri);
+
+    final offline = makeRig(playbackSessionStore: store);
+    await offline.handler.handleConnectivityChanged(false);
+    expect(await offline.handler.restorePlaybackSessionForUser(7), isTrue);
+    expect(offline.player.lastUri, localUri);
+    expect(offline.player.lastHeaders, isNull);
+  });
+
   test(
     'une coupure réseau reprend la même piste et la même position',
     () async {
@@ -231,6 +358,93 @@ void main() {
       );
     },
   );
+
+  test(
+    'une coupure réseau bascule sur la copie locale au même index et position',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(
+        items: makeQueue(6, withLocalFallback: true),
+        initialIndex: 3,
+      );
+      await settleUntil(() => rig.player.playCalls == 1);
+      await rig.handler.seek(const Duration(seconds: 42));
+
+      await rig.handler.handleConnectivityChanged(false);
+      rig.player.emitError(sourceError('SocketException: network unreachable'));
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+      await settleUntil(() => rig.player.playCalls >= 2);
+
+      expect(rig.player.lastInitialIndex, 3);
+      expect(rig.player.lastInitialPosition, const Duration(seconds: 42));
+      expect(rig.player.lastUri?.scheme, 'file');
+      expect(rig.player.lastHeaders, isNull);
+      expect(rig.handler.mediaItem.value?.extras?['source'], 'local');
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_LOCAL_FALLBACK_COMPLETED'),
+      );
+    },
+  );
+
+  test(
+    'après retour réseau le titre local finit puis le suivant reprend en ligne',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(
+        items: makeQueue(4, withLocalFallback: true),
+        initialIndex: 0,
+      );
+      await settleUntil(() => rig.player.playCalls == 1);
+      await rig.handler.handleConnectivityChanged(false);
+      rig.player.emitError(sourceError('SocketException: network unreachable'));
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+
+      await rig.handler.handleConnectivityChanged(true);
+      expect(rig.player.setAudioSourcesCalls, 2);
+      expect(rig.player.lastUri?.scheme, 'file');
+
+      rig.player.advanceToIndex(1);
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 3);
+      await settleUntil(() => rig.player.playCalls >= 3);
+      expect(rig.player.lastInitialIndex, 1);
+      expect(rig.player.lastUri?.scheme, 'https');
+      expect(
+        AudioDiagnostics.instance.snapshot().join('\n'),
+        contains('AUDIO_NETWORK_SOURCE_RESTORE_COMPLETED'),
+      );
+    },
+  );
+
+  test('une copie locale illisible retombe sur le réseau sans saut', () async {
+    final networkUri = Uri.parse('https://homespotify.test/1/stream');
+    final rig = makeRig();
+    await rig.handler.setQueueAndPlay(
+      items: [
+        PlayerQueueItem(
+          id: '1',
+          streamUri: Uri.file('C:/offline/1.ogg'),
+          networkStreamUri: networkUri,
+          localFallbackUri: Uri.file('C:/offline/1.ogg'),
+          localFallbackMimeType: 'audio/ogg',
+          title: 'Piste locale',
+          headers: const {'Authorization': 'Bearer initial'},
+        ),
+      ],
+      initialIndex: 0,
+    );
+    await settleUntil(() => rig.player.playCalls == 1);
+
+    rig.player.emitError(sourceError());
+    await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+    await settleUntil(() => rig.player.playCalls >= 2);
+    expect(rig.player.lastInitialIndex, 0);
+    expect(rig.player.lastUri, networkUri);
+    expect(
+      rig.handler.playbackState.value.processingState,
+      isNot(AudioProcessingState.error),
+    );
+  });
 
   test('une piste 404 au milieu est sautée et la file continue', () async {
     final rig = makeRig();
@@ -686,6 +900,30 @@ void main() {
   );
 }
 
+class _ManualTimer implements Timer {
+  _ManualTimer(this._callback);
+
+  final void Function() _callback;
+  bool _active = true;
+
+  @override
+  bool get isActive => _active;
+
+  @override
+  int get tick => _active ? 0 : 1;
+
+  @override
+  void cancel() {
+    _active = false;
+  }
+
+  void fire() {
+    if (!_active) return;
+    _active = false;
+    _callback();
+  }
+}
+
 class _FakeClock {
   DateTime _now = DateTime(2026, 7, 16, 12);
 
@@ -715,6 +953,7 @@ class _LongSessionFakePlayer implements AudioPlayer {
   int playCalls = 0;
   int? lastInitialIndex;
   Duration? lastInitialPosition;
+  Uri? lastUri;
   Map<String, String>? lastHeaders;
   Duration? loadedDuration = const Duration(minutes: 3);
   bool suppressReadyOnPlay = false;
@@ -869,6 +1108,7 @@ class _LongSessionFakePlayer implements AudioPlayer {
           final first =
               _sequence[lastInitialIndex!.clamp(0, _sequence.length - 1)];
           if (first is UriAudioSource) {
+            lastUri = first.uri;
             lastHeaders = first.headers?.cast<String, String>();
           }
         }

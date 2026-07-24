@@ -8,6 +8,7 @@ import type { AppConfig } from '../config.js';
 import { createDb, type DbHandle } from './client.js';
 import {
   ensureDiscoverV3Columns,
+  ensureLoudnessAnalysisSchema,
   ensureOfflineVariantsSchema,
   ensurePlaybackSettingsAndAnalysisSchema,
   runMigrations,
@@ -284,6 +285,46 @@ describe('schéma des variantes hors ligne (Phase 1A)', () => {
       .get();
     expect(table).toBeDefined();
     expect(repaired.db.select().from(tracks).all()).toHaveLength(1);
+    repaired.sqlite.close();
+  });
+});
+
+describe('schéma de mesure R128 (Phase 1C)', () => {
+  it('crée la table sur base neuve et reste idempotent', () => {
+    const handle = createDb(dbFile);
+    runMigrations(handle, silentLog);
+    const table = handle.sqlite
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name = 'track_loudness_analysis'`,
+      )
+      .get();
+    expect(table).toBeDefined();
+    expect(ensureLoudnessAnalysisSchema(handle, silentLog)).toEqual([]);
+    handle.sqlite.close();
+  });
+
+  it('répare une base legacy dont le journal futur masque la migration', () => {
+    const seed = createDb(dbFile);
+    runMigrations(seed, silentLog);
+    seed.sqlite.exec('DROP TABLE `track_loudness_analysis`');
+    seed.sqlite
+      .prepare(
+        'INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)',
+      )
+      .run('legacy-future-loudness', 1785900000000);
+    seed.sqlite.close();
+
+    const repaired = createDb(dbFile);
+    runMigrations(repaired, silentLog);
+    expect(
+      repaired.sqlite
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name = 'track_loudness_analysis'`,
+        )
+        .get(),
+    ).toBeDefined();
     repaired.sqlite.close();
   });
 });

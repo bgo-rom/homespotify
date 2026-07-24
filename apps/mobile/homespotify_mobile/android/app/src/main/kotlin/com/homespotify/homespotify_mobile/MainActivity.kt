@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.StatFs
 import com.ryanheise.audioservice.AudioServiceFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -77,6 +78,22 @@ class MainActivity : AudioServiceFragmentActivity() {
                     "buildNumber" to versionCode.toString(),
                 ),
             )
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.homespotify/storage",
+        ).setMethodCallHandler { call, result ->
+            if (call.method != "freeBytes") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+            runCatching {
+                StatFs(filesDir.absolutePath).availableBytes
+            }.onSuccess {
+                result.success(it)
+            }.onFailure {
+                result.error("storage_unavailable", "Espace disque illisible.", null)
+            }
         }
     }
 

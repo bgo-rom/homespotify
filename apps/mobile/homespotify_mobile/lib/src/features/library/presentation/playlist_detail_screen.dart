@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../player/presentation/widgets/mini_player.dart';
+import '../../offline/domain/offline_models.dart';
+import '../../offline/presentation/offline_group_download_sheet.dart';
 import '../data/library_api.dart';
 import '../domain/local_playlist.dart';
 import '../domain/track.dart';
@@ -56,6 +58,19 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [
+          if (playlist != null && tracks.isNotEmpty)
+            IconButton(
+              key: const ValueKey('playlist-download-all'),
+              tooltip: 'Télécharger la playlist',
+              onPressed: () => showOfflineGroupDownloadSheet(
+                context,
+                type: OfflineGroupType.playlist,
+                sourceId: playlist.id,
+                title: playlist.name,
+                tracks: tracks,
+              ),
+              icon: const Icon(Icons.download_for_offline_outlined),
+            ),
           if (playlist != null)
             IconButton(
               tooltip: 'Renommer la playlist',

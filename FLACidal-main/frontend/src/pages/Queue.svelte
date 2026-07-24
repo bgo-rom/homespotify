@@ -1,0 +1,821 @@
+<script lang="ts">
+  import { queueItems, queueStats, queueStore, downloadFolder, queuePaused } from '../stores/queue';
+  import { QueueSingleDownload, RetryAllFailed, CancelDownload, PauseDownloads, ResumeDownloads, ExportFailedDownloads } from '../lib/api';
+  import { formatNumber } from '../lib/format';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
+
+  let showClearAllConfirm = $state(false);
+
+  let queue = $derived($queueStore);
+  let folder = $derived($downloadFolder);
+
+  function getStatusClass(status: string) {
+    switch (status) {
+      case 'pending':
+      case 'queued':
+        return 'status-pending';
+      case 'downloading':
+        return 'status-downloading';
+      case 'completed':
+        return 'status-completed';
+      case 'error':
+        return 'status-error';
+      case 'cancelled':
+        return 'status-cancelled';
+      default:
+        return '';
+    }
+  }
+
+  async function retryAllFailedDownloads() {
+    try {
+      const count = await RetryAllFailed();
+      console.log(`Retrying ${count} failed downloads`);
+    } catch (error) {
+      console.error('Retry all failed error:', error);
+    }
+  }
+
+  async function exportFailed(format: 'txt' | 'csv') {
+    try {
+      await ExportFailedDownloads(format);
+    } catch (error) {
+      console.error('Export failed downloads error:', error);
+    }
+  }
+
+  async function cancelDownload(trackId: number) {
+    try {
+      await CancelDownload(trackId);
+      queueStore.updateItem(trackId, { status: 'cancelled' });
+    } catch (error) {
+      console.error('Cancel error:', error);
+    }
+  }
+
+  async function retryFailed(trackId: number) {
+    const item = queue.get(trackId);
+    if (!item || !folder) return;
+
+    try {
+      queueStore.updateItem(trackId, { status: 'pending', error: undefined });
+      await QueueSingleDownload(trackId, folder, item.title, item.artist);
+    } catch (error) {
+      console.error('Retry error:', error);
+    }
+  }
+
+  function removeItem(trackId: number) {
+    queueStore.removeItem(trackId);
+  }
+
+  async function togglePause() {
+    try {
+      if ($queuePaused) {
+        await ResumeDownloads();
+        queuePaused.set(false);
+      } else {
+        await PauseDownloads();
+        queuePaused.set(true);
+      }
+    } catch (error) {
+      console.error('Toggle pause error:', error);
+    }
+  }
+
+  let statusFilter = $state('all');
+  let sortMode = $state<'default' | 'status'>('default');
+
+  const filters: { value: string; label: string }[] = [
+    { value: 'all',        label: 'All' },
+    { value: 'queued',     label: 'Queued' },
+    { value: 'downloading',label: 'Downloading' },
+    { value: 'completed',  label: 'Completed' },
+    { value: 'error',      label: 'Failed' },
+    { value: 'cancelled',  label: 'Cancelled' },
+  ];
+
+  const statusPriority: Record<string, number> = {
+    error: 0,
+    downloading: 1,
+    pending: 2,
+    queued: 2,
+    cancelled: 3,
+    completed: 4,
+  };
+
+  const filteredItems = $derived.by(() => {
+    const filtered = statusFilter === 'all'
+      ? $queueItems
+      : $queueItems.filter(item =>
+          statusFilter === 'queued'
+            ? item.status === 'pending' || item.status === 'queued'
+            : item.status === statusFilter
+        );
+    if (sortMode === 'status') {
+      return [...filtered].sort((a, b) =>
+        (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
+      );
+    }
+    return filtered;
+  });
+
+  async function cleanAndRetry() {
+    queueStore.clearCompleted();
+    await retryAllFailedDownloads();
+  }
+</script>
+
+<div class="queue-page">
+  <div class="queue-header">
+    <div class="header-left">
+      <h1>Download Queue</h1>
+      <div class="stats">
+        {#if $queuePaused}
+          <span class="stat paused-indicator">
+            <span class="stat-value paused">PAUSED</span>
+            <span class="stat-label">Status</span>
+          </span>
+        {/if}
+        <span class="stat">
+          <span class="stat-value">{formatNumber($queueStats.total)}</span>
+          <span class="stat-label">Total</span>
+        </span>
+        <span class="stat">
+          <span class="stat-value downloading">{formatNumber($queueStats.downloading)}</span>
+          <span class="stat-label">Downloading</span>
+        </span>
+        <span class="stat">
+          <span class="stat-value pending">{formatNumber($queueStats.pending)}</span>
+          <span class="stat-label">Pending</span>
+        </span>
+        <span class="stat">
+          <span class="stat-value completed">{formatNumber($queueStats.completed)}</span>
+          <span class="stat-label">Completed</span>
+        </span>
+        <span class="stat">
+          <span class="stat-value failed">{formatNumber($queueStats.failed)}</span>
+          <span class="stat-label">Failed</span>
+        </span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button
+        class="action-btn pause-btn"
+        class:paused={$queuePaused}
+        onclick={togglePause}
+        disabled={$queueStats.pending === 0 && $queueStats.downloading === 0 && !$queuePaused}
+      >
+        {#if $queuePaused}
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Resume
+        {:else}
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="6" y="4" width="4" height="16"/>
+            <rect x="14" y="4" width="4" height="16"/>
+          </svg>
+          Pause
+        {/if}
+      </button>
+      <button
+        class="action-btn clean-retry"
+        onclick={cleanAndRetry}
+        disabled={$queueStats.completed === 0 && $queueStats.failed === 0}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 2v6h-6"/>
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        Clean &amp; Retry
+      </button>
+      <button class="action-btn retry-all" onclick={retryAllFailedDownloads} disabled={$queueStats.failed === 0}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 2v6h-6"/>
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+          <path d="M3 22v-6h6"/>
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+        </svg>
+        Retry Failed ({$queueStats.failed})
+      </button>
+      <button class="action-btn" onclick={() => exportFailed('txt')} disabled={$queueStats.failed === 0}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Export Failed
+      </button>
+      <button class="action-btn" onclick={queueStore.clearCompleted} disabled={$queueStats.completed === 0}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        Clear Completed
+      </button>
+      <button class="action-btn" onclick={queueStore.clearFailed} disabled={$queueStats.failed === 0}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="15" y1="9" x2="9" y2="15"/>
+          <line x1="9" y1="9" x2="15" y2="15"/>
+        </svg>
+        Clear Failed
+      </button>
+      <button class="action-btn danger" onclick={() => showClearAllConfirm = true} disabled={$queueStats.total === 0}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 6h18"/>
+          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+        </svg>
+        Clear All
+      </button>
+    </div>
+  </div>
+
+  {#if $queueItems.length > 0}
+    <div class="filter-bar">
+      <div class="filter-pills">
+        {#each filters as f}
+          <button
+            class="filter-btn"
+            class:active={statusFilter === f.value}
+            onclick={() => statusFilter = f.value}
+          >{f.label}</button>
+        {/each}
+      </div>
+      <select
+        class="sort-select"
+        bind:value={sortMode}
+      >
+        <option value="default">Default order</option>
+        <option value="status">Sort by status</option>
+      </select>
+    </div>
+  {/if}
+
+  {#if $queueItems.length === 0}
+    <div class="empty-state">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      <p>No downloads in queue</p>
+      <span class="hint">Add tracks from Home or Search to start downloading</span>
+    </div>
+  {:else if filteredItems.length === 0}
+    <div class="empty-state">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>No {filters.find(f => f.value === statusFilter)?.label.toLowerCase()} items</p>
+      <span class="hint">Try a different filter</span>
+    </div>
+  {:else}
+    <div class="queue-list">
+      {#each filteredItems as item (item.trackId)}
+        <div class="queue-item {getStatusClass(item.status)}">
+          <div class="item-status">
+            {#if item.status === 'downloading'}
+              <div class="spinner"></div>
+            {:else if item.status === 'completed'}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            {:else if item.status === 'error'}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="15" y1="9" x2="9" y2="15"/>
+                <line x1="9" y1="9" x2="15" y2="15"/>
+              </svg>
+            {:else if item.status === 'cancelled'}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="8" y1="12" x2="16" y2="12"/>
+              </svg>
+            {:else}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+              </svg>
+            {/if}
+          </div>
+
+          <div class="item-info">
+            <span class="item-title">{item.title}</span>
+            <span class="item-artist">
+              {item.artist}
+              {#if item.status === 'completed' && item.source}
+                <span class="source-badge">{item.source}</span>
+              {/if}
+              {#if item.status === 'completed' && item.attempts && item.attempts.length > 1}
+                {@const failed = item.attempts.slice(0, -1)}
+                <span class="cascade-badge" title="{failed.join(', ')} unavailable">via {item.source} — {failed.join('/')} unavailable</span>
+              {/if}
+              {#if item.status === 'completed' && item.analysis}
+                <span
+                  class="verdict-badge verdict-{item.analysis.verdict}"
+                  title={item.analysis.details || item.analysis.verdictLabel}
+                >{item.analysis.verdictLabel}</span>
+              {/if}
+            </span>
+            {#if item.error}
+              <span class="item-error">{item.error}</span>
+            {/if}
+          </div>
+
+          <div class="item-actions">
+            {#if item.status === 'downloading'}
+              <button
+                class="item-btn cancel"
+                onclick={() => cancelDownload(item.trackId)}
+                title="Cancel"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="6" y="6" width="12" height="12" rx="2"/>
+                </svg>
+              </button>
+            {/if}
+            {#if item.status === 'error'}
+              <button
+                class="item-btn retry"
+                onclick={() => retryFailed(item.trackId)}
+                title="Retry"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 2v6h-6"/>
+                  <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+                  <path d="M3 22v-6h6"/>
+                  <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                </svg>
+              </button>
+            {/if}
+            <button
+              class="item-btn remove"
+              onclick={() => removeItem(item.trackId)}
+              title="Remove"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+</div>
+
+{#if showClearAllConfirm}
+  <ConfirmDialog
+    title="Clear All Downloads"
+    message="Are you sure you want to clear all items from the queue?"
+    confirmText="Clear All"
+    variant="danger"
+    onConfirm={() => { queueStore.clearAll(); showClearAllConfirm = false; }}
+    onCancel={() => showClearAllConfirm = false}
+  />
+{/if}
+
+<style>
+  .queue-page {
+    padding: 32px;
+    max-width: 1000px;
+  }
+
+  .queue-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 32px;
+    gap: 24px;
+  }
+
+  .header-left h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin: 0 0 16px 0;
+  }
+
+  .stats {
+    display: flex;
+    gap: 24px;
+  }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .stat-value {
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-value.downloading {
+    color: #3b82f6;
+  }
+
+  .stat-value.pending {
+    color: #f59e0b;
+  }
+
+  .stat-value.completed {
+    color: #10b981;
+  }
+
+  .stat-value.failed {
+    color: #ef4444;
+  }
+
+  .stat-value.paused {
+    color: #f59e0b;
+    font-size: 14px;
+    font-weight: 700;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .paused-indicator {
+    background: rgba(245, 158, 11, 0.1);
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .stat-label {
+    font-size: 12px;
+    color: var(--color-text-tertiary);
+    text-transform: uppercase;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 12px;
+  }
+
+  .action-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 8px;
+    color: var(--color-text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .action-btn:hover:not(:disabled) {
+    background: var(--color-bg-tertiary);
+    border-color: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  .action-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .action-btn.danger:hover:not(:disabled) {
+    border-color: #ef4444;
+    color: #ef4444;
+  }
+
+  .action-btn.retry-all:not(:disabled) {
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #3b82f6;
+  }
+
+  .action-btn.retry-all:hover:not(:disabled) {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.1);
+  }
+
+  .action-btn.pause-btn:not(:disabled) {
+    border-color: rgba(245, 158, 11, 0.3);
+    color: #f59e0b;
+  }
+
+  .action-btn.pause-btn:hover:not(:disabled) {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
+  }
+
+  .action-btn.pause-btn.paused:not(:disabled) {
+    border-color: rgba(16, 185, 129, 0.3);
+    color: #10b981;
+  }
+
+  .action-btn.pause-btn.paused:hover:not(:disabled) {
+    border-color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 20px;
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+
+  .empty-state svg {
+    margin-bottom: 16px;
+    opacity: 0.5;
+  }
+
+  .empty-state p {
+    margin: 0;
+    font-size: 16px;
+    color: var(--color-text-muted);
+  }
+
+  .empty-state .hint {
+    margin-top: 8px;
+    font-size: 14px;
+  }
+
+  .queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .queue-item {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    transition: all 0.2s;
+  }
+
+  .queue-item:hover {
+    background: var(--color-bg-tertiary);
+  }
+
+  .queue-item.status-downloading {
+    border-color: rgba(59, 130, 246, 0.3);
+  }
+
+  .queue-item.status-completed {
+    border-color: rgba(16, 185, 129, 0.3);
+  }
+
+  .queue-item.status-error {
+    border-color: rgba(239, 68, 68, 0.3);
+  }
+
+  .queue-item.status-cancelled {
+    border-color: rgba(107, 114, 128, 0.3);
+  }
+
+  .item-status {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+
+  .status-pending .item-status {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+  }
+
+  .status-downloading .item-status {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+  }
+
+  .status-completed .item-status {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+  }
+
+  .status-error .item-status {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+  }
+
+  .status-cancelled .item-status {
+    background: rgba(107, 114, 128, 0.15);
+    color: #6b7280;
+  }
+
+  .spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .item-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .item-title {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .item-artist {
+    font-size: 13px;
+    color: var(--color-text-secondary);
+  }
+
+  .source-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 6px;
+    background: rgba(168, 85, 247, 0.15);
+    border-radius: 4px;
+    color: #a855f7;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+
+  .cascade-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    background: rgba(100, 116, 139, 0.15);
+    border-radius: 4px;
+    color: #94a3b8;
+    font-size: 11px;
+    vertical-align: middle;
+  }
+
+  .verdict-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    vertical-align: middle;
+    cursor: help;
+  }
+  .verdict-lossless {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+  }
+  .verdict-likely_upscaled {
+    background: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+  }
+  .verdict-upscaled {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+  }
+
+  .item-error {
+    font-size: 12px;
+    color: #ef4444;
+    margin-top: 4px;
+  }
+
+  .item-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .item-btn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 6px;
+    color: var(--color-text-tertiary);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .item-btn:hover {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+  }
+
+  .item-btn.retry:hover {
+    border-color: #3b82f6;
+    color: #3b82f6;
+  }
+
+  .item-btn.remove:hover {
+    border-color: #ef4444;
+    color: #ef4444;
+  }
+
+  .item-btn.cancel:hover {
+    border-color: #f59e0b;
+    color: #f59e0b;
+  }
+
+  .action-btn.clean-retry:not(:disabled) {
+    background: linear-gradient(135deg, #f472b6, #a855f7);
+    border-color: transparent;
+    color: #000;
+    font-weight: 600;
+  }
+
+  .action-btn.clean-retry:hover:not(:disabled) {
+    opacity: 0.9;
+    background: linear-gradient(135deg, #f472b6, #a855f7);
+    border-color: transparent;
+    color: #000;
+  }
+
+  /* Filter bar */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .filter-pills {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .sort-select {
+    padding: 6px 12px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    outline: none;
+  }
+
+  .sort-select:hover {
+    border-color: var(--color-accent);
+  }
+
+  .sort-select:focus {
+    border-color: var(--color-accent);
+  }
+
+  .filter-btn {
+    padding: 6px 14px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .filter-btn:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .filter-btn.active {
+    background: rgba(244, 114, 182, 0.15);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+</style>

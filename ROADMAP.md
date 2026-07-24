@@ -1,6 +1,6 @@
 # ROADMAP.md — Feuille de route officielle HomeSpotify
 
-> Mise à jour : 2026-07-22. Cette feuille remplace l'ancienne numérotation
+> Mise à jour : 2026-07-24. Cette feuille remplace l'ancienne numérotation
 > « backend Phase 1–3 / mobile Phase 4 ». Les anciens lots livrés sont conservés
 > plus bas comme historique, mais toute nouvelle mention de **Phase 1** désigne
 > désormais « Hors connexion et lecture parfaite ».
@@ -10,7 +10,7 @@
 | Phase produit | État | Condition suivante |
 |---|---|---|
 | Phase 0 — Stabilisation et vérité produit | **EN COURS — en attente de qualification physique** | APK/backend corrigés déployés, session réelle post-correctif de 4 h réussie et restauration complète prouvée |
-| Phase 1 — Hors connexion et lecture parfaite | **1A EN COURS — développement autorisé, qualification runtime différée** (autorisation explicite du propriétaire, 2026-07-22) | Gate de production Phase 0 obligatoire avant toute déclaration « terminée » ou « prête pour production » |
+| Phase 1 — Hors connexion et lecture parfaite | **1A + 1B implémentées — qualification runtime différée** (autorisation explicite du propriétaire) | Tests Flutter Phase 1B à exécuter hors sandbox, puis qualification téléphone ; gate de production Phase 0 obligatoire avant toute déclaration « terminée » |
 | Phase 2 — Super-bibliothèque | À venir | Phase 1 qualifiée |
 | Phase 3 — Découverte explicable | À venir | Phase 2 qualifiée |
 | Phase 4 — Connect et social privé | À venir | Phase 3 qualifiée |
@@ -151,23 +151,57 @@ Complète la verticale 1A pour la rendre exploitable au quotidien :
 
 ### Phase 1B — Albums, playlists et gestion du stockage
 
-- Téléchargements groupés avec état global et état par piste, reprise après mort
-  du processus et échecs partiels relançables.
-- Écran Téléchargements : filtres, espace utilisé, suppression locale, politique
-  Wi-Fi/cellulaire, limite configurable et nettoyage LRU uniquement avec accord.
-- Invalidation sûre lorsque le hash source ou la version d'encodeur change.
-- Aucun autre profil implicite : le cache local connaît toujours son codec,
-  conteneur, débit mesuré, taille, hash et source ETag.
+> **État 2026-07-24** : implémentée côté mobile et sans nouveau contrat backend.
+> Analyse statique : 0 erreur, 0 warning (12 infos de style déjà connues).
+> Neuf tests ciblés couvrent migration, groupes, reprise, perte serveur,
+> politique réseau, stockage, échec partiel, réconciliation et isolation ; leur exécution Flutter
+> reste à faire hors sandbox, le SDK installé étant non inscriptible pour
+> l'agent. NON qualifiée pour production avant les essais téléphone.
+
+- Boutons « Télécharger l’album/la playlist », choix explicite entre les trois
+  profils, estimation globale honnête et intention persistée avant le transfert.
+- File groupée SQLite avec état global + état de chaque piste, déduplication,
+  une seule piste et un seul groupe actifs sur l'appareil, pause/annulation,
+  reprise après mort du processus et relance des seuls échecs.
+- Réutilisation du pipeline unitaire et du single-flight serveur : aucune route
+  batch redondante, aucune seconde implémentation d'encodage.
+- Écran Téléchargements : suivi des lots, espace utilisé/libre, politique Wi-Fi
+  par défaut ou cellulaire autorisé, plafond 2/5/10/20 Go ou sans limite,
+  suppression locale et nettoyage LRU uniquement après confirmation.
+- `StatFs` Android fournit l'espace physique disponible ; une réserve de
+  200 Mo et le plafond applicatif sont vérifiés avant un lot.
+- Réconciliation au démarrage et après purge : fichier réellement présent +
+  taille + hash source restent l'autorité. Un item publié avant un crash est
+  récupéré ; un `READY` supprimé/replacé repasse en attente/partiel.
+- Aucun profil implicite : chaque groupe et chaque copie conservent profil,
+  codec/conteneur, débit mesuré, taille, hash et source ETag.
 
 ### Phase 1C — Lecture parfaite online/offline
 
-- Bascule réseau robuste sans coupure : le titre courant termine sur sa source,
-  le suivant choisit la meilleure source autorisée par la politique réseau.
-- Préchargement de la piste suivante et transitions gapless quand les formats et
-  le lecteur le permettent, sans masquer une erreur de timeline.
-- Reprise déterministe après redémarrage, perte réseau ou fichier local invalide.
-- Minuteur de sommeil ; ReplayGain uniquement facultatif, mesuré et sans jamais
-  réécrire les fichiers canoniques.
+**EN COURS — noyau fonctionnel complet le 2026-07-24, qualification téléphone
+différée.**
+
+- [x] Chaque item de file conserve l'original réseau et la meilleure copie
+  locale vérifiée. Une erreur réseau réelle recharge le même index à la même
+  position depuis la copie locale ; un simple changement de connectivité
+  n'interrompt pas le titre déjà en cours.
+- [x] Au retour du réseau, le titre local courant se termine ; la transition
+  suivante reconstruit la file sur l'original. Une copie locale devenue
+  illisible retombe sur le réseau avant toute politique de saut.
+- [x] Préchargement natif de la file conservé (`preload: true`) et transitions
+  gapless laissées à Media3 lorsque codec, conteneur et timeline le permettent ;
+  aucune erreur de timeline n'est masquée.
+- [x] Session persistée compatible HTTP(S) et `file://`, sans Bearer, avec les
+  deux alternatives nécessaires à une reprise déterministe après redémarrage.
+- [ ] Qualification sur téléphone : coupure serveur réelle au milieu d'un titre,
+  position de reprise, écran éteint, retour réseau au titre suivant et fichier
+  local supprimé pendant une session.
+- [x] Minuteur de sommeil porté par le service audio : 15/30/45/60 minutes ou
+  fin du titre, annulation explicite, pause conservant file et position.
+- [x] ReplayGain facultatif désactivé par défaut : mesure pleine piste EBU R128
+  par FFmpeg, cible -18 LUFS et plafond true-peak -1 dBFS. Le résultat est
+  persisté/caché ; l’atténuation et l’amplification sont appliquées à la lecture
+  sans jamais réécrire les fichiers canoniques.
 
 ### Critères de fin Phase 1
 

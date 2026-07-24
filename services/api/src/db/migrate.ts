@@ -108,6 +108,24 @@ CREATE TABLE IF NOT EXISTS \`track_audio_analysis\` (
   CONSTRAINT \`track_audio_analysis_confidence_check\` CHECK (\`bpm_confidence\` IS NULL OR (\`bpm_confidence\` >= 0 AND \`bpm_confidence\` <= 1))
 )`;
 
+const TRACK_LOUDNESS_ANALYSIS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS \`track_loudness_analysis\` (
+  \`track_id\` integer PRIMARY KEY NOT NULL,
+  \`status\` text DEFAULT 'PENDING' NOT NULL,
+  \`integrated_lufs\` real,
+  \`true_peak_dbfs\` real,
+  \`replay_gain_db\` real,
+  \`target_lufs\` real DEFAULT -18 NOT NULL,
+  \`peak_ceiling_dbfs\` real DEFAULT -1 NOT NULL,
+  \`error_message\` text,
+  \`analyzed_at\` text,
+  \`updated_at\` text NOT NULL,
+  FOREIGN KEY (\`track_id\`) REFERENCES \`tracks\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+  CONSTRAINT \`track_loudness_analysis_lufs_check\` CHECK (\`integrated_lufs\` IS NULL OR (\`integrated_lufs\` >= -70 AND \`integrated_lufs\` <= 5)),
+  CONSTRAINT \`track_loudness_analysis_peak_check\` CHECK (\`true_peak_dbfs\` IS NULL OR (\`true_peak_dbfs\` >= -120 AND \`true_peak_dbfs\` <= 20)),
+  CONSTRAINT \`track_loudness_analysis_gain_check\` CHECK (\`replay_gain_db\` IS NULL OR (\`replay_gain_db\` >= -24 AND \`replay_gain_db\` <= 12))
+)`;
+
 const REQUEST_IMPORT_COLUMNS: ReadonlyArray<{ table: string; column: string; ddl: string }> = [
   { table: 'tracks', column: 'isrc', ddl: 'ALTER TABLE `tracks` ADD `isrc` text' },
   { table: 'music_requests', column: 'request_type', ddl: "ALTER TABLE `music_requests` ADD `request_type` text DEFAULT 'TRACK' NOT NULL" },
@@ -304,6 +322,22 @@ export function ensurePlaybackSettingsAndAnalysisSchema(
 }
 
 /**
+ * Filet de sécurité de la mesure R128. Comme les autres tables audio critiques,
+ * il ne dépend pas exclusivement du journal Drizzle d'une base déjà avancée.
+ */
+export function ensureLoudnessAnalysisSchema(
+  handle: DbHandle,
+  log: MigrationLogger = defaultLogger,
+): string[] {
+  if (!tableExists(handle, 'tracks')) return [];
+  const had = tableExists(handle, 'track_loudness_analysis');
+  handle.sqlite.exec(TRACK_LOUDNESS_ANALYSIS_TABLE_SQL);
+  if (had) return [];
+  log.info('réparation schéma : table track_loudness_analysis créée');
+  return ['track_loudness_analysis'];
+}
+
+/**
  * Filet de sécurité additif pour les demandes multi-items et les imports par
  * utilisateur. Exécuté APRÈS le migrateur afin de ne jamais rejouer les
  * ALTER de 0015 sur une base qui doit encore appliquer cette migration.
@@ -409,6 +443,7 @@ export function runMigrations(handle: DbHandle, log: MigrationLogger = defaultLo
   const postMedia = ensureMediaReadyV4Columns(handle, log);
   const requestImports = ensureRequestImportSchema(handle, log);
   const offlineVariants = ensureOfflineVariantsSchema(handle, log);
+  const loudnessAnalysis = ensureLoudnessAnalysisSchema(handle, log);
   const repaired = [
     ...preRepair,
     ...preMedia,
@@ -417,6 +452,7 @@ export function runMigrations(handle: DbHandle, log: MigrationLogger = defaultLo
     ...postMedia,
     ...requestImports,
     ...offlineVariants,
+    ...loudnessAnalysis,
   ];
   if (repaired.length > 0) {
     log.info('réparation schéma appliquée', { objects: repaired });
