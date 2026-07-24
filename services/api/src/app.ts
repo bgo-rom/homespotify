@@ -63,6 +63,12 @@ import {
 } from './audio/bpm-analysis.js';
 import { registerPlaybackSettingsRoutes } from './routes/playback-settings.js';
 import { UserImportService } from './import/user-import-service.js';
+import { AcquisitionJobRepository } from './import/acquisition-job-repository.js';
+import {
+  AcquisitionImportService,
+  type AcquisitionRunner,
+} from './import/acquisition-import-service.js';
+import { LucidaProcessRunner } from './import/lucida-process-runner.js';
 import { registerImportRoutes } from './routes/imports.js';
 import { ServerBackupScheduler } from './operations/backup-scheduler.js';
 import {
@@ -105,6 +111,8 @@ export interface BuildAppOptions {
   loudnessAnalyzer?: TrackLoudnessAnalyzer;
   /** Tests : false empêche fs.watch, tout en créant les dossiers manquants. */
   importWatcher?: boolean;
+  /** Runner Lucida injectable : les tests ne lancent jamais Python ni le réseau. */
+  lucidaRunner?: AcquisitionRunner;
   /** Providers de recherche catalogue injectables (tests : aucun réseau réel). */
   discoveryProviders?: RegisteredProvider[];
   /** Encodeur Opus injectable : les tests ne lancent jamais ffmpeg/ffprobe. */
@@ -289,6 +297,32 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     coversDir: config.coversDir,
   });
   const importWatcherEnabled = options.importWatcher ?? config.nodeEnv !== 'test';
+
+  const acquisitionService = config.lucida
+    ? new AcquisitionImportService(
+        dbHandle,
+        new AcquisitionJobRepository(dbHandle),
+        options.lucidaRunner ??
+          new LucidaProcessRunner({
+            scriptPath: config.lucida.scriptPath,
+            pythonPath: config.lucida.pythonPath,
+            importRoot: config.importRoot,
+            processTimeoutMs: config.lucida.processTimeoutMs,
+          }),
+        importService,
+      )
+    : null;
+
+  if (acquisitionService) {
+    const interruptedJobs = acquisitionService.recoverInterruptedJobs();
+    if (interruptedJobs > 0) {
+      app.log.warn(
+        { interruptedJobs },
+        'acquisition Lucida : jobs actifs marqués interrompus au démarrage',
+      );
+    }
+  }
+
   const backupScheduler = config.backup?.enabled
     ? new ServerBackupScheduler(
         config.backup,
@@ -316,6 +350,7 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
 
   app.addHook('onClose', async () => {
     backupScheduler?.stop();
+    await acquisitionService?.stop();
     importService.stop();
     offlineVariantService.stop();
     await offlineVariantService.drain();

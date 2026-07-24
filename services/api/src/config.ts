@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 export interface AppConfig {
   nodeEnv: 'development' | 'production' | 'test';
@@ -18,6 +19,11 @@ export interface AppConfig {
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
   backup?: BackupConfig;
+  /**
+   * Acquisition distante optionnelle. Absente tant que LUCIDA_SCRIPT_PATH
+   * n'est pas configuré : aucun processus Python n'est alors créé.
+   */
+  lucida?: LucidaConfig;
   /** Cache serveur des dérivées Opus hors ligne (Phase 1A). Optionnel pour la
    * rétro-compatibilité des configs de test : buildApp applique
    * defaultOfflineConfig() en absence. */
@@ -45,6 +51,15 @@ export interface OfflineConfig {
   derivedCacheDir: string;
   /** Encodages simultanés — borné 1..4, jamais illimité (serveur H24). */
   encodeConcurrency: number;
+}
+
+export interface LucidaConfig {
+  /** Chemin absolu du script Python validé au chargement de la configuration. */
+  scriptPath: string;
+  /** Exécutable Python ou chemin complet ; résolu par spawn, jamais par un shell. */
+  pythonPath: string;
+  /** Délai global du processus complet, distinct du timeout HTTP du script. */
+  processTimeoutMs: number;
 }
 
 export interface BackupConfig {
@@ -153,6 +168,38 @@ function loadAppleMusicConfig(env: NodeJS.ProcessEnv): AppleMusicConfig | undefi
     mediaId: env.APPLE_MUSIC_MEDIA_ID && env.APPLE_MUSIC_MEDIA_ID.length > 0 ? env.APPLE_MUSIC_MEDIA_ID : null,
     privateKeyPath,
     storefront: (env.APPLE_MUSIC_STOREFRONT ?? 'fr').toLowerCase(),
+  };
+}
+
+function loadLucidaConfig(env: NodeJS.ProcessEnv): LucidaConfig | undefined {
+  const rawScriptPath = env.LUCIDA_SCRIPT_PATH?.trim() ?? '';
+  if (rawScriptPath.length === 0) return undefined;
+
+  const scriptPath = resolve(rawScriptPath);
+  if (!scriptPath.toLowerCase().endsWith('.py')) {
+    throw new Error(
+      `Config invalide : LUCIDA_SCRIPT_PATH="${rawScriptPath}" (fichier .py attendu)`,
+    );
+  }
+  if (!existsSync(scriptPath)) {
+    throw new Error(
+      `Config invalide : LUCIDA_SCRIPT_PATH="${rawScriptPath}" introuvable`,
+    );
+  }
+
+  const pythonPath = env.LUCIDA_PYTHON_PATH?.trim() || 'python';
+  const processTimeoutSeconds = boundedInt(
+    'LUCIDA_PROCESS_TIMEOUT_SECONDS',
+    env.LUCIDA_PROCESS_TIMEOUT_SECONDS,
+    300,
+    10,
+    1_800,
+  );
+
+  return {
+    scriptPath,
+    pythonPath,
+    processTimeoutMs: processTimeoutSeconds * 1_000,
   };
 }
 
@@ -276,6 +323,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const lastfm = loadLastfmConfig(env);
   const appleMusic = loadAppleMusicConfig(env);
+  const lucida = loadLucidaConfig(env);
   const backup: BackupConfig = {
     enabled: parseBool(env.BACKUP_ENABLED, nodeEnv !== 'test'),
     root: env.BACKUP_ROOT ?? '../../backups/server',
@@ -309,6 +357,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     accessTokenTtlSeconds,
     refreshTokenTtlSeconds: refreshTokenTtlDays * 24 * 60 * 60,
     backup,
+    ...(lucida ? { lucida } : {}),
     ...(lastfm ? { lastfm } : {}),
     ...(appleMusic ? { appleMusic } : {}),
     discovery: loadDiscoveryConfig(env),
