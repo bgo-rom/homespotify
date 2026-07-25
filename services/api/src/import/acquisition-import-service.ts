@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import type { DbHandle } from '../db/client.js';
 import {
   importJobs,
+  type AcquisitionJobStatus,
   type ImportJobStatus,
 } from '../db/schema.js';
 import type {
@@ -141,8 +142,9 @@ export class AcquisitionImportService {
   listRecentForUser(
     userId: number,
     limit = 20,
+    status?: AcquisitionJobStatus,
   ): AcquisitionJobRow[] {
-    return this.repository.listRecentForUser(userId, limit);
+    return this.repository.listRecentForUser(userId, limit, status);
   }
 
   /**

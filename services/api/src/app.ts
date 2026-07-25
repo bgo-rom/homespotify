@@ -70,6 +70,10 @@ import {
 } from './import/acquisition-import-service.js';
 import { LucidaProcessRunner } from './import/lucida-process-runner.js';
 import { registerImportRoutes } from './routes/imports.js';
+import {
+  registerAcquisitionImportRoutes,
+  type LucidaSearchRunner,
+} from './routes/acquisition-imports.js';
 import { ServerBackupScheduler } from './operations/backup-scheduler.js';
 import {
   FfmpegOpusEncoderRunner,
@@ -111,8 +115,12 @@ export interface BuildAppOptions {
   loudnessAnalyzer?: TrackLoudnessAnalyzer;
   /** Tests : false empêche fs.watch, tout en créant les dossiers manquants. */
   importWatcher?: boolean;
-  /** Runner Lucida injectable : les tests ne lancent jamais Python ni le réseau. */
+  /** Runner de téléchargement injectable : les tests ne lancent jamais Python. */
   lucidaRunner?: AcquisitionRunner;
+  /** Runner de recherche injectable : les tests ne lancent jamais le réseau. */
+  lucidaSearchRunner?: LucidaSearchRunner;
+  /** Timeout court de la route de recherche, injectable pour les tests. */
+  lucidaSearchTimeoutMs?: number;
   /** Providers de recherche catalogue injectables (tests : aucun réseau réel). */
   discoveryProviders?: RegisteredProvider[];
   /** Encodeur Opus injectable : les tests ne lancent jamais ffmpeg/ffprobe. */
@@ -298,20 +306,30 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   });
   const importWatcherEnabled = options.importWatcher ?? config.nodeEnv !== 'test';
 
-  const acquisitionService = config.lucida
-    ? new AcquisitionImportService(
-        dbHandle,
-        new AcquisitionJobRepository(dbHandle),
-        options.lucidaRunner ??
-          new LucidaProcessRunner({
-            scriptPath: config.lucida.scriptPath,
-            pythonPath: config.lucida.pythonPath,
-            importRoot: config.importRoot,
-            processTimeoutMs: config.lucida.processTimeoutMs,
-          }),
-        importService,
-      )
+  const defaultLucidaRunner = config.lucida
+    ? new LucidaProcessRunner({
+        scriptPath: config.lucida.scriptPath,
+        pythonPath: config.lucida.pythonPath,
+        importRoot: config.importRoot,
+        processTimeoutMs: config.lucida.processTimeoutMs,
+      })
     : null;
+  const acquisitionRunner = config.lucida
+    ? options.lucidaRunner ?? defaultLucidaRunner
+    : null;
+  const lucidaSearchRunner = config.lucida
+    ? options.lucidaSearchRunner ?? defaultLucidaRunner
+    : null;
+
+  const acquisitionService =
+    config.lucida && acquisitionRunner
+      ? new AcquisitionImportService(
+          dbHandle,
+          new AcquisitionJobRepository(dbHandle),
+          acquisitionRunner,
+          importService,
+        )
+      : null;
 
   if (acquisitionService) {
     const interruptedJobs = acquisitionService.recoverInterruptedJobs();
@@ -351,6 +369,11 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   app.addHook('onClose', async () => {
     backupScheduler?.stop();
     await acquisitionService?.stop();
+    // Si le runner par défaut n’est utilisé que par la recherche, il n’est
+    // pas détenu par AcquisitionImportService et doit aussi être arrêté ici.
+    if (defaultLucidaRunner !== acquisitionRunner) {
+      defaultLucidaRunner?.stopAll();
+    }
     importService.stop();
     offlineVariantService.stop();
     await offlineVariantService.drain();
@@ -522,6 +545,13 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     registerPlaybackSettingsRoutes(instance, guards, audioAnalysis);
     registerLoudnessAnalysisRoutes(instance, guards, loudnessAnalysis);
     registerImportRoutes(instance, guards, importService);
+    registerAcquisitionImportRoutes(instance, guards, {
+      service: acquisitionService,
+      searchRunner: lucidaSearchRunner,
+      ...(options.lucidaSearchTimeoutMs !== undefined
+        ? { searchTimeoutMs: options.lucidaSearchTimeoutMs }
+        : {}),
+    });
   });
 
   return app;
