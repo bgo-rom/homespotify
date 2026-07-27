@@ -506,3 +506,79 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
 - **Contexte** : ReplayGain peut demander aussi bien une atténuation qu’une amplification. `AndroidLoudnessEnhancer` expose un gain cible maximal pour augmenter le niveau ; l’utiliser comme si son domaine couvrait les valeurs négatives rendrait l’application dépendante d’un comportement non garanti et mélangerait le volume de l’utilisateur avec la normalisation.
 - **Leçon** : un gain signé doit être séparé selon les capacités réelles du pipeline. La baisse se fait par multiplication linéaire du volume effectif, la hausse par l’effet Android, tandis que le volume affiché et choisi par l’utilisateur reste inchangé. La remise à zéro doit être sérialisée avant la mesure du titre suivant pour empêcher une ancienne opération asynchrone d’écraser le nouveau gain.
 - **Conséquence** : HomeSpotify n’envoie jamais de valeur négative au `LoudnessEnhancer`, conserve une atténuation ReplayGain distincte dans le handler et teste explicitement la course changement de titre/remise à zéro. Sans mesure EBU R128 valide, aucun des deux chemins n’est activé.
+
+### L-106 — Un harnais dont les scénarios partagent un état détruit ses propres préconditions (2026-07-27)
+- **Contexte** : quatrième exécution réelle Phase 5. Les modes `-FinalizeOnly`
+  et `-AbortOnly` étaient verts isolément, mais le mode complet échouait
+  toujours sur le test hors ligne, en **503**. Les journaux donnent la
+  séquence exacte : piste 78 promue (`contentHashPrefix=cf43ef5cb02c`,
+  `objectCount=1`, `indexEntryCount=1`), puis scénario d'abandon sur la
+  piste 79, puis `CACHE_EVICTION_STARTED` et
+  `CACHE_EVICTED contentHashPrefix=cf43ef5cb02c sizeBytes=9165881`, puis
+  `CACHE_FILL_ABORTED` avec `objectCount=0`, `indexEntryCount=0`. L'agent est
+  ensuite arrêté et la piste 78 demandée : `CACHE_MISS` →
+  `REMOTE_STORAGE_AGENT_UNAVAILABLE` → **503**.
+- **Cause** : une limite unique, `AUDIO_CACHE_MAX_BYTES = max(small, second) + 1`,
+  partagée par tous les scénarios. Cette valeur est **calibrée pour garantir
+  l'éviction** — c'est ce qui rend le scénario d'éviction déterministe, et
+  c'est exactement ce qui rend impossible tout scénario ayant besoin qu'un
+  objet survive. Le 503 était le verdict **correct** du provider ; c'est le
+  harnais qui avait supprimé ce qu'il s'apprêtait à tester.
+- **Leçon** : un paramètre choisi pour forcer un comportement dans un scénario
+  devient un piège dès qu'il est global. Des scénarios qui partagent une
+  racine de cache, une limite ou un index ne sont pas des scénarios
+  indépendants : ce sont les étapes d'un seul scénario, et l'ordre y devient
+  une dépendance cachée. Corollaire : une précondition doit être **prouvée
+  puis verrouillée** avant toute action irréversible ou coûteuse — ici,
+  l'arrêt du Storage Agent.
+- **Conséquence** : chaque scénario reçoit sa racine
+  (`runtime/cache-finalize-offline`, `cache-abort`, `cache-eviction`) et sa
+  capacité (large pour la finalisation et l'abandon, serrée pour la seule
+  éviction), via `vps_phase5_switch_scenario.sh`. Le mode hors ligne s'exécute
+  **immédiatement** après la finalisation, pendant que l'objet existe. Un mode
+  `offline-precheck` bloquant écrit un laissez-passer uniquement si
+  `objectCount == 1`, `indexEntryCount == 1`, l'objet, sa taille, son empreinte
+  et un vrai `CACHE_HIT` sont tous prouvés ; sans ce fichier, le mode hors
+  ligne **refuse de s'exécuter** au lieu d'interpréter un 503 ambigu. Chaque
+  rapport publie désormais `scenario`, `cacheMaxBytes`, les compteurs avant et
+  après, et `evictionsObserved`.
+
+### L-107 — Une réponse HTTP terminée ne prouve pas que l'écriture disque est finie (2026-07-27)
+- **Contexte** : le harnais Phase 5 comptait les objets du cache immédiatement
+  après un GET MISS réussi et trouvait `objectCount=0`. Une exécution a même
+  servi un second GET à 2,07 Mio/s là où la précédente donnait 118 Mio/s.
+- **Cause** : `CacheFillStream` valide taille et empreinte, puis `fsync`,
+  `close`, `rename` atomique, ligne d'index et enfin `CACHE_FILL_COMPLETED` —
+  **tout cela après** que le dernier octet a été poussé vers le client. Comme
+  la réponse porte un `content-length`, le client considère le corps terminé
+  dès qu'il a reçu ce nombre d'octets, sans attendre le `end` du flux serveur.
+- **Leçon** : la fin d'une réponse et la fin d'une transaction disque sont deux
+  événements distincts. Mesurer l'état du disque juste après la réponse est une
+  mesure fausse, pas un défaut du composant. Un test doit attendre une
+  **condition terminale** — un événement de fin, ou l'objet final à la bonne
+  taille — jamais un délai arbitraire, et jamais « tout de suite ».
+- **Conséquence** : `wait_for_fill_terminal()` scrute par boucle bornée et
+  accepte deux preuves indépendantes (événement, ou fichier final de taille
+  exacte si la journalisation est muette). Corollaire de méthode : un `200`
+  n'est pas un HIT. Un HIT n'est prouvé que par un `CACHE_HIT` portant le
+  `requestId` exact de la requête ; sans journal exploitable, le verdict est
+  `unknown`, jamais `false`.
+
+### L-108 — Vérifier la capture des journaux au démarrage, pas à la fin du test (2026-07-27)
+- **Contexte** : une exécution complète du harnais Phase 5 s'est déroulée
+  jusqu'au bout avant qu'on découvre que `stdout` faisait zéro octet : aucun
+  événement `CACHE_*` n'avait jamais été écrit, donc aucune preuve n'était
+  possible. Cause : le `.env` du harnais portait `NODE_ENV=test`, et `app.ts`
+  construit Fastify avec `logger: { enabled: config.nodeEnv !== "test" }`. Le
+  logger était **entièrement inerte**, y compris les callbacks passés aux
+  providers.
+- **Leçon** : une exécution de validation coûteuse doit vérifier ses propres
+  **instruments** avant de produire des mesures. Un harnais qui ne peut pas
+  observer ne doit pas démarrer. Corollaire : un environnement de test n'est
+  pas gratuit — `NODE_ENV=test` change le comportement observable du produit,
+  donc une validation « réelle » doit tourner dans le mode réel
+  (`production`), sans quoi elle qualifie autre chose que ce qui sera déployé.
+- **Conséquence** : `vps_phase5_setup.sh` a une étape `verify_log_capture` qui
+  échoue en sortie 3 si aucune ligne JSON structurée n'est capturée après que
+  l'API répond, et publie les cibles réelles de `fd/1` et `fd/2`. Le `.env` du
+  harnais est en `NODE_ENV=production`.

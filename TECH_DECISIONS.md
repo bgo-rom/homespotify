@@ -356,3 +356,41 @@ tag, d’un nom de fichier ou d’une extension.
 
 Statut : implémenté et testé automatiquement ; validation perceptive sur
 téléphone, Bluetooth et changement de vitesse encore requise avant production.
+
+### TD-Phase5-Real-Cache-Qualification — qualification réelle close en GO (2026-07-27)
+
+**GO FINAL — PHASE 5 VALIDÉE DÉFINITIVEMENT.** `CachedAudioStorageProvider` a
+été qualifié depuis une API VPS parallèle liée à `127.0.0.1:3001`, sur trois
+racines de cache isolées, avec `failedChecks=[]` et `ok=true` pour chaque
+scénario. Le provider n'a présenté **aucun défaut** : les cinq défauts trouvés
+étaient dans le harnais de validation.
+
+Preuves : promotion atomique d'un objet de 9 165 881 octets avec
+`indexEntryCount=1` et `partCount=0` ; `CACHE_HIT` corrélé par `requestId`,
+sans `REMOTE_STORAGE_REQUEST_STARTED` ; HEAD et Range HIT ; agent arrêté →
+GET 200, HEAD 200, Range 206 sur l'objet caché et 503 `service_unavailable`
+sur une piste non cachée, sans 401 public ; redémarrage de l'API → index et
+objet récupérés ; abandon → `.part` supprimé, aucune promotion, verrou
+single-flight prouvé libéré par un second remplissage réel, `activeStreams=0` ;
+éviction LRU réelle avec `CACHE_EVICTION_STARTED` / `CACHE_EVICTED`.
+
+Mesures de référence : TTFB MISS 133,5 ms contre HIT 13,0 ms ; débit MISS
+4,552 Mio/s contre HIT 182,083 Mio/s ; HEAD HIT 8,0 ms ; Range HIT 9,5 ms ;
+HEAD HIT après redémarrage 12,5 ms. Le gain du cache est donc d'environ 40× en
+débit et 10× en latence sur le lien réel — la question laissée ouverte en
+Phase 4 (« le coût de l'aller-retour est l'objet de la Phase 5, pas d'une
+supposition ») est close avec des chiffres.
+
+**Un paramètre calibré pour forcer un comportement ne doit jamais être
+global.** La limite unique `AUDIO_CACHE_MAX_BYTES = max(small, second) + 1`
+rendait l'éviction déterministe et, par construction, détruisait la
+précondition de tout scénario ayant besoin qu'un objet survive. Décision :
+racine de cache **et** capacité par scénario (`finalize-offline`, `abort`,
+`eviction`), scénario hors ligne exécuté immédiatement après la finalisation,
+et précondition **prouvée puis verrouillée** avant toute action coûteuse ou
+irréversible — ici l'arrêt du Storage Agent, refusé sans laissez-passer.
+
+**Ce GO n'autorise aucune bascule.** La production reste sur HomeSpotifyApi
+Windows avec `AUDIO_STORAGE_MODE` absent/local ; Caddy, WireGuard et le
+pare-feu sont inchangés. La Phase 6 est un lot séparé, en déploiement shadow,
+sans exposition publique.
