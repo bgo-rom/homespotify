@@ -1,0 +1,79 @@
+[Unit]
+# Shadow Phase 6 : API HomeSpotify sur le VPS, écoute strictement locale.
+# Ce service ne reçoit aucun trafic public. Caddy n'est pas modifié.
+Description=HomeSpotify API (shadow, 127.0.0.1:3002)
+Documentation=file:///opt/homespotify-api-shadow/current/manifest.json
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=homespotify
+Group=homespotify
+
+# WorkingDirectory sur le symlink : un rollback bascule `current` et le
+# service repart sur l'ancienne release sans réécrire l'unité.
+WorkingDirectory=/opt/homespotify-api-shadow/current
+EnvironmentFile=/etc/homespotify/api-shadow.env
+ExecStart=/usr/local/bin/node dist/server.js
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# SIGTERM puis 30 s : le cache doit pouvoir finir ou abandonner proprement ses
+# `.part`. Un SIGKILL immédiat les laisserait sur disque — le nettoyage de
+# démarrage les reprendrait, mais autant ne pas s'en servir à chaque arrêt.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+UMask=0027
+LimitNOFILE=8192
+
+# --- Durcissement -----------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# ProtectSystem=strict rend TOUT le système en lecture seule : sans cette
+# ligne, ni SQLite ni le cache ne peuvent écrire, et le service échoue au
+# démarrage. C'est la seule racine inscriptible du shadow.
+ReadWritePaths=/var/lib/homespotify-shadow
+
+# AF_INET est obligatoire : le Storage Agent est joint en IPv4 sur
+# 10.8.0.2:3100 à travers WireGuard. AF_UNIX sert aux sockets locales de Node.
+# AF_INET6 est volontairement absent — rien n'en a besoin ici.
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# Le port 3002 est au-dessus de 1024 : aucune capacité n'est nécessaire.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ProtectHome=true masque /home/debian, où vivent les arbres des Phases 4.5 et
+# 5. C'est voulu : le shadow ne doit rien y lire. Corollaire — ne jamais
+# faire pointer une release vers /home.
+
+# MemoryMax : VOLONTAIREMENT ABSENT. Un plafond posé avant le soak tuerait le
+# processus pendant une écriture, et les redémarrages masqueraient un vrai
+# défaut. À poser après la baseline RSS mesurée (test T16).
+
+TasksMax=256
+
+# Journaux : journald, avec l'identifiant du service. Les événements CACHE_* et
+# REMOTE_STORAGE_* sont déjà assainis (ni secret, ni Authorization, ni nonce,
+# ni signature, ni chemin musical).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=homespotify-api-shadow
+
+[Install]
+WantedBy=multi-user.target
