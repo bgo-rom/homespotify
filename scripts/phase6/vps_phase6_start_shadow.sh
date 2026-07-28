@@ -104,7 +104,13 @@ PUBLIC_AFTER="$(ss -ltnH 2>/dev/null | awk '{print $4}' | grep -v "127.0.0.1:${P
 [ "${PUBLIC_BEFORE}" = "${PUBLIC_AFTER}" ] || fail ECOUTES_PUBLIQUES_MODIFIEES "${PUBLIC_AFTER}"
 
 ERRORS="$(journalctl -u "${SERVICE}" -p err -n 50 -o cat --no-pager 2>/dev/null | grep -c . || true)"
-ENABLED="$(systemctl is-enabled "${SERVICE}" 2>/dev/null || echo disabled)"
+# `systemctl is-active` et `is-enabled` ECRIVENT leur reponse sur stdout ET
+# sortent en code non nul quand elle n'est pas 'active'/'enabled'. Un
+# `|| echo <defaut>` ajoute donc SA valeur a celle deja imprimee :
+# « disableddisabled ». On neutralise le code de sortie, puis on comble
+# seulement si la sortie est vide.
+ENABLED="$(systemctl is-enabled "${SERVICE}" 2>/dev/null || true)"
+: "${ENABLED:=disabled}"
 
 printf '{"ok":true,"activeState":"%s","subState":"%s","mainPid":"%s","nRestarts":"%s","health":200,"listenersLoopback":%s,"listenersWildcard":0,"listenersIpv6":0,"listenersWireguard":0,"listenersTotal":%s,"journalErrorLines":%s,"bootEnabled":"%s","current":"%s","publicListenersUnchanged":true}\n' \
   "${ACTIVE}" "${SUB}" "${MAINPID}" "${NRESTARTS}" "${LOOPBACK}" "${TOTAL}" \

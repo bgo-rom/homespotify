@@ -494,6 +494,19 @@ class PreinstallCheckTest(unittest.TestCase):
         self.assertIn("-not -path '*/metadata/*'",
                       code_of(HERE / "vps_phase6_activate_shadow.sh"))
 
+    def test_systemctl_defaults_do_not_concatenate(self) -> None:
+        # Défaut trouvé dans le rapport final : `systemctl is-enabled` ÉCRIT
+        # sa réponse sur stdout ET sort en code non nul. Un `|| echo disabled`
+        # ajoute donc sa valeur à celle déjà imprimée : « disableddisabled ».
+        # Un champ de rapport que personne ne peut comparer ne rapporte rien.
+        for path in (HERE / "vps_phase6_preinstall_check.sh",
+                     HERE / "vps_phase6_start_shadow.sh",
+                     HERE / "run_phase6_shadow_deploy.ps1"):
+            code = code_of(path)
+            for pattern in ("|| echo disabled", "|| echo inactive",
+                            "|| echo unknown"):
+                self.assertNotIn(pattern, code, f"{path.name} : {pattern}")
+
     def test_the_check_writes_nothing(self) -> None:
         for forbidden in ("install ", "mkdir", "rm ", "chmod", "chown",
                           "systemctl start", "systemctl stop", "useradd"):

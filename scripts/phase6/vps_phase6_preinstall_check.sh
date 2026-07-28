@@ -58,8 +58,15 @@ INSTALLED_RELEASE=""
 if [ -L /opt/homespotify-api-shadow/current ]; then
   INSTALLED_RELEASE="$(basename "$(readlink -f /opt/homespotify-api-shadow/current)")"
 fi
-SERVICE_STATE="$(systemctl is-active homespotify-api-shadow.service 2>/dev/null || echo inactive)"
-SERVICE_ENABLED="$(systemctl is-enabled homespotify-api-shadow.service 2>/dev/null || echo disabled)"
+# `systemctl is-active` et `is-enabled` ECRIVENT leur reponse sur stdout ET
+# sortent en code non nul quand elle n'est pas 'active'/'enabled'. Un
+# `|| echo <defaut>` ajoute donc SA valeur a celle deja imprimee :
+# « disableddisabled ». On neutralise le code de sortie, puis on comble
+# seulement si la sortie est vide.
+SERVICE_STATE="$(systemctl is-active homespotify-api-shadow.service 2>/dev/null || true)"
+: "${SERVICE_STATE:=inactive}"
+SERVICE_ENABLED="$(systemctl is-enabled homespotify-api-shadow.service 2>/dev/null || true)"
+: "${SERVICE_ENABLED:=disabled}"
 
 # Objets AUDIO en cache, distingues de l'index du cache : l'index est ecrit par
 # le service a son demarrage, il n'a rien d'anormal. Un objet audio, si.
@@ -70,9 +77,11 @@ if [ -d /var/lib/homespotify-shadow/cache/audio ]; then
 fi
 
 # --- Environnement public : constate, jamais touche ------------------------
-CADDY_ACTIVE="$(systemctl is-active caddy 2>/dev/null || echo unknown)"
+CADDY_ACTIVE="$(systemctl is-active caddy 2>/dev/null || true)"
+: "${CADDY_ACTIVE:=unknown}"
 CADDY_SHA="$(sha256sum /etc/caddy/Caddyfile 2>/dev/null | cut -d' ' -f1)"
-WIREGUARD="$(systemctl is-active wg-quick@wg0 2>/dev/null || echo unknown)"
+WIREGUARD="$(systemctl is-active wg-quick@wg0 2>/dev/null || true)"
+: "${WIREGUARD:=unknown}"
 AGENT_REACHABLE=false
 timeout 6 bash -c 'exec 3<>/dev/tcp/10.8.0.2/3100' >/dev/null 2>&1 && AGENT_REACHABLE=true
 PUBLIC_HEALTH="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PUBLIC_URL}/health" || echo 000)"

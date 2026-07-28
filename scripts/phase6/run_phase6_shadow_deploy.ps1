@@ -996,7 +996,7 @@ printf '"listeners":"%s","port3002Public":%s,' \
   "`$(ss -ltnH | awk '{print `$4}' | sort -u | tr '\n' ' ')" \
   "`$(ss -ltnH | awk '{print `$4}' | grep -cE '^(0\.0\.0\.0|\*|\[::\]|10\.8\.0\.[0-9]*):3002`$' || true)"
 printf '"bootEnabled":"%s","activeState":"%s"}\n' \
-  "`$(systemctl is-enabled homespotify-api-shadow.service 2>/dev/null || echo disabled)" \
+  "`$(systemctl is-enabled homespotify-api-shadow.service 2>/dev/null || true)" \
   "`$(systemctl show -p ActiveState --value homespotify-api-shadow.service)"
 "@
     $postReport = Get-LastJson $post.Output
