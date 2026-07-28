@@ -16,7 +16,7 @@ param(
     [string] $OutputDirectory,
     [switch] $ValidateOnly,
     [switch] $SelfTest,
-    [ValidateSet('Healthy', 'PublicListener', 'PidChanged', 'Restarted', 'Interrupted')]
+    [ValidateSet('Healthy', 'PublicListener', 'PidChanged', 'Restarted', 'Interrupted', 'EvidenceFailure')]
     [string] $SelfTestScenario = 'Healthy'
 )
 
@@ -37,6 +37,7 @@ $script:FailureReason = $null
 $script:RemoteHelperPath = $null
 $script:RemoteTokenPath = $null
 $script:SshWasUsed = $false
+$script:SshConnectionCount = 0
 $script:Baseline = $null
 $script:FinalState = $null
 $script:Samples = [System.Collections.Generic.List[object]]::new()
@@ -90,7 +91,7 @@ function Assert-LocalArguments {
         [string]::IsNullOrWhiteSpace($OutputDirectory)) {
         Fail 'VpsHost, VpsUser and OutputDirectory are required.'
     }
-    if (-not $ValidateOnly -and -not $SelfTest) {
+    if (-not $SelfTest) {
         if (-not (Test-Path -LiteralPath $SshKeyPath -PathType Leaf)) {
             Fail 'SshKeyPath does not identify an existing local file.'
         }
@@ -129,6 +130,7 @@ function Invoke-SshText {
         [string] $InputText = ''
     )
     $script:SshWasUsed = $true
+    $script:SshConnectionCount++
     $arguments = @(Get-SshBaseArguments) + @($RemoteCommand)
     if ($InputText.Length -gt 0) {
         $output = $InputText | & ssh.exe @arguments 2>&1
@@ -177,7 +179,10 @@ function New-ShadowToken {
 function Invoke-RemoteMode {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('preflight', 'sample', 'load', 'full', 'integrity', 'journal')]
+        [ValidateSet(
+            'preflight', 'sample', 'track-list', 'head-hit', 'range-hit',
+            'full-get', 'integrity', 'journal'
+        )]
         [string] $Mode
     )
     $since = if ($null -eq $script:StartedAtUtc) { '-' } else { $script:StartedAtUtc }
@@ -201,6 +206,20 @@ function Get-WindowsStorageAgentStatus {
 
 function Assert-Preflight([object] $State) {
     $failures = [System.Collections.Generic.List[string]]::new()
+    if ($State.journalVerdict -eq 'JOURNAL_PERMISSION_DENIED') {
+        Fail 'JOURNAL_PERMISSION_DENIED: journald preflight failed.'
+    }
+    if ($State.journalVerdict -eq 'JOURNALCTL_FAILED') {
+        Fail 'JOURNALCTL_FAILED: journald preflight failed.'
+    }
+    if ($State.journalVerdict -eq 'JOURNAL_EVENT_TIMEOUT') {
+        Fail 'JOURNAL_EVENT_TIMEOUT: health request was not found in journald.'
+    }
+    if ($State.journalReadable -ne $true -or
+        $State.logEvidenceAvailable -ne $true -or
+        $State.journalctlExecutable -ne $true) {
+        Fail 'LOG_EVIDENCE_UNAVAILABLE: journald preflight did not prove readable request evidence.'
+    }
     if ($State.activeState -ne 'active' -or $State.subState -ne 'running') {
         $failures.Add('shadow service is not active/running')
     }
@@ -265,14 +284,41 @@ function Add-Sample([object] $Sample) {
 
 function Add-RequestRecord([object] $Record) {
     $script:RequestRecords.Add($Record)
-    ConvertTo-JsonLine $Record | Add-Content -LiteralPath $script:RequestsPath -Encoding ascii
     foreach ($operation in @($Record.operations)) {
+        ConvertTo-JsonLine $operation | Add-Content -LiteralPath $script:RequestsPath -Encoding ascii
+        foreach ($event in @($operation.sanitizedEvents)) {
+            $script:SanitizedEvents.Add($event)
+            ConvertTo-JsonLine $event | Add-Content -LiteralPath $script:EventsPath -Encoding ascii
+        }
         $script:RequestTotalCount++
         if ($operation.ok) { $script:RequestSuccessCount++ }
     }
 }
 
+function Invoke-LoadCycle([bool] $IncludeFull) {
+    $modes = @('track-list', 'head-hit', 'range-hit')
+    if ($IncludeFull) { $modes += 'full-get' }
+    foreach ($mode in $modes) {
+        $operation = Invoke-RemoteMode -Mode $mode
+        $record = [pscustomobject]@{
+            timestampUtc = Get-UtcIso
+            operations = @($operation)
+        }
+        Add-RequestRecord $record
+        Assert-RequestRecord $record
+    }
+}
+
 function Assert-Sample([object] $Sample) {
+    if ($Sample.journalVerdict -eq 'JOURNAL_PERMISSION_DENIED') {
+        Fail 'JOURNAL_PERMISSION_DENIED: sample journald query failed.'
+    }
+    if ($Sample.journalVerdict -eq 'JOURNALCTL_FAILED') {
+        Fail 'JOURNALCTL_FAILED: sample journald query failed.'
+    }
+    if ($Sample.journalReadable -ne $true) {
+        Fail 'LOG_EVIDENCE_UNAVAILABLE: sample journald query was not readable.'
+    }
     if ($null -ne $script:Baseline -and "$($Sample.mainPid)" -ne "$($script:Baseline.mainPid)") {
         Fail 'NO-GO: MainPID changed.'
     }
@@ -342,11 +388,39 @@ function Assert-RequestRecord([object] $Record) {
         if (-not $operation.ok) {
             Fail "NO-GO: request check failed for $($operation.name)."
         }
-        if ($operation.requiresCacheHit -and -not $operation.cacheHit) {
-            Fail "NO-GO: CACHE_HIT missing for $($operation.name)."
+        if ($operation.requiresCacheHit) {
+            switch ("$($operation.evidenceVerdict)") {
+                'JOURNAL_PERMISSION_DENIED' {
+                    Fail "JOURNAL_PERMISSION_DENIED: journal evidence unavailable for $($operation.name)."
+                }
+                'JOURNALCTL_FAILED' {
+                    Fail "JOURNALCTL_FAILED: journal evidence unavailable for $($operation.name)."
+                }
+                'JOURNAL_EVENT_TIMEOUT' {
+                    Fail "JOURNAL_EVENT_TIMEOUT: no terminal journal event for $($operation.name)."
+                }
+                'LOG_EVIDENCE_UNAVAILABLE' {
+                    Fail "LOG_EVIDENCE_UNAVAILABLE: journal evidence unavailable for $($operation.name)."
+                }
+                'CACHE_HIT_MISSING' {
+                    Fail "CACHE_HIT_MISSING: exact CACHE_HIT absent for $($operation.name)."
+                }
+                'REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT' {
+                    Fail "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT: $($operation.name)."
+                }
+            }
+            if ($operation.cacheHit -eq 'unknown' -or
+                $operation.remoteStorageStarted -eq 'unknown' -or
+                $operation.journalReadable -eq 'unknown' -or
+                $operation.logEvidenceAvailable -eq 'unknown') {
+                Fail "LOG_EVIDENCE_UNAVAILABLE: tri-state evidence is unknown for $($operation.name)."
+            }
+            if ($operation.cacheHit -ne $true) {
+                Fail "CACHE_HIT_MISSING: exact CACHE_HIT absent for $($operation.name)."
+            }
         }
-        if ($operation.remoteStorageStarted) {
-            Fail "NO-GO: remote storage contacted for HIT $($operation.name)."
+        if ($operation.remoteStorageStarted -eq $true) {
+            Fail "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT: $($operation.name)."
         }
         if ($operation.name -eq 'fullGet') {
             if ([int64]$operation.sizeBytes -ne $ExpectedTrackSize -or
@@ -510,6 +584,8 @@ function Invoke-SelfTest {
         shadowHealth = 200; publicHealth = 200; sqliteIntegrity = 'ok'
         foreignKeyViolations = 0; cacheIndexIntegrity = 'ok'
         criticalEventCount = 0; secretLeakSuspected = $false
+        journalReadable = $true; logEvidenceAvailable = $true
+        journalVerdict = $null
     }
     if ($SelfTestScenario -eq 'PublicListener') { $base.publicListenerCount = 1 }
     if ($SelfTestScenario -eq 'Restarted') { $base.nRestarts = 1 }
@@ -524,6 +600,25 @@ function Invoke-SelfTest {
         if ($SelfTestScenario -eq 'PidChanged') { $second.mainPid = 64750 }
         Add-Sample $second
         Assert-Sample $second
+        if ($SelfTestScenario -eq 'EvidenceFailure') {
+            $evidenceRecord = [pscustomobject]@{
+                timestampUtc = $second.timestampUtc
+                operations = @([pscustomobject]@{
+                    name = 'headHit'; ok = $true; status = 200; sizeBytes = 0
+                    sha256 = $null; requestId = 'phase64a-selftest'
+                    elapsedMs = 1.0; requiresCacheHit = $true; cacheHit = $true
+                    remoteStorageStarted = $true; journalReadable = $true
+                    logEvidenceAvailable = $true
+                    evidenceVerdict = 'REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT'
+                    sanitizedEvents = @([pscustomobject]@{
+                        requestId = 'phase64a-selftest'
+                        event = 'REMOTE_STORAGE_REQUEST_STARTED'
+                    })
+                })
+            }
+            Add-RequestRecord $evidenceRecord
+            Assert-RequestRecord $evidenceRecord
+        }
         if ($SelfTestScenario -eq 'Interrupted') {
             Fail 'Simulated interruption.'
         }
@@ -554,6 +649,7 @@ import ssl
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 SERVICE = "homespotify-api-shadow.service"
@@ -578,6 +674,9 @@ SENSITIVE = re.compile(
     r"(authorization|bearer\s+|AUTH_TOKEN_SECRET|AUDIO_REMOTE_SHARED_SECRET)",
     re.IGNORECASE,
 )
+UNKNOWN = "unknown"
+JOURNAL_ATTEMPTS = 20
+JOURNAL_POLL_SECONDS = 0.5
 
 def run(args, timeout=30):
     result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
@@ -650,40 +749,171 @@ def public_health():
     finally:
         connection.close()
 
-def journal_lines(since):
+def normalize_journal_since(value):
+    if value in (None, "", "-"):
+        return None
+    text = str(value).strip()
+    try:
+        if text.endswith("Z"):
+            parsed = datetime.fromisoformat(text[:-1] + "+00:00")
+        else:
+            parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        raise ValueError("invalid journal time window")
+    return parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+def classify_journal_failure(stderr):
+    lowered = (stderr or "").lower()
+    if "permission denied" in lowered or "not permitted" in lowered:
+        return "JOURNAL_PERMISSION_DENIED"
+    if (
+        "failed to open" in lowered
+        or "no journal files" in lowered
+        or "unit " in lowered and "not found" in lowered
+        or "failed to add match" in lowered
+    ):
+        return "LOG_EVIDENCE_UNAVAILABLE"
+    return "JOURNALCTL_FAILED"
+
+def journal_failure(verdict, return_code=None, failure_kind="command_failed"):
+    return {
+        "ok": False,
+        "lines": [],
+        "returnCode": return_code,
+        "journalReadable": UNKNOWN,
+        "logEvidenceAvailable": UNKNOWN,
+        "verdict": verdict,
+        "failureKind": failure_kind,
+    }
+
+def journal_query(since, priority=None):
+    try:
+        normalized = normalize_journal_since(since)
+    except ValueError:
+        return journal_failure(
+            "LOG_EVIDENCE_UNAVAILABLE", failure_kind="invalid_window"
+        )
     args = ["journalctl", "-u", SERVICE, "-o", "cat", "--no-pager"]
-    if since and since != "-":
-        args += ["--since", since]
-    _, stdout, _ = run(args, timeout=45)
-    return stdout.splitlines()
+    if priority:
+        args += ["-p", priority]
+    if normalized:
+        args += ["--since", normalized]
+    try:
+        return_code, stdout, stderr = run(args, timeout=45)
+    except subprocess.TimeoutExpired:
+        return journal_failure(
+            "JOURNALCTL_FAILED", failure_kind="command_timeout"
+        )
+    if return_code != 0:
+        verdict = classify_journal_failure(stderr)
+        if verdict == "JOURNAL_PERMISSION_DENIED":
+            kind = "permission_denied"
+        elif verdict == "LOG_EVIDENCE_UNAVAILABLE":
+            kind = "unit_or_journal_unavailable"
+        else:
+            kind = "command_failed"
+        return journal_failure(verdict, return_code, kind)
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    return {
+        "ok": True,
+        "lines": lines,
+        "returnCode": 0,
+        "journalReadable": True,
+        "logEvidenceAvailable": bool(lines),
+        "verdict": None,
+        "failureKind": None,
+    }
 
-def journal_events(request_id, since):
-    for attempt in range(20):
-        names = []
-        for line in journal_lines(since):
-            if request_id not in line:
-                continue
-            start = line.find("{")
-            if start < 0:
-                continue
-            try:
-                record = json.loads(line[start:])
-            except ValueError:
-                continue
-            if record.get("requestId") == request_id and isinstance(record.get("event"), str):
-                names.append(record["event"])
-        if "CACHE_HIT" in names or "REMOTE_STORAGE_REQUEST_STARTED" in names:
-            return names
-        if attempt < 19:
-            time.sleep(0.5)
-    return names
+def parsed_request_events(lines, request_id):
+    records = []
+    for line in lines:
+        if request_id not in line:
+            continue
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            record = json.loads(line[start:])
+        except ValueError:
+            continue
+        if record.get("requestId") == request_id:
+            records.append(record)
+    return records
 
-def priority_lines(priority, since):
-    args = ["journalctl", "-u", SERVICE, "-p", priority, "-o", "cat", "--no-pager"]
-    if since and since != "-":
-        args += ["--since", since]
-    _, stdout, _ = run(args, timeout=45)
-    return [line for line in stdout.splitlines() if line.strip()]
+def poll_request_evidence(request_id, since, expected_hit=True):
+    last_query = None
+    exact_records = []
+    for attempt in range(JOURNAL_ATTEMPTS):
+        last_query = journal_query(since)
+        if not last_query["ok"]:
+            return {
+                "cacheHit": UNKNOWN,
+                "remoteStorageStarted": UNKNOWN,
+                "journalReadable": UNKNOWN,
+                "logEvidenceAvailable": UNKNOWN,
+                "verdict": last_query["verdict"],
+                "events": [],
+            }
+        exact_records = parsed_request_events(last_query["lines"], request_id)
+        names = [
+            record.get("event") for record in exact_records
+            if isinstance(record.get("event"), str)
+        ]
+        cache_hit = "CACHE_HIT" in names
+        remote_started = "REMOTE_STORAGE_REQUEST_STARTED" in names
+        if remote_started:
+            return {
+                "cacheHit": cache_hit,
+                "remoteStorageStarted": True,
+                "journalReadable": True,
+                "logEvidenceAvailable": True,
+                "verdict": (
+                    "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT"
+                    if expected_hit else None
+                ),
+                "events": [sanitize(record) for record in exact_records],
+            }
+        if cache_hit:
+            return {
+                "cacheHit": True,
+                "remoteStorageStarted": False,
+                "journalReadable": True,
+                "logEvidenceAvailable": True,
+                "verdict": None,
+                "events": [sanitize(record) for record in exact_records],
+            }
+        if not expected_hit and exact_records:
+            return {
+                "cacheHit": False,
+                "remoteStorageStarted": False,
+                "journalReadable": True,
+                "logEvidenceAvailable": True,
+                "verdict": None,
+                "events": [sanitize(record) for record in exact_records],
+            }
+        if attempt < JOURNAL_ATTEMPTS - 1:
+            time.sleep(JOURNAL_POLL_SECONDS)
+    if exact_records:
+        verdict = "CACHE_HIT_MISSING" if expected_hit else None
+        cache_hit = False
+        remote_started = False
+        available = True
+    else:
+        verdict = "JOURNAL_EVENT_TIMEOUT"
+        cache_hit = UNKNOWN
+        remote_started = UNKNOWN
+        available = False
+    return {
+        "cacheHit": cache_hit,
+        "remoteStorageStarted": remote_started,
+        "journalReadable": True,
+        "logEvidenceAvailable": available,
+        "verdict": verdict,
+        "events": [sanitize(record) for record in exact_records],
+    }
 
 def count_files(root, suffix=None, exclude_metadata=False):
     count = 0
@@ -785,10 +1015,16 @@ def service_sample(since):
     addresses = listener_addresses()
     public = [address for address in addresses if address != "127.0.0.1:3002"]
     sqlite = sqlite_state()
-    lines = journal_lines(since)
-    priority_errors = priority_lines("err", since)
-    critical_count = len(priority_errors) + sum(1 for line in lines if CRITICAL.search(line))
-    leak = any(SENSITIVE.search(line) for line in lines)
+    journal = journal_query(since)
+    priority_errors = journal_query(since, "err")
+    journal_ok = journal["ok"] and priority_errors["ok"]
+    lines = journal["lines"] if journal["ok"] else []
+    error_lines = priority_errors["lines"] if priority_errors["ok"] else []
+    critical_count = (
+        len(error_lines) + sum(1 for line in lines if CRITICAL.search(line))
+        if journal_ok else UNKNOWN
+    )
+    leak = any(SENSITIVE.search(line) for line in lines) if journal_ok else UNKNOWN
     statvfs = os.statvfs(CACHE)
     return {
         "timestampUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -820,6 +1056,14 @@ def service_sample(since):
         "cacheIndexIntegrity": cache_index_integrity(),
         "criticalEventCount": critical_count,
         "secretLeakSuspected": leak,
+        "journalReadable": True if journal_ok else UNKNOWN,
+        "logEvidenceAvailable": (
+            bool(lines or error_lines) if journal_ok else UNKNOWN
+        ),
+        "journalVerdict": (
+            None if journal_ok else
+            journal["verdict"] if not journal["ok"] else priority_errors["verdict"]
+        ),
     }
 
 def token_from(path):
@@ -827,13 +1071,14 @@ def token_from(path):
         return ""
     return Path(path).read_text(encoding="ascii").strip()
 
-def operation(name, result, events, status, size=None, sha=None, cache_hit=False):
+def operation(name, result, evidence, status, size=None, sha=None, cache_hit=False):
     ok = result["status"] == status
     if size is not None:
         ok = ok and result["sizeBytes"] == size
     if sha is not None:
         ok = ok and result["sha256"] == sha
     return {
+        "timestampUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "name": name,
         "ok": ok,
         "status": result["status"],
@@ -842,37 +1087,50 @@ def operation(name, result, events, status, size=None, sha=None, cache_hit=False
         "requestId": result["requestId"],
         "elapsedMs": result["elapsedMs"],
         "requiresCacheHit": cache_hit,
-        "cacheHit": "CACHE_HIT" in events,
-        "remoteStorageStarted": "REMOTE_STORAGE_REQUEST_STARTED" in events,
+        "cacheHit": evidence["cacheHit"] if cache_hit else UNKNOWN,
+        "remoteStorageStarted": (
+            evidence["remoteStorageStarted"] if cache_hit else UNKNOWN
+        ),
+        "journalReadable": evidence["journalReadable"] if cache_hit else UNKNOWN,
+        "logEvidenceAvailable": (
+            evidence["logEvidenceAvailable"] if cache_hit else UNKNOWN
+        ),
+        "evidenceVerdict": evidence["verdict"] if cache_hit else None,
+        "sanitizedEvents": evidence["events"] if cache_hit else [],
     }
 
-def load_cycle(token, since, include_full):
-    operations = []
-    listing = http_request("GET", "/api/tracks?limit=1", token)
-    operations.append(operation("trackList", listing, [], 200))
-    head = http_request("HEAD", f"/api/tracks/{TRACK_ID}/stream", token)
-    head_events = journal_events(head["requestId"], since)
-    operations.append(operation("headHit", head, head_events, 200, size=0, cache_hit=True))
-    ranged = http_request(
-        "GET", f"/api/tracks/{TRACK_ID}/stream", token, range_value="bytes=0-1023"
-    )
-    range_events = journal_events(ranged["requestId"], since)
-    ranged_op = operation("rangeHit", ranged, range_events, 206, size=1024, cache_hit=True)
-    ranged_op["ok"] = ranged_op["ok"] and ranged["contentRange"] == f"bytes 0-1023/{EXPECTED_SIZE}"
-    operations.append(ranged_op)
-    if include_full:
-        full = http_request("GET", f"/api/tracks/{TRACK_ID}/stream", token)
-        full_events = journal_events(full["requestId"], since)
-        operations.append(
-            operation(
-                "fullGet", full, full_events, 200, size=EXPECTED_SIZE,
-                sha=EXPECTED_SHA256, cache_hit=True,
-            )
+def request_operation(kind, token, since):
+    if kind == "track-list":
+        listing = http_request("GET", "/api/tracks?limit=1", token)
+        return operation("trackList", listing, {}, 200)
+    if kind == "head-hit":
+        head = http_request("HEAD", f"/api/tracks/{TRACK_ID}/stream", token)
+        evidence = poll_request_evidence(head["requestId"], since)
+        return operation(
+            "headHit", head, evidence, 200, size=0, cache_hit=True
         )
-    return {
-        "timestampUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "operations": operations,
-    }
+    if kind == "range-hit":
+        ranged = http_request(
+            "GET", f"/api/tracks/{TRACK_ID}/stream", token,
+            range_value="bytes=0-1023",
+        )
+        evidence = poll_request_evidence(ranged["requestId"], since)
+        result = operation(
+            "rangeHit", ranged, evidence, 206, size=1024, cache_hit=True
+        )
+        result["ok"] = (
+            result["ok"]
+            and ranged["contentRange"] == f"bytes 0-1023/{EXPECTED_SIZE}"
+        )
+        return result
+    if kind == "full-get":
+        full = http_request("GET", f"/api/tracks/{TRACK_ID}/stream", token)
+        evidence = poll_request_evidence(full["requestId"], since)
+        return operation(
+            "fullGet", full, evidence, 200, size=EXPECTED_SIZE,
+            sha=EXPECTED_SHA256, cache_hit=True,
+        )
+    raise ValueError("unknown request operation")
 
 def sanitize(value):
     if isinstance(value, dict):
@@ -893,9 +1151,26 @@ def sanitized_journal(since):
     events = []
     secret_leak = False
     error_count = warning_count = 0
-    all_lines = journal_lines(since)
-    warning_lines = priority_lines("warning", since)
-    error_lines = priority_lines("err", since)
+    all_result = journal_query(since)
+    warning_result = journal_query(since, "warning")
+    error_result = journal_query(since, "err")
+    failed = next(
+        (item for item in (all_result, warning_result, error_result) if not item["ok"]),
+        None,
+    )
+    if failed:
+        return {
+            "events": [],
+            "errorCount": UNKNOWN,
+            "warningCount": UNKNOWN,
+            "secretLeakSuspected": UNKNOWN,
+            "journalReadable": UNKNOWN,
+            "logEvidenceAvailable": UNKNOWN,
+            "verdict": failed["verdict"],
+        }
+    all_lines = all_result["lines"]
+    warning_lines = warning_result["lines"]
+    error_lines = error_result["lines"]
     for line in all_lines:
         if SENSITIVE.search(line):
             secret_leak = True
@@ -922,6 +1197,41 @@ def sanitized_journal(since):
         "errorCount": error_count,
         "warningCount": warning_count,
         "secretLeakSuspected": secret_leak,
+        "journalReadable": True,
+        "logEvidenceAvailable": bool(all_lines or warning_lines or error_lines),
+        "verdict": None,
+    }
+
+def journal_preflight(since):
+    executable = journal_query(since)
+    if not executable["ok"]:
+        return {
+            "journalctlExecutable": UNKNOWN,
+            "journalReadable": UNKNOWN,
+            "logEvidenceAvailable": UNKNOWN,
+            "verdict": executable["verdict"],
+            "probe": None,
+        }
+    probe_since = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    health = http_request("GET", "/health")
+    evidence = poll_request_evidence(
+        health["requestId"], probe_since, expected_hit=False
+    )
+    probe = operation("journalHealthProbe", health, evidence, 200)
+    probe.update({
+        "cacheHit": evidence["cacheHit"],
+        "remoteStorageStarted": evidence["remoteStorageStarted"],
+        "journalReadable": evidence["journalReadable"],
+        "logEvidenceAvailable": evidence["logEvidenceAvailable"],
+        "evidenceVerdict": evidence["verdict"],
+        "sanitizedEvents": evidence["events"],
+    })
+    return {
+        "journalctlExecutable": True,
+        "journalReadable": evidence["journalReadable"],
+        "logEvidenceAvailable": evidence["logEvidenceAvailable"],
+        "verdict": evidence["verdict"],
+        "probe": probe,
     }
 
 def agent_reachable():
@@ -939,6 +1249,9 @@ def main():
     args = parser.parse_args()
     if args.mode == "preflight":
         result = service_sample(args.since)
+        sample_journal_readable = result["journalReadable"]
+        sample_journal_verdict = result["journalVerdict"]
+        journal_state = journal_preflight(args.since)
         result.update({
             "serviceEnabled": enabled(),
             "releaseId": CURRENT.resolve().name if CURRENT.is_symlink() else "",
@@ -948,13 +1261,23 @@ def main():
             "storageAgentReachable": agent_reachable(),
             "incomingCount": count_files(INCOMING),
             "unexpectedVariantCount": count_files(VARIANTS),
+            "journalctlExecutable": journal_state["journalctlExecutable"],
+            "journalReadable": (
+                True
+                if sample_journal_readable is True
+                and journal_state["journalReadable"] is True
+                else UNKNOWN
+            ),
+            "logEvidenceAvailable": journal_state["logEvidenceAvailable"],
+            "journalVerdict": sample_journal_verdict or journal_state["verdict"],
+            "journalProbe": journal_state["probe"],
         })
     elif args.mode == "sample":
         result = service_sample(args.since)
-    elif args.mode == "load":
-        result = load_cycle(token_from(args.token_file), args.since, False)
-    elif args.mode == "full":
-        result = load_cycle(token_from(args.token_file), args.since, True)
+    elif args.mode in ("track-list", "head-hit", "range-hit", "full-get"):
+        result = request_operation(
+            args.mode, token_from(args.token_file), args.since
+        )
     elif args.mode == "integrity":
         result = sqlite_state()
         result.update({
@@ -979,18 +1302,68 @@ if __name__ == "__main__":
 
 Assert-LocalArguments
 
-if ($ValidateOnly) {
-    [pscustomobject]@{
-        ok = $true
-        mode = 'ValidateOnly'
-        sshConnectionsOpened = 0
-        durationMinutes = $DurationMinutes
-        expectedReleaseId = $ExpectedReleaseId
-    } | ConvertTo-Json -Compress
-    exit 0
-}
-
 Initialize-Output
+
+if ($ValidateOnly) {
+    $validateExitCode = 0
+    $validatePayload = $null
+    try {
+        $script:StorageAgentInitialStatus = Get-WindowsStorageAgentStatus
+        [void](Invoke-SshText -RemoteCommand "printf '{`"ok`":true}`n'")
+        Install-RemoteHelper
+        $validatePreflight = Invoke-RemoteMode -Mode 'preflight'
+        if ($null -ne $validatePreflight.journalProbe) {
+            Add-RequestRecord ([pscustomobject]@{
+                timestampUtc = Get-UtcIso
+                operations = @($validatePreflight.journalProbe)
+            })
+        }
+        Assert-Preflight $validatePreflight
+        $validatePayload = [pscustomobject]@{
+            ok = $true
+            mode = 'ValidateOnly'
+            soakStarted = $false
+            journalReadable = $validatePreflight.journalReadable
+            logEvidenceAvailable = $validatePreflight.logEvidenceAvailable
+            sshConnectionsOpened = $script:SshConnectionCount
+            durationMinutes = $DurationMinutes
+            expectedReleaseId = $ExpectedReleaseId
+        }
+    } catch {
+        $validateExitCode = 1
+        $validatePayload = [pscustomobject]@{
+            ok = $false
+            mode = 'ValidateOnly'
+            soakStarted = $false
+            failureReason = $_.Exception.Message
+            sshConnectionsOpened = $script:SshConnectionCount
+            expectedReleaseId = $ExpectedReleaseId
+        }
+    } finally {
+        if ($script:SshWasUsed) {
+            try {
+                $paths = @($script:RemoteTokenPath, $script:RemoteHelperPath) |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                if ($paths.Count -gt 0) {
+                    $quoted = ($paths | ForEach-Object { "'$_'" }) -join ' '
+                    [void](Invoke-SshText -RemoteCommand "sudo -n rm -f -- $quoted")
+                }
+            } catch {
+                $validateExitCode = 1
+                $validatePayload = [pscustomobject]@{
+                    ok = $false
+                    mode = 'ValidateOnly'
+                    soakStarted = $false
+                    failureReason = 'Remote cleanup could not be confirmed.'
+                    sshConnectionsOpened = $script:SshConnectionCount
+                    expectedReleaseId = $ExpectedReleaseId
+                }
+            }
+        }
+    }
+    $validatePayload | ConvertTo-Json -Compress
+    exit $validateExitCode
+}
 
 if ($SelfTest) {
     Invoke-SelfTest
@@ -1010,6 +1383,12 @@ try {
 
     $preflight = Invoke-RemoteMode -Mode 'preflight'
     $script:Baseline = $preflight
+    if ($null -ne $preflight.journalProbe) {
+        Add-RequestRecord ([pscustomobject]@{
+            timestampUtc = Get-UtcIso
+            operations = @($preflight.journalProbe)
+        })
+    }
     Assert-Preflight $preflight
     $preflightCompleted = $true
 
@@ -1035,10 +1414,7 @@ try {
                 $lastTokenMint = $now
             }
             $includeFull = $now -ge $nextFull
-            $mode = if ($includeFull) { 'full' } else { 'load' }
-            $record = Invoke-RemoteMode -Mode $mode
-            Add-RequestRecord $record
-            Assert-RequestRecord $record
+            Invoke-LoadCycle -IncludeFull $includeFull
             $script:LoadCycleCount++
             $nextLoad = $nextLoad.AddMinutes($LoadIntervalMinutes)
             if ($nextLoad -le $now) { $nextLoad = $now.AddMinutes($LoadIntervalMinutes) }
@@ -1062,9 +1438,7 @@ try {
     if (([DateTimeOffset]::UtcNow - $lastTokenMint).TotalMinutes -ge 25) {
         New-ShadowToken
     }
-    $finalRequests = Invoke-RemoteMode -Mode 'full'
-    Add-RequestRecord $finalRequests
-    Assert-RequestRecord $finalRequests
+    Invoke-LoadCycle -IncludeFull $true
 
     $integrity = Invoke-RemoteMode -Mode 'integrity'
     if ($integrity.integrity -ne 'ok' -or
@@ -1089,6 +1463,15 @@ try {
     foreach ($event in @($journal.events)) {
         $script:SanitizedEvents.Add($event)
         ConvertTo-JsonLine $event | Add-Content -LiteralPath $script:EventsPath -Encoding ascii
+    }
+    if ($journal.journalReadable -ne $true) {
+        if ($journal.verdict -eq 'JOURNAL_PERMISSION_DENIED') {
+            Fail 'JOURNAL_PERMISSION_DENIED: final journald control failed.'
+        }
+        if ($journal.verdict -eq 'JOURNALCTL_FAILED') {
+            Fail 'JOURNALCTL_FAILED: final journald control failed.'
+        }
+        Fail 'LOG_EVIDENCE_UNAVAILABLE: final journald control failed.'
     }
     if ($journal.secretLeakSuspected -or [int64]$journal.errorCount -gt 0) {
         Fail 'NO-GO: journald contains an error or suspected sensitive value.'

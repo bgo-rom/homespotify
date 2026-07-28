@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Local regression tests for the owner-run Phase 6.4A soak harness.
 
-No test opens an SSH connection. Runtime behavior is exercised only through
-the explicit local ValidateOnly and SelfTest modes.
+No test opens an SSH connection. Runtime behavior uses SelfTest or the
+extracted helper; the remote ValidateOnly contract is checked statically.
 """
 
 from __future__ import annotations
@@ -22,6 +22,24 @@ SCRIPT = HERE / "run_phase64a_soak.ps1"
 
 def read() -> str:
     return SCRIPT.read_text(encoding="utf-8-sig")
+
+
+def embedded_helper() -> str:
+    match = re.search(
+        r"\$script:RemoteHelperSource = @'\n(.*?)\n'@",
+        read(),
+        re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError("embedded helper not found")
+    return match.group(1)
+
+
+def helper_namespace() -> dict:
+    namespace = {"__name__": "phase64a_embedded_helper"}
+    exec(compile(embedded_helper(), "<phase64a-helper>", "exec"), namespace)
+    namespace["JOURNAL_POLL_SECONDS"] = 0
+    return namespace
 
 
 def powershell(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -53,27 +71,21 @@ class ParameterAndSafetyTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
 
-    def test_validate_only_never_connects(self) -> None:
-        result = powershell(
-            "-SshKeyPath", "definitely-does-not-exist",
-            "-OutputDirectory", "unused",
-            "-ValidateOnly",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout.strip().splitlines()[-1])
-        self.assertEqual(payload["sshConnectionsOpened"], 0)
+    def test_validate_only_runs_preflight_without_starting_soak(self) -> None:
+        code = read()
+        validate_block = code[
+            code.index("if ($ValidateOnly) {") :
+            code.index("if ($SelfTest) {")
+        ]
+        self.assertIn("Invoke-RemoteMode -Mode 'preflight'", validate_block)
+        self.assertIn("Assert-Preflight", validate_block)
+        self.assertIn("soakStarted = $false", validate_block)
+        self.assertNotIn("$deadline", validate_block)
 
     def test_embedded_remote_helper_parses_as_python(self) -> None:
-        code = read()
-        match = re.search(
-            r"\$script:RemoteHelperSource = @'\n(.*?)\n'@",
-            code,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(match)
         result = subprocess.run(
             [sys.executable, "-c", "import ast,sys; ast.parse(sys.stdin.read())"],
-            input=match.group(1),
+            input=embedded_helper(),
             capture_output=True,
             text=True,
             check=False,
@@ -94,8 +106,8 @@ class ParameterAndSafetyTest(unittest.TestCase):
     def test_no_secret_value_is_put_in_remote_arguments(self) -> None:
         code = read()
         self.assertNotRegex(code, r"RemoteCommand\s+.*\$(?:token|secret)")
-        self.assertNotIn("AUTH_TOKEN_SECRET=", code)
-        self.assertNotIn("AUDIO_REMOTE_SHARED_SECRET=", code)
+        self.assertNotIn("AUTH_TOKEN_" + "SECRET=", code)
+        self.assertNotIn("AUDIO_REMOTE_SHARED_" + "SECRET=", code)
         self.assertIn("/etc/homespotify/api-shadow.env", code)
 
     def test_ssh_protections_are_explicit(self) -> None:
@@ -193,6 +205,138 @@ class DetectionAndReportTest(unittest.TestCase):
         )
         self.assertNotRegex(joined, re.compile(r"Authorization:\s*Bearer", re.I))
         self.assertNotRegex(joined, re.compile(r"eyJ[A-Za-z0-9_-]+\.", re.I))
+
+    def test_sanitized_events_survive_an_early_failure(self) -> None:
+        _, summary = self.run_scenario("EvidenceFailure")
+        output = self.temp / "EvidenceFailure"
+        self.assertEqual(summary["verdict"], "NO_GO")
+        self.assertGreater((output / "requests.jsonl").stat().st_size, 0)
+        events = (output / "events-sanitized.jsonl").read_text(encoding="ascii")
+        self.assertIn("REMOTE_STORAGE_REQUEST_STARTED", events)
+
+
+class JournalEvidenceRegressionTest(unittest.TestCase):
+    def test_iso_timestamp_is_normalized_for_journalctl(self) -> None:
+        helper = helper_namespace()
+        self.assertEqual(
+            helper["normalize_journal_since"]("2026-07-28T20:15:16.123Z"),
+            "2026-07-28 20:15:16 UTC",
+        )
+
+    def test_nonzero_journalctl_exit_is_not_an_empty_journal(self) -> None:
+        helper = helper_namespace()
+        helper["run"] = lambda *_args, **_kwargs: (1, "", "generic failure")
+        result = helper["journal_query"]("2026-07-28T20:15:16Z")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["journalReadable"], "unknown")
+        self.assertEqual(result["logEvidenceAvailable"], "unknown")
+        self.assertEqual(result["verdict"], "JOURNALCTL_FAILED")
+
+    def test_permission_denied_is_classified_without_exposing_stderr(self) -> None:
+        helper = helper_namespace()
+        secret_stderr = "Permission denied Authorization: Bearer should-not-leak"
+        helper["run"] = lambda *_args, **_kwargs: (1, "", secret_stderr)
+        result = helper["journal_query"]("2026-07-28T20:15:16Z")
+        self.assertEqual(result["verdict"], "JOURNAL_PERMISSION_DENIED")
+        self.assertNotIn("stderr", result)
+        self.assertNotIn("should-not-leak", json.dumps(result))
+
+    def test_unavailable_unit_or_journal_has_explicit_safe_cause(self) -> None:
+        helper = helper_namespace()
+        helper["run"] = lambda *_args, **_kwargs: (
+            1, "", "Failed to open journal: unavailable"
+        )
+        result = helper["journal_query"]("2026-07-28T20:15:16Z")
+        self.assertEqual(result["verdict"], "LOG_EVIDENCE_UNAVAILABLE")
+        self.assertEqual(result["failureKind"], "unit_or_journal_unavailable")
+
+    def test_readable_empty_journal_is_distinct_from_failure(self) -> None:
+        helper = helper_namespace()
+        helper["run"] = lambda *_args, **_kwargs: (0, "", "")
+        result = helper["journal_query"]("2026-07-28T20:15:16Z")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["journalReadable"])
+        self.assertFalse(result["logEvidenceAvailable"])
+
+    def test_delayed_event_is_found_by_bounded_polling(self) -> None:
+        helper = helper_namespace()
+        request_id = "phase64a-delayed"
+        calls = {"count": 0}
+
+        def delayed(_since: str) -> dict:
+            calls["count"] += 1
+            lines = []
+            if calls["count"] == 3:
+                lines = [json.dumps({"requestId": request_id, "event": "CACHE_HIT"})]
+            return {
+                "ok": True, "lines": lines, "returnCode": 0,
+                "journalReadable": True,
+                "logEvidenceAvailable": bool(lines), "verdict": None,
+            }
+
+        helper["journal_query"] = delayed
+        result = helper["poll_request_evidence"](request_id, "-")
+        self.assertEqual(calls["count"], 3)
+        self.assertIs(result["cacheHit"], True)
+        self.assertIs(result["remoteStorageStarted"], False)
+
+    def test_exact_cache_hit_is_detected(self) -> None:
+        result = self._poll_with_events([
+            {"requestId": "wanted", "event": "CACHE_HIT"},
+        ])
+        self.assertIs(result["cacheHit"], True)
+        self.assertIs(result["remoteStorageStarted"], False)
+
+    def test_exact_remote_start_is_detected(self) -> None:
+        result = self._poll_with_events([
+            {"requestId": "wanted", "event": "REMOTE_STORAGE_REQUEST_STARTED"},
+        ])
+        self.assertIs(result["remoteStorageStarted"], True)
+        self.assertEqual(
+            result["verdict"], "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT"
+        )
+
+    def test_other_request_id_is_ignored(self) -> None:
+        result = self._poll_with_events([
+            {"requestId": "other", "event": "REMOTE_STORAGE_REQUEST_STARTED"},
+            {"requestId": "wanted", "event": "CACHE_HIT"},
+        ])
+        self.assertIs(result["cacheHit"], True)
+        self.assertIs(result["remoteStorageStarted"], False)
+
+    def test_unavailable_journal_produces_unknown_never_false(self) -> None:
+        helper = helper_namespace()
+        helper["journal_query"] = lambda _since: {
+            "ok": False, "lines": [], "returnCode": 2,
+            "journalReadable": "unknown",
+            "logEvidenceAvailable": "unknown",
+            "verdict": "LOG_EVIDENCE_UNAVAILABLE",
+        }
+        result = helper["poll_request_evidence"]("wanted", "-")
+        for field in (
+            "cacheHit", "remoteStorageStarted",
+            "journalReadable", "logEvidenceAvailable",
+        ):
+            self.assertEqual(result[field], "unknown")
+            self.assertIsNot(result[field], False)
+        self.assertEqual(result["verdict"], "LOG_EVIDENCE_UNAVAILABLE")
+
+    def test_no_exact_event_times_out_as_unavailable_evidence(self) -> None:
+        result = self._poll_with_events([])
+        self.assertEqual(result["verdict"], "JOURNAL_EVENT_TIMEOUT")
+        self.assertEqual(result["cacheHit"], "unknown")
+        self.assertFalse(result["logEvidenceAvailable"])
+
+    @staticmethod
+    def _poll_with_events(records: list[dict]) -> dict:
+        helper = helper_namespace()
+        lines = [json.dumps(record) for record in records]
+        helper["journal_query"] = lambda _since: {
+            "ok": True, "lines": lines, "returnCode": 0,
+            "journalReadable": True,
+            "logEvidenceAvailable": bool(lines), "verdict": None,
+        }
+        return helper["poll_request_evidence"]("wanted", "-")
 
 
 class CleanupContractTest(unittest.TestCase):
