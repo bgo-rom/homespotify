@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Copie SQLite cohérente par VACUUM INTO, pour le shadow Phase 6.
 

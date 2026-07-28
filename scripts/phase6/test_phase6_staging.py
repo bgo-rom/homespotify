@@ -499,15 +499,47 @@ class StageOnlyOrchestratorTest(unittest.TestCase):
         self.text = read(ORCHESTRATOR)
         self.code = code_of(ORCHESTRATOR)
 
+    def stage_only_branch(self) -> str:
+        """Le corps du SEUL mode StageOnly.
+
+        Depuis la Phase 6.3, l'orchestrateur sait aussi installer : il
+        mentionne donc legitimement /opt, systemd et `dist/server.js`.
+        Chercher ces motifs dans tout le fichier confondrait « le mode
+        staging n'installe rien » avec « le script ne sait pas installer ».
+        C'est la branche, et elle seule, qui porte la garantie.
+        """
+        start = self.code.index("if ($StageOnly) {")
+        end = self.code.index("# MODE ROLLBACK-INSTALL") if "# MODE ROLLBACK-INSTALL" in self.code             else self.code.index("if ($RollbackInstall) {")
+        return self.code[start:end]
+
     def test_stage_only_and_cleanup_staging_are_declared(self) -> None:
         self.assertIn("[switch] $StageOnly", self.code)
         self.assertIn("[switch] $CleanupStaging", self.code)
         self.assertIn("[string] $SourceCoversPath", self.code)
 
-    def test_real_deployment_modes_remain_disarmed(self) -> None:
-        self.assertIn("appartiennent à la Phase 6.3", self.text)
+    def test_stage_only_still_installs_nothing(self) -> None:
+        # La Phase 6.3 arme l'installation. La garantie du mode staging n'est
+        # donc plus « le script ne sait pas installer » mais « ce mode-la
+        # n'installe rien » — verifiee sur sa branche.
+        branch = self.stage_only_branch()
         for forbidden in ("systemctl enable", "systemctl start", "useradd",
-                          "systemd-analyze", "dist/server.js"):
+                          "systemd-analyze", "dist/server.js",
+                          "vps_phase6_activate_shadow.sh"):
+            self.assertNotIn(forbidden, branch)
+
+    def test_boot_activation_is_never_performed(self) -> None:
+        # `systemctl enable` ferait revenir seul un shadow non qualifie apres
+        # un redemarrage du VPS. Aucun mode ne le fait ; le setup distant ne
+        # le fait que derriere --enable, jamais appele ici.
+        self.assertNotIn("systemctl enable", self.code)
+        self.assertIn("--verify-only", self.code)
+        self.assertIn("bootEnabled", self.code)
+        self.assertIn("le service a été activé au démarrage", self.code)
+
+    def test_cutover_is_never_performed(self) -> None:
+        self.assertIn("cutoverPerformed = $false", self.code)
+        for forbidden in ("caddy reload", "systemctl restart caddy",
+                          "reverse_proxy", "certbot", "reboot"):
             self.assertNotIn(forbidden, self.code)
 
     def test_stage_only_never_starts_the_application(self) -> None:
@@ -521,9 +553,10 @@ class StageOnlyOrchestratorTest(unittest.TestCase):
     def test_stage_only_writes_only_under_the_staging_root(self) -> None:
         self.assertIn("$RemoteStagingRoot = '/home/debian/homespotify-phase6-staging'",
                       self.code)
+        branch = self.stage_only_branch()
         for privileged in ("/opt/homespotify", "/var/lib/homespotify",
                            "/etc/homespotify", "/etc/systemd"):
-            self.assertNotIn(privileged, self.code)
+            self.assertNotIn(privileged, branch)
 
     def test_secrets_are_never_passed_as_arguments(self) -> None:
         # Aucun paramètre de secret, et le rendu reçoit son entrée par le
@@ -589,7 +622,8 @@ class StageOnlyOrchestratorTest(unittest.TestCase):
         # « set: command not found » — un symptôme sans rapport visible avec
         # sa cause. Le base64 supprime la classe entière.
         self.assertIn("[Convert]::ToBase64String", self.code)
-        self.assertIn("base64 -d | bash -s --", self.code)
+        self.assertIn("base64 -d | $shell$remoteArgs", self.code)
+        self.assertIn("bash -s --", self.code)
         self.assertIn("$OutputEncoding = New-Object System.Text.UTF8Encoding($false)",
                       self.code)
 
@@ -603,7 +637,7 @@ class StageOnlyOrchestratorTest(unittest.TestCase):
     def test_no_secret_travels_on_the_remote_command_line(self) -> None:
         # Ce qui passe en ligne de commande distante est le script encodé et
         # des chemins publics. Les secrets vivent dans le fichier 0600.
-        self.assertIn("$command = \"echo $encoded | base64 -d | bash -s --$remoteArgs\"",
+        self.assertIn("$command = \"echo $encoded | base64 -d | $shell$remoteArgs\"",
                       self.code)
         for line in self.code.splitlines():
             if "& ssh " in line or "$command =" in line:
@@ -643,11 +677,12 @@ class StageOnlyOrchestratorTest(unittest.TestCase):
             self.assertIn(field, self.code)
 
     def test_staging_stops_before_installation(self) -> None:
-        stage_only = self.code[self.code.index("if ($StageOnly) {"):]
-        self.assertIn("exit 0", stage_only)
+        branch = self.stage_only_branch()
+        self.assertIn("exit 0", branch)
         for installation in ("vps_phase6_install_release.sh",
-                             "vps_phase6_systemd_setup.sh"):
-            self.assertNotIn(installation, stage_only)
+                             "vps_phase6_systemd_setup.sh",
+                             "vps_phase6_start_shadow.sh"):
+            self.assertNotIn(installation, branch)
 
 
 # ===========================================================================
@@ -834,8 +869,12 @@ class CrossCuttingTest(unittest.TestCase):
     def test_no_script_touches_caddy_wireguard_or_the_firewall(self) -> None:
         for name in self.STAGING_SCRIPTS:
             code = code_of(HERE / name)
+            # Les ACTIONS sont bannies, pas les mots : `systemctl is-active
+            # wg-quick@wg0` est une LECTURE, et l'interdire empecherait de
+            # prouver que WireGuard n'a pas bouge.
             for action in ("caddy reload", "systemctl restart caddy",
-                           "wg-quick", "ufw allow", "ufw enable",
+                           "systemctl stop caddy", "wg-quick up", "wg-quick down",
+                           "ufw allow", "ufw enable",
                            "iptables -A", "nft add", "resolvectl"):
                 self.assertNotIn(action, code, f"{name} : {action}")
 
@@ -865,6 +904,34 @@ class CrossCuttingTest(unittest.TestCase):
 
                 py_compile.compile(str(path), doraise=True)
 
+    def test_the_generated_package_json_carries_no_bom(self) -> None:
+        # Défaut trouvé au premier démarrage réel : `Set-Content -Encoding
+        # utf8` ajoute un BOM sous Windows PowerShell 5.1, et
+        # `dist/routes/admin.js` fait un `JSON.parse` de ce fichier au
+        # chargement. L'API refusait de démarrer ; aucun contrôle de manifeste
+        # ne pouvait le voir, puisque le fichier était intact et son empreinte
+        # juste.
+        build = read(HERE / "build_shadow_artifact.ps1")
+        self.assertIn("[IO.File]::WriteAllText(", build)
+        self.assertIn("New-Object System.Text.UTF8Encoding($false)", build)
+        self.assertNotIn("Set-Content -LiteralPath (Join-Path $staging 'package.json')",
+                         build)
+
+    def test_no_artifact_file_starts_with_a_bom(self) -> None:
+        # Contrôle de bout en bout sur l'artefact assemblé, s'il existe : un
+        # BOM en tête d'un fichier lu par `JSON.parse` ou par `import` est un
+        # défaut qui ne se voit qu'à l'exécution.
+        staging = Path("F:/dev/homespotify-phase6-staging/artifact")
+        if not staging.is_dir():
+            self.skipTest("artefact non assemblé")
+        offenders = [
+            path.relative_to(staging).as_posix()
+            for path in staging.rglob("*")
+            if path.is_file() and path.suffix in (".json", ".js", ".sql")
+            and path.read_bytes().startswith(b"\xef\xbb\xbf")
+        ]
+        self.assertEqual(offenders, [], f"BOM en tête de : {offenders[:5]}")
+
     def test_shell_scripts_carry_no_carriage_return(self) -> None:
         # Un `.sh` en CRLF est refusé par bash de façon illisible. Un outil qui
         # réécrit ces fichiers sous Windows introduit le défaut sans le voir :
@@ -886,6 +953,48 @@ class CrossCuttingTest(unittest.TestCase):
             self.assertTrue(manifest.is_excluded(excluded), excluded)
         for kept in ("dist/server.js", "package.json", "drizzle/0001_init.sql"):
             self.assertFalse(manifest.is_excluded(kept), kept)
+
+    def test_data_directory_names_are_anchored_at_the_top_level(self) -> None:
+        # Défaut trouvé au premier démarrage réel : `storage` exclu à
+        # n'importe quel niveau écartait `dist/storage/`, soit TOUTE la couche
+        # de stockage audio — les douze fichiers que la Phase 6 existe pour
+        # qualifier. Le manifeste restait cohérent avec lui-même et le
+        # transfert exact : seul un `import` réel pouvait le révéler.
+        for kept in ("dist/storage/local-file-storage.js",
+                     "dist/storage/audio-storage.js",
+                     "dist/storage/cache/cached-audio-storage.js",
+                     "dist/storage/remote/storage-agent-client.js",
+                     "dist/routes/tracks.js", "dist/db/client.js"):
+            self.assertFalse(manifest.is_excluded(kept), kept)
+        # À la racine de l'artefact, ces noms restent des données.
+        for excluded in ("storage/music/track.flac", "logs/api.log",
+                         "cache/audio/x.bin", "backups/db.sqlite",
+                         "tests/fixture.js"):
+            self.assertTrue(manifest.is_excluded(excluded), excluded)
+
+    def test_never_legitimate_directories_are_excluded_at_any_depth(self) -> None:
+        for excluded in ("dist/node_modules/x.js", "dist/__pycache__/a.pyc",
+                         "dist/routes/__tests__/spec.js", "a/b/.git/config",
+                         "dist/coverage/report.js"):
+            self.assertTrue(manifest.is_excluded(excluded), excluded)
+
+    def test_the_whole_storage_layer_survives_the_filter(self) -> None:
+        # Contrôle de bout en bout sur le vrai `dist` : aucun `.js` de runtime
+        # ne doit disparaître silencieusement de l'artefact.
+        dist = Path(__file__).resolve().parents[2] / "services" / "api" / "dist"
+        if not dist.is_dir():
+            self.skipTest("dist absent : lancer le build d'abord")
+        # Les chemins sont évalués tels qu'ils apparaissent DANS L'ARTEFACT,
+        # c'est-à-dire préfixés par `dist/`. C'est cette forme qui compte :
+        # `storage/x.js` seul serait légitimement écarté comme répertoire de
+        # données de premier niveau.
+        dropped = [
+            f"dist/{path.relative_to(dist).as_posix()}"
+            for path in dist.rglob("*.js")
+            if path.is_file()
+            and manifest.is_excluded(f"dist/{path.relative_to(dist).as_posix()}")
+        ]
+        self.assertEqual(dropped, [], f"code runtime écarté : {dropped[:8]}")
 
 
 if __name__ == "__main__":

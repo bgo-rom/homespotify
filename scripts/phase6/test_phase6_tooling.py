@@ -498,7 +498,8 @@ class RemoteScriptsTest(unittest.TestCase):
         # ("tres-secret", "AAAA…") qui servent de contrôles négatifs : les
         # analyser reviendrait à signaler comme fuite la preuve qu'il n'y en a
         # pas.
-        fixtures = {"test_phase6_tooling.py", "test_phase6_staging.py"}
+        fixtures = {"test_phase6_tooling.py", "test_phase6_staging.py",
+                    "test_phase6_activation.py"}
         for path in HERE.glob("*"):
             if not path.is_file() or path.name in fixtures:
                 continue

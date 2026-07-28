@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Orchestrateur du déploiement shadow Phase 6. `-DryRun` par défaut sûr.
 
@@ -64,6 +64,15 @@ param(
     [switch] $DryRun,
     [switch] $StageOnly,
     [switch] $CleanupStaging,
+    # Phase 6.3 : installe le contenu qualifié, démarre le shadow, teste.
+    [switch] $Activate,
+    [string] $ReleaseId = '20260728T185102Z-84c0e294-768af2fe',
+    # Controle de lisibilite, pas de securite : la preuve de contenu est
+    # l'empreinte du manifeste, portee par le release-id lui-meme.
+    [int] $ExpectedFileCount = 119,
+    [int] $MonitorSeconds = 900,
+    [switch] $KeepStaging,
+    [switch] $RollbackInstall,
     [switch] $Deploy,
     [switch] $Rollback,
     [switch] $Cleanup
@@ -83,6 +92,11 @@ $script:SshConnections = 0
 # réglage évite de compter dessus.
 $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
+# Aucun `.pyc` produit par les outils locaux : ils saliraient l'arbre de
+# travail, et le garde d'arbre propre refuserait l'activation pour un
+# artefact que personne n'a écrit à la main (même raison que L-111 côté VPS).
+$env:PYTHONDONTWRITEBYTECODE = '1'
+
 function Fail([string] $Message) { throw "PHASE6: $Message" }
 function Step([string] $Message) { Write-Host "[phase6] $Message" }
 
@@ -93,10 +107,10 @@ if ($worktree -ne ($RepoRoot -replace '\\', '/')) { Fail "worktree inattendu : $
 $branch = (git branch --show-current)
 if ($branch -ne $ExpectedBranch) { Fail "branche inattendue : $branch" }
 
-$modes = @($DryRun, $StageOnly, $CleanupStaging, $Deploy, $Rollback, $Cleanup) |
-    Where-Object { $_ }
+$modes = @($DryRun, $StageOnly, $CleanupStaging, $Activate, $RollbackInstall,
+           $Deploy, $Rollback, $Cleanup) | Where-Object { $_ }
 if ($modes.Count -eq 0) {
-    Fail 'préciser -DryRun, -StageOnly, -CleanupStaging, -Deploy, -Rollback ou -Cleanup'
+    Fail 'préciser -DryRun, -StageOnly, -CleanupStaging, -Activate, -RollbackInstall, -Deploy, -Rollback ou -Cleanup'
 }
 if ($modes.Count -gt 1) { Fail 'un seul mode à la fois' }
 
@@ -105,10 +119,24 @@ $remoteScripts = @(
     'vps_phase6_systemd_setup.sh', 'vps_phase6_rollback.sh',
     'vps_phase6_cleanup.sh', 'vps_phase6_shadow_tests.py',
     'vps_phase6_stage_preflight.sh', 'vps_phase6_staging_cleanup.sh',
+    'vps_phase6_activate_shadow.sh', 'vps_phase6_start_shadow.sh',
+    'vps_phase6_monitor.sh',
+    'vps_phase6_preinstall_check.sh',
     'phase6_manifest.py', 'phase6_manifest_verify.py', 'phase6_paths.py',
     'phase6_staging.py', 'phase6_covers.py', 'phase6_env.py',
     'phase6_select_tracks.py', 'phase6_probe_agent.mjs',
+    'phase6_shadow_token.mjs',
     'homespotify-api-shadow.service', 'api-shadow.env.template'
+)
+
+# Outils déposés sur le VPS, puis installés sous /opt par l'activation : le
+# staging disparaît en fin de phase, la Phase 6.4 aura encore besoin d'eux.
+$activationTools = @(
+    'phase6_manifest.py', 'phase6_manifest_verify.py', 'phase6_paths.py',
+    'phase6_covers.py', 'phase6_env.py', 'phase6_probe_agent.mjs',
+    'phase6_shadow_token.mjs', 'vps_phase6_preflight.sh',
+    'vps_phase6_shadow_tests.py', 'vps_phase6_monitor.sh',
+    'vps_phase6_start_shadow.sh'
 )
 foreach ($name in $remoteScripts) {
     $path = Join-Path $RepoRoot "scripts\phase6\$name"
@@ -130,7 +158,7 @@ function Invoke-Ssh {
       l'encodage, et ce qui traverse la ligne de commande distante est un
       script public — aucun secret, aucun chemin de production n'y figure.
     #>
-    param([string] $ScriptText, [string[]] $Arguments = @())
+    param([string] $ScriptText, [string[]] $Arguments = @(), [switch] $AsRoot)
     $script:SshConnections++
     # Fins de ligne normalisées en LF. `.gitattributes` extrait les `.ps1` en
     # CRLF : sans cette ligne, les here-strings de ce fichier voyageraient avec
@@ -141,11 +169,20 @@ function Invoke-Ssh {
     $normalized = $ScriptText -replace "`r`n", "`n"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
     $remoteArgs = if ($Arguments.Count -gt 0) { ' ' + ($Arguments -join ' ') } else { '' }
-    $command = "echo $encoded | base64 -d | bash -s --$remoteArgs"
+    # `-AsRoot` pour les contrôles qui LISENT des chemins privilégiés. Sans
+    # lui, `readlink /opt/homespotify-api-shadow/current` échoue en
+    # « permission refusée » et un `|| echo` traduit cela en « absent » : le
+    # rapport affirme alors qu'il n'y a rien là où tout est installé.
+    $shell = if ($AsRoot) { 'sudo -n bash -s --' } else { 'bash -s --' }
+    $command = "echo $encoded | base64 -d | $shell$remoteArgs"
     $target = "$VpsUser@$VpsHost"
     $output = & ssh -o BatchMode=yes -o ConnectTimeout=15 `
         -i $IdentityFile $target $command 2>&1
-    return @{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String) }
+    # `Out-String` replie les lignes à la largeur de la console : une ligne
+    # JSON longue en ressort coupée en deux, et l'analyse échoue sur une
+    # « chaîne inachevée » alors que la commande distante a parfaitement
+    # réussi. Le tableau est donc joint tel quel.
+    return @{ ExitCode = $LASTEXITCODE; Output = (($output | ForEach-Object { "$_" }) -join "`n") }
 }
 
 function Invoke-Scp {
@@ -158,12 +195,37 @@ function Invoke-Scp {
 }
 
 function Get-LastJson([string] $Text) {
-    $found = $null
-    foreach ($line in ($Text -split "`r?`n")) {
-        if ($line.TrimStart().StartsWith('{')) { $found = $line }
+    <#
+      Dernier objet JSON de la sortie, RECOLLÉ s'il a été replié.
+
+      Une ligne JSON longue peut ressortir coupée en plusieurs morceaux :
+      l'hôte PowerShell replie à la largeur de la console tout ce qui transite
+      par le flux d'erreur fusionné. Chercher « la dernière ligne qui commence
+      par { » donnait alors un fragment, et l'analyse échouait par « chaîne
+      inachevée » — sur une commande distante qui avait parfaitement réussi.
+      L'outil de rapport faisait échouer ce qu'il devait constater.
+
+      On accumule donc les lignes suivantes jusqu'à ce que l'ensemble
+      s'analyse, et on retient le dernier objet valide.
+    #>
+    $lines = $Text -split "`r?`n"
+    $result = $null
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if (-not $lines[$i].TrimStart().StartsWith('{')) { continue }
+        $buffer = ''
+        for ($j = $i; $j -lt $lines.Count; $j++) {
+            $buffer += $lines[$j]
+            try {
+                $candidate = $buffer | ConvertFrom-Json -ErrorAction Stop
+                $result = $candidate
+                $i = $j
+                break
+            } catch {
+                # Fragment encore incomplet : on ajoute la ligne suivante.
+            }
+        }
     }
-    if ($null -eq $found) { return $null }
-    return $found | ConvertFrom-Json
+    return $result
 }
 
 function ConvertFrom-SecureStringPlain([System.Security.SecureString] $Secure) {
@@ -420,9 +482,9 @@ if ($StageOnly) {
             Select-Object -Last 1
         $buildReport = $build | ConvertFrom-Json
         if (-not $buildReport.ok) { Fail 'assemblage de l''artefact échoué' }
-        $releaseId = $buildReport.releaseId
+        $stagedReleaseId = $buildReport.releaseId
 
-        $releaseDir = Join-Path $payload "releases\$releaseId.staging"
+        $releaseDir = Join-Path $payload "releases\$stagedReleaseId.staging"
         New-Item -ItemType Directory -Force -Path (Join-Path $payload 'releases') | Out-Null
         Copy-Item -Recurse -Force -LiteralPath $buildReport.staging -Destination $releaseDir
 
@@ -477,8 +539,8 @@ if ($StageOnly) {
 
         # --- D. Sélection des pistes ---------------------------------------
         Step 'étape D — sélection de pistes réelles depuis le snapshot'
-        $selectionRaw = & python (Join-Path $RepoRoot 'scripts\phase6\phase6_select_tracks.py') `
-            --db (Join-Path $payload 'data\sqlite\runtime-shadow.db') 2>&1 | Out-String
+        $selectionRaw = (& python (Join-Path $RepoRoot 'scripts\phase6\phase6_select_tracks.py') `
+            --db (Join-Path $payload 'data\sqlite\runtime-shadow.db') 2>&1 | ForEach-Object { "$_" }) -join "`n"
         $selection = Get-LastJson $selectionRaw
         $candidates = @()
         if ($null -ne $selection -and $selection.ok) {
@@ -495,8 +557,8 @@ if ($StageOnly) {
             AUDIO_REMOTE_SHARED_SECRET = (ConvertFrom-SecureStringPlain $secrets.AUDIO_REMOTE_SHARED_SECRET)
             AUTH_TOKEN_SECRET = (ConvertFrom-SecureStringPlain $secrets.AUTH_TOKEN_SECRET)
         }
-        $envRaw = $payloadJson | & python (Join-Path $RepoRoot 'scripts\phase6\phase6_env.py') `
-            --template $template --out $envTemp 2>&1 | Out-String
+        $envRaw = ($payloadJson | & python (Join-Path $RepoRoot 'scripts\phase6\phase6_env.py') `
+            --template $template --out $envTemp 2>&1 | ForEach-Object { "$_" }) -join "`n"
         $payloadJson = $null
         [GC]::Collect()
         $envReport = Get-LastJson $envRaw
@@ -624,7 +686,7 @@ node tools/phase6_probe_agent.mjs secrets/api-shadow.env $($probeIds -join ' ')
         $preflightScript = Get-Content -Raw -LiteralPath `
             (Join-Path $RepoRoot 'scripts\phase6\vps_phase6_stage_preflight.sh')
         $preflightResult = Invoke-Ssh -ScriptText $preflightScript -Arguments @(
-            $RemoteStagingRoot, "$RemoteStagingRoot/releases/$releaseId.staging",
+            $RemoteStagingRoot, "$RemoteStagingRoot/releases/$stagedReleaseId.staging",
             $baseline.caddySha256
         )
         $preflight = Get-LastJson $preflightResult.Output
@@ -635,7 +697,7 @@ node tools/phase6_probe_agent.mjs secrets/api-shadow.env $($probeIds -join ' ')
         Write-Output (ConvertTo-Json -Depth 8 @{
             mode = 'stage-only'
             ok = $true
-            releaseId = $releaseId
+            releaseId = $stagedReleaseId
             commit = $buildReport.commit
             fileCount = $buildReport.fileCount
             artifactBytes = $buildReport.totalBytes
@@ -677,4 +739,336 @@ node tools/phase6_probe_agent.mjs secrets/api-shadow.env $($probeIds -join ' ')
     exit 0
 }
 
-Fail 'les modes -Deploy, -Rollback et -Cleanup appartiennent à la Phase 6.3 : validation du rapport 6.2 requise'
+# =========================================================================
+# MODE ROLLBACK-INSTALL  (Phase 6.3, chemin d'échec)
+# =========================================================================
+if ($RollbackInstall) {
+    Step 'MODE ROLLBACK-INSTALL : désinstallation du shadow'
+    # `vps_phase6_cleanup.sh` est déjà borné par `guard()` : il ne peut
+    # supprimer que les racines shadow, et refuse les arbres des Phases 4.5
+    # et 5. La release fautive est conservée par l'appelant si besoin.
+    $cleanupText = Get-Content -Raw -LiteralPath `
+        (Join-Path $RepoRoot 'scripts\phase6\vps_phase6_cleanup.sh')
+    $result = Invoke-Ssh -ScriptText "sudo -n bash -c 'cat > /tmp/p6c.sh' <<'HSEOF'`n$cleanupText`nHSEOF`nsudo -n bash /tmp/p6c.sh; rc=`$?; sudo -n rm -f /tmp/p6c.sh; exit `$rc"
+    Write-Output $result.Output
+    Step 'rollback terminé'
+    exit 0
+}
+
+# =========================================================================
+# MODE ACTIVATE  (Phase 6.3)
+# =========================================================================
+if ($Activate) {
+    Step 'MODE ACTIVATE : installation et première activation shadow'
+
+    # --- 0. Préconditions locales, avant toute connexion -------------------
+    $head = (git rev-parse HEAD)
+    $dirty = (git status --porcelain)
+    if ($dirty) { Fail 'arbre de travail non propre' }
+    # L'invariant à protéger est « le code installé est le code qualifié »,
+    # pas « rien n'a bougé dans le dépôt ». La Phase 6.3 écrit forcément son
+    # propre outillage d'installation : exiger qu'il soit inchangé depuis la
+    # release rendrait la phase impossible à réaliser.
+    #
+    # Deux contrôles, dans cet ordre :
+    #   1. rien de ce qui ENTRE dans l'artefact n'a changé ;
+    #   2. l'empreinte du manifeste de la release est bien celle que le HEAD
+    #      courant produirait — preuve directe, indépendante des chemins.
+    $releaseCommit = $ReleaseId.Split('-')[1]
+    $expectedManifest = $ReleaseId.Split('-')[2]
+    $artifactSources = @('services/api', 'services/storage-agent', 'packages')
+    $artifactChanged = @(git diff --name-only "$releaseCommit" HEAD -- @artifactSources)
+    if ($artifactChanged.Count -gt 0) {
+        Fail ("changement applicatif depuis la release : {0} — refaire un -StageOnly" -f `
+            ($artifactChanged -join ','))
+    }
+    $changed = @(git diff --name-only "$releaseCommit" HEAD)
+    $toolingChanged = @($changed | Where-Object { $_ -notmatch '\.md$' })
+    Step ("HEAD={0} release={1} artefact inchangé, {2} fichier(s) d'outillage 6.3" -f `
+        $head, $ReleaseId, $toolingChanged.Count)
+
+    # Empreinte de la production Windows AVANT : elle doit être identique après.
+    $prodDb = Get-Item -LiteralPath $SourceDbPath -ErrorAction SilentlyContinue
+    if (-not $prodDb) { Fail '-SourceDbPath requis en -Activate (preuve de non-impact)' }
+    $prodBefore = @{ sizeBytes = $prodDb.Length; mtime = $prodDb.LastWriteTimeUtc.ToString('o') }
+    $servicesBefore = @(Get-Service HomeSpotifyApi, HomeSpotifyStorageAgent |
+        ForEach-Object { "$($_.Name)=$($_.Status)" }) -join ','
+
+    $report = [ordered]@{}
+    $tokenFile = '/run/phase6-shadow-token'
+
+    # --- 1. Préflight distant et snapshot de sécurité ----------------------
+    Step 'étape 1 — préconditions distantes et snapshot pré-installation'
+    $precheckScript = Get-Content -Raw -LiteralPath `
+        (Join-Path $RepoRoot 'scripts\phase6\vps_phase6_preinstall_check.sh')
+    # En root : ce contrôle LIT `/opt/homespotify-api-shadow` (0750
+    # root:homespotify). Lancé en `debian`, il rapporterait « absent » ce qui
+    # n'est que « non autorisé ».
+    $result = Invoke-Ssh -ScriptText $precheckScript -AsRoot `
+        -Arguments @($RemoteStagingRoot, $ReleaseId)
+    $pre = Get-LastJson $result.Output
+    if ($null -eq $pre) { Fail "préflight distant illisible : $($result.Output)" }
+    if ($pre.releaseId -ne $ReleaseId) { Fail "releaseId distant inattendu : $($pre.releaseId)" }
+    if ($pre.fileCount -ne $ExpectedFileCount) {
+        Fail "fileCount inattendu : $($pre.fileCount) (attendu $ExpectedFileCount)"
+    }
+    # Preuve de contenu : le manifeste ne dépend QUE de l'artefact, jamais de
+    # l'horodatage ni du commit. Si son empreinte est celle attendue, le code
+    # déposé est exactement celui qualifié — quel que soit l'état du dépôt.
+    if ($pre.manifestSha256.Substring(0, 8) -ne $expectedManifest) {
+        Fail ("empreinte de manifeste divergente : attendue {0}, trouvée {1}" -f `
+            $expectedManifest, $pre.manifestSha256.Substring(0, 8))
+    }
+    if ($pre.commit -ne "$releaseCommit" -and -not $pre.commit.StartsWith($releaseCommit)) {
+        Fail "commit de release inattendu : $($pre.commit)"
+    }
+    if ($pre.coverFiles -ne 156) { Fail "pochettes inattendues : $($pre.coverFiles)" }
+    if ($pre.envMode -ne '600') { Fail "permissions env inattendues : $($pre.envMode)" }
+    # Le port ne peut être occupé que par NOTRE shadow, sur la release visée.
+    if ($pre.port3002Listeners -ne 0 -and $pre.installedRelease -ne $ReleaseId) {
+        Fail 'le port 3002 est occupé par autre chose que le shadow visé'
+    }
+    # Idempotence EXPLICITE. Une installation déjà en place est acceptable
+    # si, et seulement si, elle porte exactement la release visée : c'est le
+    # cas d'une reprise après un incident d'outillage. Toute autre
+    # installation est un état inconnu, et un état inconnu ne se
+    # surinstalle pas.
+    if ($pre.optPresent -or $pre.statePresent -or $pre.homespotifyUnits -ne 0) {
+        if ($pre.installedRelease -ne $ReleaseId) {
+            Fail ("installation existante non conforme : {0} (attendu {1})" -f `
+                $pre.installedRelease, $ReleaseId)
+        }
+        Step ("installation existante conforme à {0} : reprise" -f $ReleaseId)
+    }
+    if ($pre.caddyActive -ne 'active') { Fail "Caddy inattendu : $($pre.caddyActive)" }
+    if (-not $pre.storageAgentReachable) { Fail 'Storage Agent injoignable' }
+    # Un listener PUBLIC sur le port shadow, avant meme d'installer, est
+    # un etat qu'aucune installation ne doit recouvrir.
+    if ($pre.port3002Public -ne 0) { Fail 'listener public déjà présent sur 3002' }
+    # Sur une installation NEUVE, le cache doit être vide : un objet audio
+    # préexistant serait une donnée arrivée par un chemin non documenté. Sur
+    # une reprise, il vient du shadow lui-même, et l'interdire bloquerait
+    # toute reprise après interruption.
+    $resuming = ($pre.installedRelease -eq $ReleaseId)
+    if (-not $resuming -and $pre.cacheAudioObjects -ne 0) {
+        Fail "objets audio préexistants dans le cache : $($pre.cacheAudioObjects)"
+    }
+    $report['preInstall'] = $pre
+    # Message FACTUEL : afficher « port libre » sans le mesurer est
+    # exactement la classe de rapport qui a coûté trois diagnostics à cette
+    # phase.
+    Step ("pré-installation : listeners 3002={0} (public={1}), unités={2}, service={3}, Caddy {4}, public /health {5}" -f `
+        $pre.port3002Listeners, $pre.port3002Public, $pre.homespotifyUnits, `
+        $pre.serviceState, $pre.caddyActive, $pre.publicHealth)
+
+    # --- 2. Dépôt des outils d'activation ----------------------------------
+    Step 'étape 2 — dépôt des outils d''activation dans le staging'
+    $toolPaths = $activationTools | ForEach-Object {
+        Join-Path $RepoRoot "scripts\phase6\$_"
+    }
+    Invoke-Scp -LocalPaths $toolPaths -RemotePath "$RemoteStagingRoot/tools/"
+    Invoke-Scp -LocalPaths @(
+        (Join-Path $RepoRoot 'scripts\phase6\homespotify-api-shadow.service'),
+        (Join-Path $RepoRoot 'scripts\phase6\vps_phase6_systemd_setup.sh'),
+        (Join-Path $RepoRoot 'scripts\phase6\vps_phase6_activate_shadow.sh')
+    ) -RemotePath "$RemoteStagingRoot/tools/"
+
+    # --- 3. Unité systemd : vérifier AVANT d'écrire dans /etc --------------
+    Step 'étape 3 — systemd-analyze verify (aucune écriture)'
+    $verify = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+cd '$RemoteStagingRoot/tools'
+sudo -n bash vps_phase6_systemd_setup.sh homespotify-api-shadow.service --verify-only
+"@
+    $verifyReport = Get-LastJson $verify.Output
+    if ($null -eq $verifyReport -or -not $verifyReport.ok) {
+        Fail "unité systemd invalide : $($verify.Output)"
+    }
+    $report['unitVerified'] = $true
+
+    # --- 4. Utilisateur, répertoires, unité (sans enable) ------------------
+    Step 'étape 4 — utilisateur, répertoires et unité (start, jamais enable)'
+    $setup = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+cd '$RemoteStagingRoot/tools'
+sudo -n bash vps_phase6_systemd_setup.sh homespotify-api-shadow.service
+"@
+    $setupReport = Get-LastJson $setup.Output
+    if ($null -eq $setupReport -or -not $setupReport.ok) {
+        Fail "installation systemd échouée : $($setup.Output)"
+    }
+    if ($setupReport.bootEnabled -ne 'disabled') {
+        Fail "le service ne doit pas être activé au démarrage : $($setupReport.bootEnabled)"
+    }
+    $report['systemd'] = $setupReport
+
+    # --- 5. Installation immuable de la release ----------------------------
+    Step 'étape 5 — installation atomique de la release et des données'
+    $activateResult = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n bash '$RemoteStagingRoot/tools/vps_phase6_activate_shadow.sh' \
+  '$RemoteStagingRoot' '$ReleaseId'
+"@
+    $activateReport = Get-LastJson $activateResult.Output
+    if ($null -eq $activateReport -or -not $activateReport.ok) {
+        Fail "installation échouée : $($activateResult.Output)"
+    }
+    $report['install'] = $activateReport
+    Step ("release installée : {0} — SQLite {1}, {2} pochettes" -f `
+        $activateReport.current, $activateReport.sqlite.integrity, $activateReport.coverFileCount)
+
+    # --- 6. Démarrage contrôlé ---------------------------------------------
+    # Une instance à nous, déjà démarrée sur la release visée, est arrêtée
+    # d'abord : le script de démarrage exige un port libre, et il a raison —
+    # démarrer par-dessus masquerait quelle instance répond.
+    if ($pre.port3002Listeners -ne 0) {
+        Step 'instance existante du shadow : arrêt avant démarrage contrôlé'
+        [void](Invoke-Ssh -ScriptText 'sudo -n systemctl stop homespotify-api-shadow.service')
+    }
+    Step 'étape 6 — démarrage contrôlé (start, pas enable)'
+    $start = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n bash '/opt/homespotify-api-shadow/tools/vps_phase6_start_shadow.sh' 90
+"@
+    $startReport = Get-LastJson $start.Output
+    if ($null -eq $startReport -or -not $startReport.ok) {
+        $report['start'] = $startReport
+        Write-Output (ConvertTo-Json -Depth 8 @{
+            mode = 'activate'; ok = $false; stage = 'demarrage'
+            detail = $startReport; sshConnectionsOpened = $script:SshConnections
+            secretsPrinted = 0; productionModified = $false
+        })
+        Fail 'démarrage refusé — service arrêté, port rendu, release conservée'
+    }
+    $report['start'] = $startReport
+    Step ("service {0}/{1}, PID {2}, listener {3}" -f `
+        $startReport.activeState, $startReport.subState, $startReport.mainPid, '127.0.0.1:3002')
+
+    # --- 7. Jeton shadow ----------------------------------------------------
+    Step 'étape 7 — jeton shadow forgé avec le secret DU SHADOW'
+    $mint = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n node /opt/homespotify-api-shadow/tools/phase6_shadow_token.mjs \
+  /etc/homespotify/api-shadow.env \
+  /var/lib/homespotify-shadow/data/runtime.db \
+  /opt/homespotify-api-shadow/dependency-bundles/linux-x64-node22.18.0-abi127/node_modules \
+  '$tokenFile'
+"@
+    $tokenReport = Get-LastJson $mint.Output
+    if ($null -eq $tokenReport -or -not $tokenReport.ok) {
+        Fail "jeton shadow refusé : $($mint.Output)"
+    }
+    $report['token'] = $tokenReport
+
+    # --- 8. Tests T1 à T11 --------------------------------------------------
+    Step 'étape 8 — tests fonctionnels T1 à T11'
+    $tests = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n python3 /opt/homespotify-api-shadow/tools/vps_phase6_shadow_tests.py \
+  --mode full --token-file '$tokenFile' --track-id 119 --uncached-track-id 120
+"@
+    $testReport = Get-LastJson $tests.Output
+    if ($null -eq $testReport) { Fail "tests illisibles : $($tests.Output)" }
+    $report['tests'] = $testReport
+
+    # --- 9. Surveillance initiale -------------------------------------------
+    Step ("étape 9 — surveillance initiale ({0} s)" -f $MonitorSeconds)
+    $monitor = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n bash /opt/homespotify-api-shadow/tools/vps_phase6_monitor.sh $MonitorSeconds 30
+"@
+    $monitorReport = Get-LastJson $monitor.Output
+    $report['monitor'] = $monitorReport
+
+    # --- 10. Non-impact production, et destruction du jeton -----------------
+    Step 'étape 10 — preuve de non-impact et destruction du jeton'
+    $post = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n rm -f '$tokenFile'
+printf '{"tokenRemoved":%s,' "`$([ -e '$tokenFile' ] && echo false || echo true)"
+printf '"caddyActive":"%s","caddySha256":"%s",' "`$(systemctl is-active caddy)" "`$(sudo -n sha256sum /etc/caddy/Caddyfile | cut -d' ' -f1)"
+printf '"publicHealth":"%s","publicRoot":"%s",' \
+  "`$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://music.romainbegot.fr/health)" \
+  "`$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://music.romainbegot.fr/)"
+printf '"wireguard":"%s","storageAgentReachable":%s,' "`$(systemctl is-active wg-quick@wg0)" \
+  "`$(timeout 6 bash -c 'exec 3<>/dev/tcp/10.8.0.2/3100' >/dev/null 2>&1 && echo true || echo false)"
+printf '"listeners":"%s","port3002Public":%s,' \
+  "`$(ss -ltnH | awk '{print `$4}' | sort -u | tr '\n' ' ')" \
+  "`$(ss -ltnH | awk '{print `$4}' | grep -cE '^(0\.0\.0\.0|\*|\[::\]|10\.8\.0\.[0-9]*):3002`$' || true)"
+printf '"bootEnabled":"%s","activeState":"%s"}\n' \
+  "`$(systemctl is-enabled homespotify-api-shadow.service 2>/dev/null || echo disabled)" \
+  "`$(systemctl show -p ActiveState --value homespotify-api-shadow.service)"
+"@
+    $postReport = Get-LastJson $post.Output
+    if ($null -eq $postReport) { Fail "contrôles finaux illisibles : $($post.Output)" }
+    if ($postReport.caddySha256 -ne $pre.caddySha256) { Fail 'Caddyfile modifié' }
+    if ($postReport.port3002Public -ne 0) { Fail 'listener public sur 3002' }
+    if ($postReport.bootEnabled -eq 'enabled') { Fail 'le service a été activé au démarrage' }
+    $report['postChecks'] = $postReport
+
+    # Production Windows : mesurée à nouveau, pas supposée.
+    $prodDbAfter = Get-Item -LiteralPath $SourceDbPath
+    $servicesAfter = @(Get-Service HomeSpotifyApi, HomeSpotifyStorageAgent |
+        ForEach-Object { "$($_.Name)=$($_.Status)" }) -join ','
+    $productionUnchanged = (
+        $prodDbAfter.Length -eq $prodBefore.sizeBytes -and
+        $prodDbAfter.LastWriteTimeUtc.ToString('o') -eq $prodBefore.mtime -and
+        $servicesAfter -eq $servicesBefore
+    )
+    $report['production'] = @{
+        dbSizeBytes = $prodDbAfter.Length
+        dbUnchanged = ($prodDbAfter.Length -eq $prodBefore.sizeBytes -and
+                       $prodDbAfter.LastWriteTimeUtc.ToString('o') -eq $prodBefore.mtime)
+        windowsServices = $servicesAfter
+        windowsServicesUnchanged = ($servicesAfter -eq $servicesBefore)
+    }
+
+    # --- 11. Verdict, puis nettoyage du staging ----------------------------
+    $testsOk = ($null -ne $testReport) -and $testReport.ok
+    $monitorOk = ($null -ne $monitorReport) -and $monitorReport.ok -and
+                 $monitorReport.publicListenerAnomalies -eq 0 -and
+                 $monitorReport.loopbackListenerAnomalies -eq 0
+    $verdict = $testsOk -and $monitorOk -and $productionUnchanged -and
+               $startReport.ok -and ($postReport.publicHealth -eq $pre.publicHealth)
+
+    $stagingRemoved = $false
+    if ($verdict -and -not $KeepStaging) {
+        Step 'étape 11 — nettoyage du staging (installation validée)'
+        $cleanupScript = Get-Content -Raw -LiteralPath `
+            (Join-Path $RepoRoot 'scripts\phase6\vps_phase6_staging_cleanup.sh')
+        $cleanupResult = Invoke-Ssh -ScriptText $cleanupScript
+        $cleanupReport = Get-LastJson $cleanupResult.Output
+        $stagingRemoved = ($null -ne $cleanupReport) -and $cleanupReport.rootRemoved
+        $report['stagingCleanup'] = $cleanupReport
+    } else {
+        Step 'staging CONSERVÉ : verdict non vert ou -KeepStaging demandé'
+    }
+
+    Write-Output (ConvertTo-Json -Depth 12 ([ordered]@{
+        mode = 'activate'
+        ok = $verdict
+        head = $head
+        releaseId = $ReleaseId
+        preInstall = $report['preInstall']
+        systemd = $report['systemd']
+        install = $report['install']
+        start = $report['start']
+        token = $report['token']
+        tests = $report['tests']
+        monitor = $report['monitor']
+        postChecks = $report['postChecks']
+        production = $report['production']
+        stagingRemoved = $stagingRemoved
+        stagingCleanup = $report['stagingCleanup']
+        bootEnabled = $postReport.bootEnabled
+        publicPortsAdded = 0
+        cutoverPerformed = $false
+        sshConnectionsOpened = $script:SshConnections
+        secretsPrinted = 0
+        tokenPrinted = 0
+    }))
+    Step ("activation terminée : verdict {0}" -f $(if ($verdict) { 'GO' } else { 'NO-GO' }))
+    exit $(if ($verdict) { 0 } else { 1 })
+}
+
+Fail 'les modes -Deploy, -Rollback et -Cleanup appartiennent à une phase ultérieure : validation du rapport 6.3 requise'

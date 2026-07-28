@@ -43,9 +43,25 @@ EXCLUDED_SUFFIXES = (
     ".log", ".pem", ".key", ".pfx", ".p12", ".crt",
     ".test.ts", ".test.js", ".spec.ts", ".map",
 )
-EXCLUDED_DIR_PARTS = frozenset({
-    "node_modules", "__pycache__", ".git", "coverage", "logs", "cache",
-    "storage", "backups", "diagnostics", "test", "tests", "__tests__",
+# Répertoires exclus À N'IMPORTE QUEL NIVEAU. Aucun de ces noms ne désigne
+# jamais du code applicatif légitime.
+EXCLUDED_DIR_ANYWHERE = frozenset({
+    "node_modules", "__pycache__", ".git", "coverage", "__tests__",
+})
+
+# Répertoires de DONNÉES, exclus au PREMIER NIVEAU seulement.
+#
+# POURQUOI L'ANCRAGE EST INDISPENSABLE
+# ------------------------------------
+# Ces noms désignent des répertoires de données à la racine du dépôt
+# (`storage/`, `logs/`, `cache/`, `backups/`). Les exclure à n'importe quel
+# niveau écartait aussi `dist/storage/` — c'est-à-dire TOUTE la couche de
+# stockage audio, les douze fichiers que la Phase 6 existe précisément pour
+# qualifier. L'artefact partait sans eux, et rien ne le voyait : le manifeste
+# était cohérent avec lui-même, le transfert exact, et le défaut n'apparaissait
+# qu'au premier `import` réel. Voir L-112.
+EXCLUDED_TOP_LEVEL_DIRS = frozenset({
+    "logs", "cache", "storage", "backups", "diagnostics", "test", "tests",
 })
 
 
@@ -53,7 +69,10 @@ def is_excluded(relative: str) -> bool:
     """Vrai si ce chemin relatif ne doit jamais entrer dans un artefact."""
     posix = PurePosixPath(relative.replace("\\", "/"))
     lowered = [part.lower() for part in posix.parts]
-    if any(part in EXCLUDED_DIR_PARTS for part in lowered[:-1]):
+    directories = lowered[:-1]
+    if any(part in EXCLUDED_DIR_ANYWHERE for part in directories):
+        return True
+    if directories and directories[0] in EXCLUDED_TOP_LEVEL_DIRS:
         return True
     name = lowered[-1] if lowered else ""
     if name in EXCLUDED_NAMES:

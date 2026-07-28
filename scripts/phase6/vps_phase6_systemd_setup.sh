@@ -42,13 +42,17 @@ if ! id -u "${USER_NAME}" >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin "${USER_NAME}"
 fi
 
-install -d -o root -g "${USER_NAME}" -m 0755 "${ROOT}" "${ROOT}/releases" \
+# 0750 et non 0755 : le code du shadow n'a aucune raison d'etre lisible
+# par tout compte de la machine. Le service traverse par son groupe.
+install -d -o root -g "${USER_NAME}" -m 0750 "${ROOT}" "${ROOT}/releases" \
   "${ROOT}/dependency-bundles" "${ROOT}/tools"
 install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 \
   "${STATE}" "${STATE}/data" "${STATE}/cache" "${STATE}/cache/audio" \
   "${STATE}/covers" "${STATE}/imports" "${STATE}/imports/incoming" \
   "${STATE}/offline-variants" "${STATE}/music-unused"
-install -d -o root -g root -m 0755 /etc/homespotify
+# root:root : systemd lit l'EnvironmentFile en root, AVANT de deposer les
+# privileges. Le service n'a donc pas besoin d'entrer dans ce repertoire.
+install -d -o root -g root -m 0750 /etc/homespotify
 
 # Le fichier de secrets n'est jamais cree avec un contenu ici : il est injecte
 # separement, en 0600. On se contente de refuser un mode trop permissif.
@@ -59,6 +63,14 @@ fi
 
 install -o root -g root -m 0644 "${UNIT_SOURCE}" "${UNIT}"
 systemctl daemon-reload
-systemctl enable "${SERVICE}" >/dev/null
+# PAS de `systemctl enable` pendant la qualification. Un service active au
+# demarrage revient seul apres un redemarrage du VPS : un shadow non
+# qualifie se relancerait sans que personne l'ait decide. L'activation au
+# boot est une decision de bascule, pas une etape d'installation.
+ENABLED="disabled"
+if [ "${MODE}" = "--enable" ]; then
+  systemctl enable "${SERVICE}" >/dev/null
+  ENABLED="enabled"
+fi
 
-printf '{"ok":true,"verified":true,"installed":true,"unit":"%s","user":"%s"}\n' "${UNIT}" "${USER_NAME}"
+printf '{"ok":true,"verified":true,"installed":true,"unit":"%s","user":"%s","bootEnabled":"%s"}\n' "${UNIT}" "${USER_NAME}" "${ENABLED}"

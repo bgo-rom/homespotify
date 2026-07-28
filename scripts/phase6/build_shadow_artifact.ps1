@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Assemble l'artefact applicatif shadow et son manifeste. Aucun accès réseau.
 
@@ -59,14 +59,25 @@ if (Test-Path -LiteralPath $migrations) {
 
 Step 'package.json réduit au runtime'
 $source = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'services\api\package.json') | ConvertFrom-Json
-[ordered]@{
+$manifestJson = [ordered]@{
     name         = $source.name
     version      = $source.version
     private      = $true
     type         = $source.type
     scripts      = [ordered]@{ start = 'node dist/server.js' }
     dependencies = $source.dependencies
-} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $staging 'package.json') -Encoding utf8
+} | ConvertTo-Json -Depth 8
+
+# UTF-8 SANS BOM, ecrit explicitement. `Set-Content -Encoding utf8` sous
+# Windows PowerShell 5.1 ajoute un BOM, et `dist/routes/admin.js` fait un
+# `JSON.parse` de ce fichier au chargement : l'API refusait de demarrer sur
+# « Unexpected token ... is not valid JSON ». Le defaut ne pouvait apparaitre
+# qu'au premier demarrage reel, jamais dans un controle de manifeste.
+[IO.File]::WriteAllText(
+    (Join-Path $staging 'package.json'),
+    $manifestJson,
+    (New-Object System.Text.UTF8Encoding($false))
+)
 
 $commit = (git rev-parse HEAD)
 $builtAt = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
