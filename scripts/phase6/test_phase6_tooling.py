@@ -494,10 +494,13 @@ class RemoteScriptsTest(unittest.TestCase):
         self.assertIn("internal401NotExposed", text)
 
     def test_no_script_contains_a_secret_value(self) -> None:
+        # Les fichiers de tests portent des fixtures volontaires
+        # ("tres-secret", "AAAA…") qui servent de contrôles négatifs : les
+        # analyser reviendrait à signaler comme fuite la preuve qu'il n'y en a
+        # pas.
+        fixtures = {"test_phase6_tooling.py", "test_phase6_staging.py"}
         for path in HERE.glob("*"):
-            # Le fichier de tests porte des fixtures volontaires
-            # ("tres-secret") qui servent de contrôles négatifs.
-            if not path.is_file() or path.name == "test_phase6_tooling.py":
+            if not path.is_file() or path.name in fixtures:
                 continue
             text = read(path)
             with self.subTest(file=path.name):
@@ -525,18 +528,33 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("[switch] $DryRun", self.text)
 
     def test_dry_run_opens_no_ssh_connection(self) -> None:
-        branch = self.text.split("if ($DryRun) {", 1)[1].split("Fail 'les modes", 1)[0]
-        for forbidden in ("ssh.exe", "scp.exe", "Invoke-Ssh", "Copy-ToVps"):
+        # Depuis la Phase 6.2, l'orchestrateur SAIT ouvrir des connexions. La
+        # garantie du dry-run n'est donc plus « le script ne contient aucun
+        # SSH » mais « la branche dry-run n'en invoque aucun ». C'est cette
+        # branche, et elle seule, qui est découpée ici.
+        branch = self.text.split("if ($DryRun) {", 1)[1].split(
+            "if ($CleanupStaging) {", 1)[0]
+        for forbidden in ("ssh.exe", "scp.exe", "Invoke-Ssh", "Invoke-Scp",
+                          "Copy-ToVps"):
             self.assertNotIn(forbidden, branch)
-        self.assertIn("sshConnectionsOpened = 0", branch)
+        self.assertIn("sshConnectionsOpened = $script:SshConnections", branch)
 
     def test_guards_worktree_and_branch(self) -> None:
         self.assertIn("phase6/vps-shadow-deployment", self.text)
         self.assertIn("rev-parse --show-toplevel", self.text)
         self.assertIn('Fail "branche inattendue', self.text)
 
-    def test_real_modes_are_not_armed_in_phase61(self) -> None:
-        self.assertIn("ne sont pas armés en Phase 6.1", self.text)
+    def test_installation_modes_are_not_armed_before_phase63(self) -> None:
+        # La Phase 6.2 arme le STAGING (dépôt sans activation) et son
+        # nettoyage. L'installation — utilisateur système, unité systemd,
+        # bascule de `current` — reste désarmée dans le code lui-même, pas
+        # seulement dans la procédure.
+        self.assertIn("appartiennent à la Phase 6.3", self.text)
+        for armed_in_62 in ("[switch] $StageOnly", "[switch] $CleanupStaging"):
+            self.assertIn(armed_in_62, self.text)
+        for reserved in ("vps_phase6_install_release.sh --",
+                         "systemctl enable", "systemctl start", "useradd"):
+            self.assertNotIn(reserved, self.text)
 
     def test_requires_an_explicit_mode(self) -> None:
         self.assertIn("préciser -DryRun", self.text)

@@ -21,9 +21,16 @@ REQUIRED_ARCH="x64"
 fail() { printf '{"ok":false,"error":"%s","detail":"%s"}\n' "$1" "${2:-}" >&2; exit 1; }
 
 test -d "${BUNDLE}" || fail BUNDLE_ABSENT "${BUNDLE}"
-test -d "${BUNDLE}/better-sqlite3" || fail BUNDLE_INCOMPLET better-sqlite3
-NATIVE_SQLITE="${BUNDLE}/better-sqlite3/build/Release/better_sqlite3.node"
-NATIVE_ARGON="${BUNDLE}/@node-rs/argon2-linux-x64-gnu/argon2.linux-x64-gnu.node"
+# Le contenu vit sous un sous-repertoire nomme exactement `node_modules`.
+# Node ne resout les dependances pairs qu'a travers ce nom : depose sous
+# `<bundle-id>/` directement, `better_sqlite3.node` se charge en apparence
+# puis echoue sur `require("bindings")` — un echec qui ne ressemble pas a sa
+# cause. Le nom du repertoire fait partie du contrat, pas de la mise en forme.
+MODULES="${BUNDLE}/node_modules"
+test -d "${MODULES}" || fail BUNDLE_ABSENT "${MODULES}"
+test -d "${MODULES}/better-sqlite3" || fail BUNDLE_INCOMPLET better-sqlite3
+NATIVE_SQLITE="${MODULES}/better-sqlite3/build/Release/better_sqlite3.node"
+NATIVE_ARGON="${MODULES}/@node-rs/argon2-linux-x64-gnu/argon2.linux-x64-gnu.node"
 test -f "${NATIVE_SQLITE}" || fail MODULE_NATIF_ABSENT better_sqlite3.node
 test -f "${NATIVE_ARGON}" || fail MODULE_NATIF_ABSENT argon2.linux-x64-gnu.node
 
@@ -49,7 +56,7 @@ fi
 # presence du fichier .node ne prouve pas qu'il se charge sous cet ABI.
 # HS_BUNDLE est exporte AVANT l'appel : le sous-processus node le lit a son
 # demarrage, pas apres.
-export HS_BUNDLE="${BUNDLE}"
+export HS_BUNDLE="${MODULES}"
 SMOKE="$(node --input-type=commonjs -e '
 const fs = require("fs"), os = require("os"), path = require("path");
 const out = { node: process.version, abi: process.versions.modules };

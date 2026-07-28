@@ -43,7 +43,7 @@ bash "${ROOT}/tools/vps_phase6_preflight.sh" "${BUNDLE}" "${STAGING}" >/dev/null
 # Le bundle est reference par lien symbolique : une seule copie immuable sur
 # disque, partagee par les releases. Le rollback vers une release anterieure
 # retrouve donc SON bundle, pas celui de la release fautive.
-ln -sfn "${BUNDLE}" "${STAGING}/node_modules"
+ln -sfn "${BUNDLE}/node_modules" "${STAGING}/node_modules"
 
 # 5. Copie SQLite : installee seulement si absente. Une base deja en place
 # appartient a une execution en cours et ne doit pas etre ecrasee.
