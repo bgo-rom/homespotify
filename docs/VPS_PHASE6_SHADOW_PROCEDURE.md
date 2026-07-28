@@ -68,6 +68,14 @@ Choix retenu : **bundle versionné, immuable et partagé**, sous
 manifeste (`dependencyBundleId`) et relié à chaque release par un symlink
 `node_modules`. Identifiant : `linux-x64-node22.18.0-abi127`.
 
+> **Correction Phase 6.2.** Le contenu du bundle vit sous
+> `<bundle-id>/`**`node_modules/`**, et le symlink de release pointe ce
+> sous-répertoire. Node ne résout les dépendances pairs qu'à travers des
+> répertoires nommés exactement `node_modules` : déposé directement sous
+> `<bundle-id>/`, `better_sqlite3.node` était présent, intact, et le premier
+> `require` échouait sur `Cannot find module 'bindings'`. Le défaut était
+> latent dans le préflight écrit en Phase 6.1 (L-109).
+
 *Conséquence pour le rollback* — c'est la raison du choix : chaque release
 pointe vers **son** bundle. Un rollback retrouve donc les dépendances avec
 lesquelles la release précédente a été qualifiée, et non celles de la release
@@ -207,12 +215,25 @@ Dry-run — **exécuté, vert** :
 powershell -NoProfile -ExecutionPolicy Bypass -File F:\dev\homespotify-phase6-shadow\scripts\phase6\run_phase6_shadow_deploy.ps1 -DryRun
 ```
 
-Déploiement réel — **à ne lancer qu'après validation explicite du rapport
-Phase 6.1** ; les modes réels sont désarmés dans le code tant que cette
-validation n'a pas eu lieu :
+Staging sans activation (Phase 6.2) — **exécuté, vert**. Dépose une release
+complète sous `/home/debian/homespotify-phase6-staging/` sans rien activer :
 
 ```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File F:\dev\homespotify-phase6-shadow\scripts\phase6\run_phase6_shadow_deploy.ps1 -Deploy -SourceDbPath "<chemin runtime.db production>"
+powershell -NoProfile -ExecutionPolicy Bypass -File F:\dev\homespotify-phase6-shadow\scripts\phase6\run_phase6_shadow_deploy.ps1 -StageOnly -SecretsFromWindowsConfig -SourceDbPath "F:\dev\homespotify\services\api\data\homespotify.db" -SourceCoversPath "F:\dev\homespotify\storage\covers"
+```
+
+Nettoyage du staging — supprime cette racine et rien d'autre :
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File F:\dev\homespotify-phase6-shadow\scripts\phase6\run_phase6_shadow_deploy.ps1 -CleanupStaging
+```
+
+Déploiement réel (Phase 6.3) — **à ne lancer qu'après validation explicite du
+rapport Phase 6.2** ; `-Deploy` et `-Rollback` sont désarmés dans le code tant
+que cette validation n'a pas eu lieu :
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File F:\dev\homespotify-phase6-shadow\scripts\phase6\run_phase6_shadow_deploy.ps1 -Deploy -SourceDbPath "<chemin homespotify.db production>"
 ```
 
 ## 12. Validation locale
@@ -222,17 +243,28 @@ Storage Agent **148/148** · typechecks et builds verts · `py_compile` ·
 `bash -n` sur 5 scripts · 3 scripts PowerShell `PARSE_OK` ·
 `git diff --check` vert. Aucun test VPS Phase 5 rejoué.
 
-## 13. Informations encore requises
+## 13. Informations encore requises — **toutes fermées en Phase 6.2**
 
-1. **chemin de `runtime.db` de production** (`-SourceDbPath`) — jamais lu par
-   ce poste ;
-2. **secrets à injecter** dans `/etc/homespotify/api-shadow.env` :
-   `AUDIO_REMOTE_SHARED_SECRET` (celui du Storage Agent) et un
-   `AUTH_TOKEN_SECRET` propre au shadow ;
-3. **identifiants de pistes** pour les tests shadow : une piste à cacher, une
-   piste à laisser non cachée ;
-4. **confirmation du gel de Node** en `v22.18.0` sur le VPS (contrainte C1 du
-   Gate 0) ;
-5. **provenance du bundle Linux** : réutiliser l'arbre qualifié
-   `/home/debian/homespotify-phase45/api/node_modules` comme
-   `dependency-bundles/linux-x64-node22.18.0-abi127`, à confirmer.
+Les cinq points ci-dessous étaient ouverts à la fin de la Phase 6.1. Ils ont
+été résolus sur le réel : voir `VPS_PHASE6_STAGING_GATE.md`.
+
+1. ~~**chemin de `runtime.db` de production**~~ → `services/api/data/homespotify.db`,
+   dérivé du service Windows `HomeSpotifyApi` et non d'une saisie. Le nom réel
+   est `homespotify.db` ; `runtime.db` est le nom de la **destination** dans le
+   shadow ;
+2. ~~**secrets à injecter**~~ → `AUDIO_REMOTE_SHARED_SECRET` lu dans la
+   configuration du Storage Agent ; `AUTH_TOKEN_SECRET` **généré** pour le
+   shadow, jamais repris de la production (voir `TD-Phase6-Secrets-2026-07-28`) ;
+3. ~~**identifiants de pistes**~~ → sélectionnés automatiquement depuis le
+   snapshot et validés par `HEAD 200` réel : `119` (cache) et `120` (hors
+   ligne) ;
+4. ~~**gel de Node**~~ → confirmé en lecture seule : `v22.18.0`, ABI `127`,
+   `x64`, glibc 2.36 ;
+5. ~~**provenance du bundle Linux**~~ → confirmée :
+   `/home/debian/homespotify-phase45/api/node_modules`, 118 entrées,
+   39 364 495 octets, traité en lecture seule. Le contenu est déposé sous
+   `<bundle-id>/**node_modules/**` — ce nom est un contrat d'exécution (L-109).
+
+Point ouvert restant, de nature différente : le staging qualifie le **dépôt**,
+pas l'**exécution**. Le premier démarrage réel de l'API appartient à la
+Phase 6.3.
