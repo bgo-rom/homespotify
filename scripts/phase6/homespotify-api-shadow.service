@@ -5,6 +5,8 @@ Description=HomeSpotify API (shadow, 127.0.0.1:3002)
 Documentation=file:///opt/homespotify-api-shadow/current/manifest.json
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -19,8 +21,6 @@ ExecStart=/usr/local/bin/node dist/server.js
 
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # SIGTERM puis 30 s : le cache doit pouvoir finir ou abandonner proprement ses
 # `.part`. Un SIGKILL immédiat les laisserait sur disque — le nettoyage de
