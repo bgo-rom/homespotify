@@ -213,12 +213,15 @@ function Assert-Preflight([object] $State) {
         Fail 'JOURNALCTL_FAILED: journald preflight failed.'
     }
     if ($State.journalVerdict -eq 'JOURNAL_EVENT_TIMEOUT') {
-        Fail 'JOURNAL_EVENT_TIMEOUT: health request was not found in journald.'
+        Fail 'JOURNAL_EVENT_TIMEOUT: cached HEAD request was not found in journald.'
     }
     if ($State.journalReadable -ne $true -or
         $State.logEvidenceAvailable -ne $true -or
         $State.journalctlExecutable -ne $true) {
         Fail 'LOG_EVIDENCE_UNAVAILABLE: journald preflight did not prove readable request evidence.'
+    }
+    if ([int]$State.journalPreflightHealth -ne 200) {
+        Fail 'LOG_EVIDENCE_UNAVAILABLE: shadow health preflight did not return HTTP 200.'
     }
     if ($State.activeState -ne 'active' -or $State.subState -ne 'running') {
         $failures.Add('shadow service is not active/running')
@@ -1202,34 +1205,32 @@ def sanitized_journal(since):
         "verdict": None,
     }
 
-def journal_preflight(since):
-    executable = journal_query(since)
+def journal_preflight(token):
+    probe_since = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    executable = journal_query(probe_since)
     if not executable["ok"]:
         return {
             "journalctlExecutable": UNKNOWN,
             "journalReadable": UNKNOWN,
             "logEvidenceAvailable": UNKNOWN,
+            "healthStatus": UNKNOWN,
             "verdict": executable["verdict"],
             "probe": None,
         }
-    probe_since = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     health = http_request("GET", "/health")
-    evidence = poll_request_evidence(
-        health["requestId"], probe_since, expected_hit=False
+    head = http_request(
+        "HEAD", f"/api/tracks/{TRACK_ID}/stream", token
     )
-    probe = operation("journalHealthProbe", health, evidence, 200)
-    probe.update({
-        "cacheHit": evidence["cacheHit"],
-        "remoteStorageStarted": evidence["remoteStorageStarted"],
-        "journalReadable": evidence["journalReadable"],
-        "logEvidenceAvailable": evidence["logEvidenceAvailable"],
-        "evidenceVerdict": evidence["verdict"],
-        "sanitizedEvents": evidence["events"],
-    })
+    evidence = poll_request_evidence(head["requestId"], probe_since)
+    probe = operation(
+        "journalCachedHeadProbe", head, evidence, 200,
+        size=0, cache_hit=True,
+    )
     return {
         "journalctlExecutable": True,
-        "journalReadable": evidence["journalReadable"],
+        "journalReadable": True,
         "logEvidenceAvailable": evidence["logEvidenceAvailable"],
+        "healthStatus": health["status"],
         "verdict": evidence["verdict"],
         "probe": probe,
     }
@@ -1251,7 +1252,7 @@ def main():
         result = service_sample(args.since)
         sample_journal_readable = result["journalReadable"]
         sample_journal_verdict = result["journalVerdict"]
-        journal_state = journal_preflight(args.since)
+        journal_state = journal_preflight(token_from(args.token_file))
         result.update({
             "serviceEnabled": enabled(),
             "releaseId": CURRENT.resolve().name if CURRENT.is_symlink() else "",
@@ -1269,6 +1270,7 @@ def main():
                 else UNKNOWN
             ),
             "logEvidenceAvailable": journal_state["logEvidenceAvailable"],
+            "journalPreflightHealth": journal_state["healthStatus"],
             "journalVerdict": sample_journal_verdict or journal_state["verdict"],
             "journalProbe": journal_state["probe"],
         })
@@ -1311,12 +1313,15 @@ if ($ValidateOnly) {
         $script:StorageAgentInitialStatus = Get-WindowsStorageAgentStatus
         [void](Invoke-SshText -RemoteCommand "printf '{`"ok`":true}`n'")
         Install-RemoteHelper
+        New-ShadowToken
         $validatePreflight = Invoke-RemoteMode -Mode 'preflight'
         if ($null -ne $validatePreflight.journalProbe) {
-            Add-RequestRecord ([pscustomobject]@{
+            $validateJournalRecord = [pscustomobject]@{
                 timestampUtc = Get-UtcIso
                 operations = @($validatePreflight.journalProbe)
-            })
+            }
+            Add-RequestRecord $validateJournalRecord
+            Assert-RequestRecord $validateJournalRecord
         }
         Assert-Preflight $validatePreflight
         $validatePayload = [pscustomobject]@{
@@ -1384,10 +1389,12 @@ try {
     $preflight = Invoke-RemoteMode -Mode 'preflight'
     $script:Baseline = $preflight
     if ($null -ne $preflight.journalProbe) {
-        Add-RequestRecord ([pscustomobject]@{
+        $preflightJournalRecord = [pscustomobject]@{
             timestampUtc = Get-UtcIso
             operations = @($preflight.journalProbe)
-        })
+        }
+        Add-RequestRecord $preflightJournalRecord
+        Assert-RequestRecord $preflightJournalRecord
     }
     Assert-Preflight $preflight
     $preflightCompleted = $true

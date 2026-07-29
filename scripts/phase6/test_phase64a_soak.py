@@ -77,7 +77,9 @@ class ParameterAndSafetyTest(unittest.TestCase):
             code.index("if ($ValidateOnly) {") :
             code.index("if ($SelfTest) {")
         ]
+        self.assertIn("New-ShadowToken", validate_block)
         self.assertIn("Invoke-RemoteMode -Mode 'preflight'", validate_block)
+        self.assertIn("Assert-RequestRecord $validateJournalRecord", validate_block)
         self.assertIn("Assert-Preflight", validate_block)
         self.assertIn("soakStarted = $false", validate_block)
         self.assertNotIn("$deadline", validate_block)
@@ -216,6 +218,17 @@ class DetectionAndReportTest(unittest.TestCase):
 
 
 class JournalEvidenceRegressionTest(unittest.TestCase):
+    @staticmethod
+    def _http_result(request_id: str, status: int = 200) -> dict:
+        return {
+            "status": status,
+            "sizeBytes": 0,
+            "sha256": "",
+            "requestId": request_id,
+            "contentRange": None,
+            "elapsedMs": 1.0,
+        }
+
     def test_iso_timestamp_is_normalized_for_journalctl(self) -> None:
         helper = helper_namespace()
         self.assertEqual(
@@ -257,6 +270,83 @@ class JournalEvidenceRegressionTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["journalReadable"])
         self.assertFalse(result["logEvidenceAvailable"])
+
+    def test_health_200_needs_no_request_id_event(self) -> None:
+        helper = helper_namespace()
+        polled = []
+        helper["journal_query"] = lambda _since: {
+            "ok": True, "lines": [], "returnCode": 0,
+            "journalReadable": True, "logEvidenceAvailable": False,
+            "verdict": None, "failureKind": None,
+        }
+        helper["http_request"] = lambda method, path, token="": (
+            self._http_result("health-no-event")
+            if path == "/health"
+            else self._http_result("cached-head")
+        )
+
+        def poll(request_id: str, _since: str, expected_hit: bool = True) -> dict:
+            polled.append((request_id, expected_hit))
+            return {
+                "cacheHit": True, "remoteStorageStarted": False,
+                "journalReadable": True, "logEvidenceAvailable": True,
+                "verdict": None,
+                "events": [{"requestId": request_id, "event": "CACHE_HIT"}],
+            }
+
+        helper["poll_request_evidence"] = poll
+        result = helper["journal_preflight"]("temporary-shadow-token")
+        self.assertEqual(result["healthStatus"], 200)
+        self.assertEqual(polled, [("cached-head", True)])
+        self.assertEqual(result["probe"]["name"], "journalCachedHeadProbe")
+
+    def test_cached_head_produces_exact_cache_hit_evidence(self) -> None:
+        helper = helper_namespace()
+        helper["http_request"] = lambda *_args, **_kwargs: self._http_result(
+            "cached-head"
+        )
+        helper["poll_request_evidence"] = lambda request_id, _since: {
+            "cacheHit": request_id == "cached-head",
+            "remoteStorageStarted": False,
+            "journalReadable": True,
+            "logEvidenceAvailable": True,
+            "verdict": None,
+            "events": [{"requestId": request_id, "event": "CACHE_HIT"}],
+        }
+        result = helper["request_operation"](
+            "head-hit", "temporary-shadow-token", "2026-07-29T00:00:00Z"
+        )
+        self.assertEqual(result["name"], "headHit")
+        self.assertIs(result["cacheHit"], True)
+        self.assertIs(result["remoteStorageStarted"], False)
+
+    def test_timeout_applies_to_cached_head_not_health(self) -> None:
+        helper = helper_namespace()
+        polled = []
+        helper["journal_query"] = lambda _since: {
+            "ok": True, "lines": [], "returnCode": 0,
+            "journalReadable": True, "logEvidenceAvailable": False,
+            "verdict": None, "failureKind": None,
+        }
+        helper["http_request"] = lambda method, path, token="": (
+            self._http_result("health-no-event")
+            if path == "/health"
+            else self._http_result("missing-cached-head")
+        )
+
+        def timeout(request_id: str, _since: str, expected_hit: bool = True) -> dict:
+            polled.append(request_id)
+            return {
+                "cacheHit": "unknown", "remoteStorageStarted": "unknown",
+                "journalReadable": True, "logEvidenceAvailable": False,
+                "verdict": "JOURNAL_EVENT_TIMEOUT", "events": [],
+            }
+
+        helper["poll_request_evidence"] = timeout
+        result = helper["journal_preflight"]("temporary-shadow-token")
+        self.assertEqual(result["healthStatus"], 200)
+        self.assertEqual(polled, ["missing-cached-head"])
+        self.assertEqual(result["verdict"], "JOURNAL_EVENT_TIMEOUT")
 
     def test_delayed_event_is_found_by_bounded_polling(self) -> None:
         helper = helper_namespace()
