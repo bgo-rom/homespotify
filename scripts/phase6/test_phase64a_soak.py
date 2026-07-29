@@ -220,6 +220,16 @@ class DetectionAndReportTest(unittest.TestCase):
         events = (output / "events-sanitized.jsonl").read_text(encoding="ascii")
         self.assertIn("REMOTE_STORAGE_REQUEST_STARTED", events)
 
+    def test_sanitized_event_schema_reports_each_journal_level(self) -> None:
+        _, summary = self.run_scenario("EvidenceConfirmed")
+        self.assertNotIn("errorsAndWarningsSanitized", summary)
+        self.assertNotIn("journalWarnings", summary)
+        self.assertNotIn("journalErrors", summary)
+        self.assertEqual(summary["sanitizedEventCount"], 3)
+        self.assertEqual(summary["journalInfoCount"], 1)
+        self.assertEqual(summary["journalWarningCount"], 1)
+        self.assertEqual(summary["journalErrorCount"], 1)
+
     def test_final_boolean_evidence_with_null_verdict_is_accepted(self) -> None:
         _, summary = self.run_scenario("EvidenceConfirmed")
         output = self.temp / "EvidenceConfirmed"

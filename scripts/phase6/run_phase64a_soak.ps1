@@ -74,6 +74,29 @@ function Test-IsUnknown([object] $Value) {
     )
 }
 
+function Get-SanitizedJournalLevelCounts {
+    $infoCount = 0
+    $warningCount = 0
+    $errorCount = 0
+    foreach ($event in $script:SanitizedEvents) {
+        if ($null -eq $event.PSObject.Properties['level']) { continue }
+        $level = $event.level
+        if ($level -isnot [int] -and $level -isnot [long]) { continue }
+        if ([int64]$level -ge 50) {
+            $errorCount++
+        } elseif ([int64]$level -ge 40) {
+            $warningCount++
+        } elseif ([int64]$level -ge 30) {
+            $infoCount++
+        }
+    }
+    return [pscustomobject]@{
+        infoCount = $infoCount
+        warningCount = $warningCount
+        errorCount = $errorCount
+    }
+}
+
 function Get-LastJson([object[]] $Lines) {
     for ($index = $Lines.Count - 1; $index -ge 0; $index--) {
         $candidate = "$($Lines[$index])".Trim()
@@ -509,6 +532,7 @@ function Write-Reports {
         [Math]::Round(100.0 * $script:RequestSuccessCount / $script:RequestTotalCount, 3)
     }
     $memory = Get-MemoryRecommendation
+    $journalLevels = Get-SanitizedJournalLevelCounts
     $summary = [ordered]@{
         verdict = $script:Verdict
         failureReason = $script:FailureReason
@@ -537,13 +561,10 @@ function Write-Reports {
             first = if ($script:Samples.Count) { $script:Samples[0].nRestarts } else { $null }
             last = if ($script:Samples.Count) { $script:Samples[-1].nRestarts } else { $null }
         }
-        errorsAndWarningsSanitized = $script:SanitizedEvents.Count
-        journalErrors = if ($null -ne $script:JournalSummary) {
-            $script:JournalSummary.errorCount
-        } else { $null }
-        journalWarnings = if ($null -ne $script:JournalSummary) {
-            $script:JournalSummary.warningCount
-        } else { $null }
+        sanitizedEventCount = $script:SanitizedEvents.Count
+        journalInfoCount = $journalLevels.infoCount
+        journalWarningCount = $journalLevels.warningCount
+        journalErrorCount = $journalLevels.errorCount
         memoryMaxRecommendation = $memory
         serviceEnabled = ($script:ServiceEnabledObserved -ne 'disabled')
         rebootPerformed = $false
@@ -590,6 +611,13 @@ function Write-Reports {
 - Margin x2: $($memory.marginX2MiB) MiB
 - Margin x3: $($memory.marginX3MiB) MiB
 - Future recommendation: $($memory.finalMiB) MiB
+
+## Sanitized journal events
+
+- Total: $($summary.sanitizedEventCount)
+- Info: $($summary.journalInfoCount)
+- Warning: $($summary.journalWarningCount)
+- Error: $($summary.journalErrorCount)
 
 ## Safety confirmations
 
@@ -648,16 +676,27 @@ function Invoke-SelfTest {
                     remoteStorageStarted = $false; journalReadable = $true
                     logEvidenceAvailable = $true
                     evidenceVerdict = $null
-                    sanitizedEvents = @([pscustomobject]@{
-                        requestId = 'phase64a-selftest'
-                        event = 'CACHE_HIT'
-                    })
+                    sanitizedEvents = @(
+                        [pscustomobject]@{
+                            level = 30; requestId = 'phase64a-selftest'
+                            event = 'CACHE_HIT'
+                        },
+                        [pscustomobject]@{
+                            level = 40; requestId = 'phase64a-selftest'
+                            event = 'SELF_TEST_WARNING'
+                        },
+                        [pscustomobject]@{
+                            level = 50; requestId = 'phase64a-selftest'
+                            event = 'SELF_TEST_ERROR'
+                        }
+                    )
                 })
             }
             $evidenceOperation = $evidenceRecord.operations[0]
             if ($SelfTestScenario -eq 'EvidenceFailure') {
                 $evidenceOperation.remoteStorageStarted = $true
                 $evidenceOperation.sanitizedEvents = @([pscustomobject]@{
+                    level = 30
                     requestId = 'phase64a-selftest'
                     event = 'REMOTE_STORAGE_REQUEST_STARTED'
                 })
