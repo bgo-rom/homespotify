@@ -16,7 +16,11 @@ param(
     [string] $OutputDirectory,
     [switch] $ValidateOnly,
     [switch] $SelfTest,
-    [ValidateSet('Healthy', 'PublicListener', 'PidChanged', 'Restarted', 'Interrupted', 'EvidenceFailure')]
+    [ValidateSet(
+        'Healthy', 'PublicListener', 'PidChanged', 'Restarted', 'Interrupted',
+        'EvidenceFailure', 'EvidenceConfirmed', 'JournalUnknown',
+        'LogEvidenceUnknown', 'CacheHitMissing'
+    )]
     [string] $SelfTestScenario = 'Healthy'
 )
 
@@ -61,6 +65,13 @@ function Get-UtcIso {
 
 function ConvertTo-JsonLine([object] $Value) {
     return ($Value | ConvertTo-Json -Depth 20 -Compress)
+}
+
+function Test-IsUnknown([object] $Value) {
+    return (
+        $Value -is [string] -and
+        [string]::Equals($Value, 'unknown', [StringComparison]::Ordinal)
+    )
 }
 
 function Get-LastJson([object[]] $Lines) {
@@ -215,13 +226,20 @@ function Assert-Preflight([object] $State) {
     if ($State.journalVerdict -eq 'JOURNAL_EVENT_TIMEOUT') {
         Fail 'JOURNAL_EVENT_TIMEOUT: cached HEAD request was not found in journald.'
     }
-    if ($State.journalReadable -ne $true -or
-        $State.logEvidenceAvailable -ne $true -or
-        $State.journalctlExecutable -ne $true) {
+    if ((Test-IsUnknown $State.journalReadable) -or
+        (Test-IsUnknown $State.logEvidenceAvailable)) {
         Fail 'LOG_EVIDENCE_UNAVAILABLE: journald preflight did not prove readable request evidence.'
     }
+    if ($State.journalReadable -isnot [bool] -or
+        $State.journalReadable -ne $true -or
+        $State.logEvidenceAvailable -isnot [bool] -or
+        $State.logEvidenceAvailable -ne $true -or
+        $State.journalctlExecutable -isnot [bool] -or
+        $State.journalctlExecutable -ne $true) {
+        Fail 'EVIDENCE_STATE_INVALID: journald preflight evidence is not explicitly valid.'
+    }
     if ([int]$State.journalPreflightHealth -ne 200) {
-        Fail 'LOG_EVIDENCE_UNAVAILABLE: shadow health preflight did not return HTTP 200.'
+        Fail 'SHADOW_HEALTH_FAILED: shadow health preflight did not return HTTP 200.'
     }
     if ($State.activeState -ne 'active' -or $State.subState -ne 'running') {
         $failures.Add('shadow service is not active/running')
@@ -388,8 +406,12 @@ function Assert-Sample([object] $Sample) {
 
 function Assert-RequestRecord([object] $Record) {
     foreach ($operation in @($Record.operations)) {
-        if (-not $operation.ok) {
+        if ($operation.ok -isnot [bool] -or $operation.ok -ne $true) {
             Fail "NO-GO: request check failed for $($operation.name)."
+        }
+        if ($operation.name -eq 'journalCachedHeadProbe' -and
+            [int]$operation.status -ne 200) {
+            Fail 'NO-GO: cached HEAD journal probe did not return HTTP 200.'
         }
         if ($operation.requiresCacheHit) {
             switch ("$($operation.evidenceVerdict)") {
@@ -402,9 +424,6 @@ function Assert-RequestRecord([object] $Record) {
                 'JOURNAL_EVENT_TIMEOUT' {
                     Fail "JOURNAL_EVENT_TIMEOUT: no terminal journal event for $($operation.name)."
                 }
-                'LOG_EVIDENCE_UNAVAILABLE' {
-                    Fail "LOG_EVIDENCE_UNAVAILABLE: journal evidence unavailable for $($operation.name)."
-                }
                 'CACHE_HIT_MISSING' {
                     Fail "CACHE_HIT_MISSING: exact CACHE_HIT absent for $($operation.name)."
                 }
@@ -412,17 +431,29 @@ function Assert-RequestRecord([object] $Record) {
                     Fail "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT: $($operation.name)."
                 }
             }
-            if ($operation.cacheHit -eq 'unknown' -or
-                $operation.remoteStorageStarted -eq 'unknown' -or
-                $operation.journalReadable -eq 'unknown' -or
-                $operation.logEvidenceAvailable -eq 'unknown') {
+            if ((Test-IsUnknown $operation.journalReadable) -or
+                (Test-IsUnknown $operation.logEvidenceAvailable)) {
                 Fail "LOG_EVIDENCE_UNAVAILABLE: tri-state evidence is unknown for $($operation.name)."
             }
-            if ($operation.cacheHit -ne $true) {
+            if ($operation.journalReadable -isnot [bool] -or
+                $operation.journalReadable -ne $true -or
+                $operation.logEvidenceAvailable -isnot [bool] -or
+                $operation.logEvidenceAvailable -ne $true) {
+                Fail "EVIDENCE_STATE_INVALID: journal evidence is not explicitly available for $($operation.name)."
+            }
+            if ($operation.cacheHit -isnot [bool] -or
+                $operation.cacheHit -ne $true) {
                 Fail "CACHE_HIT_MISSING: exact CACHE_HIT absent for $($operation.name)."
             }
+            if ($operation.remoteStorageStarted -isnot [bool]) {
+                Fail "EVIDENCE_STATE_INVALID: remote contact state is not boolean for $($operation.name)."
+            }
+            if ($operation.remoteStorageStarted -eq $true) {
+                Fail "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT: $($operation.name)."
+            }
         }
-        if ($operation.remoteStorageStarted -eq $true) {
+        if ($operation.remoteStorageStarted -is [bool] -and
+            $operation.remoteStorageStarted -eq $true) {
             Fail "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT: $($operation.name)."
         }
         if ($operation.name -eq 'fullGet') {
@@ -603,21 +634,42 @@ function Invoke-SelfTest {
         if ($SelfTestScenario -eq 'PidChanged') { $second.mainPid = 64750 }
         Add-Sample $second
         Assert-Sample $second
-        if ($SelfTestScenario -eq 'EvidenceFailure') {
+        if ($SelfTestScenario -in @(
+            'EvidenceFailure', 'EvidenceConfirmed', 'JournalUnknown',
+            'LogEvidenceUnknown', 'CacheHitMissing'
+        )) {
             $evidenceRecord = [pscustomobject]@{
                 timestampUtc = $second.timestampUtc
                 operations = @([pscustomobject]@{
-                    name = 'headHit'; ok = $true; status = 200; sizeBytes = 0
+                    name = 'journalCachedHeadProbe'; ok = $true
+                    status = 200; sizeBytes = 0
                     sha256 = $null; requestId = 'phase64a-selftest'
                     elapsedMs = 1.0; requiresCacheHit = $true; cacheHit = $true
-                    remoteStorageStarted = $true; journalReadable = $true
+                    remoteStorageStarted = $false; journalReadable = $true
                     logEvidenceAvailable = $true
-                    evidenceVerdict = 'REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT'
+                    evidenceVerdict = $null
                     sanitizedEvents = @([pscustomobject]@{
                         requestId = 'phase64a-selftest'
-                        event = 'REMOTE_STORAGE_REQUEST_STARTED'
+                        event = 'CACHE_HIT'
                     })
                 })
+            }
+            $evidenceOperation = $evidenceRecord.operations[0]
+            if ($SelfTestScenario -eq 'EvidenceFailure') {
+                $evidenceOperation.remoteStorageStarted = $true
+                $evidenceOperation.sanitizedEvents = @([pscustomobject]@{
+                    requestId = 'phase64a-selftest'
+                    event = 'REMOTE_STORAGE_REQUEST_STARTED'
+                })
+            }
+            if ($SelfTestScenario -eq 'JournalUnknown') {
+                $evidenceOperation.journalReadable = 'unknown'
+            }
+            if ($SelfTestScenario -eq 'LogEvidenceUnknown') {
+                $evidenceOperation.logEvidenceAvailable = 'unknown'
+            }
+            if ($SelfTestScenario -eq 'CacheHitMissing') {
+                $evidenceOperation.cacheHit = $false
             }
             Add-RequestRecord $evidenceRecord
             Assert-RequestRecord $evidenceRecord

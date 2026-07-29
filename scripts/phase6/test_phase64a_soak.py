@@ -212,9 +212,45 @@ class DetectionAndReportTest(unittest.TestCase):
         _, summary = self.run_scenario("EvidenceFailure")
         output = self.temp / "EvidenceFailure"
         self.assertEqual(summary["verdict"], "NO_GO")
+        self.assertIn(
+            "REMOTE_CONTACT_OBSERVED_ON_EXPECTED_HIT",
+            summary["failureReason"],
+        )
         self.assertGreater((output / "requests.jsonl").stat().st_size, 0)
         events = (output / "events-sanitized.jsonl").read_text(encoding="ascii")
         self.assertIn("REMOTE_STORAGE_REQUEST_STARTED", events)
+
+    def test_final_boolean_evidence_with_null_verdict_is_accepted(self) -> None:
+        _, summary = self.run_scenario("EvidenceConfirmed")
+        output = self.temp / "EvidenceConfirmed"
+        self.assertEqual(summary["verdict"], "SELF_TEST")
+        operation = json.loads(
+            (output / "requests.jsonl").read_text(encoding="ascii").splitlines()[0]
+        )
+        self.assertIs(operation["ok"], True)
+        self.assertEqual(operation["status"], 200)
+        self.assertIs(operation["cacheHit"], True)
+        self.assertIsInstance(operation["cacheHit"], bool)
+        self.assertIs(operation["remoteStorageStarted"], False)
+        self.assertIsInstance(operation["remoteStorageStarted"], bool)
+        self.assertIs(operation["journalReadable"], True)
+        self.assertIs(operation["logEvidenceAvailable"], True)
+        self.assertIsNone(operation["evidenceVerdict"])
+
+    def test_unknown_journal_readability_is_rejected(self) -> None:
+        _, summary = self.run_scenario("JournalUnknown")
+        self.assertEqual(summary["verdict"], "NO_GO")
+        self.assertIn("LOG_EVIDENCE_UNAVAILABLE", summary["failureReason"])
+
+    def test_unknown_log_evidence_is_rejected(self) -> None:
+        _, summary = self.run_scenario("LogEvidenceUnknown")
+        self.assertEqual(summary["verdict"], "NO_GO")
+        self.assertIn("LOG_EVIDENCE_UNAVAILABLE", summary["failureReason"])
+
+    def test_readable_cache_miss_is_rejected(self) -> None:
+        _, summary = self.run_scenario("CacheHitMissing")
+        self.assertEqual(summary["verdict"], "NO_GO")
+        self.assertIn("CACHE_HIT_MISSING", summary["failureReason"])
 
 
 class JournalEvidenceRegressionTest(unittest.TestCase):
@@ -305,20 +341,36 @@ class JournalEvidenceRegressionTest(unittest.TestCase):
         helper["http_request"] = lambda *_args, **_kwargs: self._http_result(
             "cached-head"
         )
-        helper["poll_request_evidence"] = lambda request_id, _since: {
-            "cacheHit": request_id == "cached-head",
+        pre_poll = {
+            "cacheHit": "unknown",
+            "remoteStorageStarted": "unknown",
+            "journalReadable": "unknown",
+            "logEvidenceAvailable": "unknown",
+            "verdict": None,
+            "events": [],
+        }
+        pre_poll_operation = helper["operation"](
+            "headHit", self._http_result("cached-head"), pre_poll,
+            200, size=0, cache_hit=True,
+        )
+        final_evidence = {
+            "cacheHit": True,
             "remoteStorageStarted": False,
             "journalReadable": True,
             "logEvidenceAvailable": True,
             "verdict": None,
-            "events": [{"requestId": request_id, "event": "CACHE_HIT"}],
+            "events": [{"requestId": "cached-head", "event": "CACHE_HIT"}],
         }
+        helper["poll_request_evidence"] = lambda _request_id, _since: final_evidence
         result = helper["request_operation"](
             "head-hit", "temporary-shadow-token", "2026-07-29T00:00:00Z"
         )
+        self.assertEqual(pre_poll_operation["cacheHit"], "unknown")
         self.assertEqual(result["name"], "headHit")
         self.assertIs(result["cacheHit"], True)
+        self.assertIsInstance(result["cacheHit"], bool)
         self.assertIs(result["remoteStorageStarted"], False)
+        self.assertIsInstance(result["remoteStorageStarted"], bool)
 
     def test_timeout_applies_to_cached_head_not_health(self) -> None:
         helper = helper_namespace()
