@@ -302,7 +302,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   style: TextStyle(color: Colors.white),
                 ),
                 subtitle: const Text(
-                  'Swiper des recommandations et demander des morceaux.',
+                  'Swiper des recommandations et découvrir des morceaux.',
                   style: TextStyle(color: Colors.white54),
                 ),
                 trailing: const Icon(
@@ -310,23 +310,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   color: Colors.white38,
                 ),
                 onTap: () => context.go('/discover'),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.inbox_rounded, color: _accent),
-                title: const Text(
-                  'Mes demandes',
-                  style: TextStyle(color: Colors.white),
-                ),
-                subtitle: const Text(
-                  'Suivre les demandes envoyées au propriétaire.',
-                  style: TextStyle(color: Colors.white54),
-                ),
-                trailing: const Icon(
-                  Icons.chevron_right_rounded,
-                  color: Colors.white38,
-                ),
-                onTap: () => context.push('/requests'),
               ),
             ],
           ),
@@ -349,19 +332,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     onPressed: () => context.push('/admin'),
                     icon: const Icon(Icons.admin_panel_settings_rounded),
                     label: const Text('Tableau de bord'),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: _accent,
-                      side: const BorderSide(color: _accent),
-                    ),
-                    onPressed: () => context.push('/admin/music-requests'),
-                    icon: const Icon(Icons.inbox_rounded),
-                    label: const Text('Demandes musicales'),
                   ),
                 ),
                 const SizedBox(height: 8),

@@ -1,0 +1,160 @@
+<!DOCTYPE html><html><head>
+    <title>DoubleDouble - Music Downloads</title>
+    <link rel="dns-prefetch" href="https://api.fonts.coollabs.io/">
+    <link rel="dns-prefetch" href="https://i.scdn.co/">
+    <link rel="dns-prefetch" href="https://is1-ssl.mzstatic.com/">
+    <link rel="dns-prefetch" href="https://is2-ssl.mzstatic.com/">
+    <link rel="dns-prefetch" href="https://is3-ssl.mzstatic.com/">
+    <link rel="dns-prefetch" href="https://is4-ssl.mzstatic.com/">
+    <link rel="dns-prefetch" href="https://resources.tidal.com/">
+    <link rel="dns-prefetch" href="https://i1.sndcdn.com/">
+    <link rel="dns-prefetch" href="https://i2.sndcdn.com/">
+    <link rel="dns-prefetch" href="https://i3.sndcdn.com/">
+    <link rel="dns-prefetch" href="https://i4.sndcdn.com/">
+    <link rel="dns-prefetch" href="https://direct.rhapsody.com/">
+    <link rel="dns-prefetch" href="https://js.hcaptcha.com/">
+    <link rel="dns-prefetch" href="https://newassets.hcaptcha.com/">
+    <link rel="dns-prefetch" href="https://hcaptcha.com/">
+    <link rel="dns-prefetch" href="https://api.hcaptcha.com/">
+    <link rel="dns-prefetch" href="https://imgs.hcaptcha.com/">
+    <link rel="dns-prefetch" href="https://challenges.cloudflare.com/">
+    <link href="/css/main.css" rel="stylesheet">
+    <link href="/record.png" rel="preload" as="image">
+    <script defer="" data-domain="doubledouble.top" src="https://anal.doubledouble.top/js/script.js"></script>
+    <script src="https://js.hcaptcha.com/1/api.js?hl=en&amp;render=explicit&amp;recaptchacompat=off" async="" defer=""></script>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="shortcut icon" type="image/png" href="/record.png">
+	<style>
+      /* Hide the OUO checkbox from the frontend */
+      #ouo {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <a href="/"><h1>DoubleDouble</h1></a>
+    <!-- <p>Download music directly from Spotify, Apple Music, Amazon Music, Soundcloud, Qobuz, Deezer, Tidal, Napster, Beatport or KKBOX for free.</p> -->
+    <p>Download music directly from Amazon Music, Soundcloud, Qobuz, Deezer and Tidal for free.</p>
+    <div class="main">
+      <div class="dl-form">
+        <label id="dl-input-label" for="dl-input">Insert a valid URL or search below.</label>
+        <div class="dl-input-wrapper">
+          <input id="dl-input" autocomplete="off" name="dl-input" placeholder="Enter a URL..." aria-placeholder="URL placeholder" style="">
+          <button class="spty" id="dl-button" onclick="dl()">Download</button>
+        </div><br>
+        <details open="">
+          <summary><span class="icon">settings</span> Options</summary><br>
+          <div title="If the checkbox is unticked, it will download directly from our server, which may be slower.">
+            <input id="external" type="checkbox" name="external" checked="" style="">      
+            <label for="external">Upload to <select id="site">
+			  <option value="pdrain">pixeldrain.com</option>
+              <option value="litterbox">litterbox.catbox.moe</option>
+              <option value="sendcm">send.cm</option>
+            </select>?</label>
+          </div>
+          <div>
+            <input id="ouo" type="checkbox" name="ouo" style="">
+            <label for="ouo"></label>
+          </div>
+          <div>
+            <input id="private" type="checkbox" name="private" style="">
+            <label for="private">Hide my download from "recently downloaded"</label>
+          </div>
+          <!-- <div>
+            <input id="elsewhere" type="checkbox" name="elsewhere">
+            <label for="elsewhere">
+              Resolve to a different service: <select id="elsewhere-service">
+                <option value="spotify">Spotify</option>
+                <option value="tidal">Tidal</option>
+                <option value="deezer">Deezer</option>
+                <option value="soundcloud">Soundcloud</option>
+                <option value="napster">Napster</option>
+                <option value="amazon">Amazon Music</option>
+                <option value="applemusic">Apple Music</option>
+              </select>
+            </label>
+          </div> -->
+          <br>
+          <div>
+            <details>
+              <summary>Spotify-specific settings</summary><br>
+              <div>
+                <label for="format">File format:</label>
+                <select id="format">
+                  <option value="ogg" default="">OGG 320kbps</option>
+                  <option value="mp3">MP3 320kbps</option>
+                </select>
+              </div>
+              <div>
+                <input id="metadata" name="metadata" type="checkbox" checked="" style="">  
+                <label for="metadata">Add metadata</label>
+              </div>
+            </details>
+          </div>
+        </details></div>
+        
+      </div><br>
+    
+    <div class="download">
+      <div id="success" style="display: none;">
+        <h1 class="icon">check</h1>
+        <p id="success-status">Successfully downloaded content. Automatically adding it to your download manager...</p>
+      </div>
+      <div id="error" style="display: none;">
+        <h1 class="icon">error</h1>
+        <p id="errText"></p>
+      </div>
+      <div id="prompt" style="display: none;">
+        <h1 class="icon">help</h1>
+        <p id="promptText"></p>
+        <div id="promptChoices"></div>
+      </div>
+      <div id="prompt-captcha" style="display: none;">
+        <h1 class="icon">help</h1>
+        <p id="promptText">Please complete the CAPTCHA to continue</p>
+        <div id="captcha" class="h-captcha" data-sitekey="" data-theme="dark" data-callback="solveCaptcha"></div>
+      </div>
+      <div id="loader" style="display:none;">
+        <img id="dlCover" src="/record.png" alt="" class="record" onerror="this.src = '/record.png';"> 
+        <p id="loadertext"></p>
+      </div>
+      <div id="results" style="display: none;">
+        <h2 style="margin-bottom: 0; text-align: left;">Your Results</h2>
+        <p style="margin-top: 0; text-align: left;">Service: 
+          <select id="search-service" value="spotify" oninput="search(document.getElementById('dl-input').value)">
+            <option value="spotify">Spotify</option>
+            <option value="itunes">iTunes</option>
+          </select>
+        </p>
+        <div id="dumping"></div>
+      </div>
+      
+      <a href="https://lucida.to/" class="lucida-link">
+        <div class="lucida-notice">
+          <p>Lucida Music</p>
+          <p>Click here to try it out</p>
+        </div>
+      </a>
+      
+    </div>
+    <div class="foot">
+      <hr>
+      <div id="recently-downloaded" style="display: inline-block;">
+        <h2><span class="icon">file_download</span> Recently Downloaded</h2>
+        <p id="downloads"><p data-url="https://music.amazon.de/tracks/B09TJVQ7J8?marketplaceId=A1PA6795UKMFR9&amp;musicTerritory=DE&amp;ref=dm_sh_FIyeC8YLapXTct1b9F1RMiKP3" style="margin-right: 5px;"><a href="https://music.amazon.de/tracks/B09TJVQ7J8?marketplaceId=A1PA6795UKMFR9&amp;musicTerritory=DE&amp;ref=dm_sh_FIyeC8YLapXTct1b9F1RMiKP3" class="underline">Best Worst Ex by Julia Cole</a> [track downloaded just now]</p><p data-url="https://www.qobuz.com/us-en/album/lava-ground-i-wayne/0054645170260" style="margin-right: 5px;"><a href="https://www.qobuz.com/us-en/album/lava-ground-i-wayne/0054645170260" class="underline">Lava Ground by I-Wayne</a> [album downloaded just now]</p><p data-url="https://music.amazon.de/tracks/B09TDTJSYJ?marketplaceId=A1PA6795UKMFR9&amp;musicTerritory=DE&amp;ref=dm_sh_QEnzEJn3FmHayePgH8Zo5LjFx" style="margin-right: 5px;"><a href="https://music.amazon.de/tracks/B09TDTJSYJ?marketplaceId=A1PA6795UKMFR9&amp;musicTerritory=DE&amp;ref=dm_sh_QEnzEJn3FmHayePgH8Zo5LjFx" class="underline">Stop Draggin' Your Boots by Danielle Bradbery</a> [track downloaded just now]</p><p data-url="https://www.qobuz.com/us-en/album/planet-rock-remixes-paul-oakenfold-presents-afrika-bambaataa-the-soulsonic-force-paul-oakenfold-afrika-bambaataa-and-the-soulsonic-force/m99yimm8977za" style="margin-right: 5px;"><a href="https://www.qobuz.com/us-en/album/planet-rock-remixes-paul-oakenfold-presents-afrika-bambaataa-the-soulsonic-force-paul-oakenfold-afrika-bambaataa-and-the-soulsonic-force/m99yimm8977za" class="underline">Planet Rock Remixes by Paul Oakenfold</a> [album downloaded just now]</p><p data-url="https://music.amazon.de/tracks/B09TDTJSYJ?marketplaceId=A1PA6795UKMFR9&amp;musicTerritory=DE&amp;ref=dm_sh_2knKD9e9HvwaGz1BqhNYGJzdg" style="margin-right: 5px;"><a href="https://music.amazon.de/tracks/B09TDTJSYJ?marketplaceId=A1PA6795UKMFR9&amp;musicTerritory=DE&amp;ref=dm_sh_2knKD9e9HvwaGz1BqhNYGJzdg" class="underline">Stop Draggin' Your Boots by Danielle Bradbery</a> [track downloaded just now]</p></p>
+        <p style="font-size:x-small;">you can hide your downloads from here in options, we don't keep any identifying information about you on our server.</p>
+      </div>
+      <p class="footer">
+        <a href="https://t.me/doubledoubletop">telegram announcements</a> (<a href="https://discord.gg/mER6k6vqnA">discussion group</a>, pls join) /
+        <a href="/faq">faq</a> /
+        <a href="/donate">donate</a> / 
+        <a href="/stats">server stats</a> / 
+        <a href="mailto:Bunt4021@proton.me">email me</a>
+      </p>
+    </div>
+    <script src="/app.js"></script>
+  
+
+</body></html>

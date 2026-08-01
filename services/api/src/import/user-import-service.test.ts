@@ -15,7 +15,6 @@ import { runMigrations } from '../db/migrate.js';
 import {
   auditLogs,
   importJobs,
-  musicRequestItems,
   tracks,
   users,
   userImportDirectories,
@@ -24,14 +23,6 @@ import {
 import { makeFlac } from '../test/flac.js';
 import { makeWav } from '../test/wav.js';
 import { UserImportService } from './user-import-service.js';
-import {
-  assignMusicRequestItemTrack,
-  createMusicRequest,
-  MusicRequestError,
-  ownerUpdateMusicRequest,
-  ownerUpdateMusicRequestItem,
-  reconcileMusicRequestStatus,
-} from '../discovery/music-request-service.js';
 
 const roots: string[] = [];
 
@@ -274,79 +265,6 @@ describe('imports locaux isolés par utilisateur', () => {
     expect(job?.status).toBe('WAITING_FOR_OWNER_MATCH');
     expect(JSON.parse(job?.matchCandidatesJson ?? '[]')).toHaveLength(2);
     expect(handle.db.select().from(userTracks).all()).toHaveLength(0);
-    handle.sqlite.close();
-  });
-});
-
-describe('demandes TRACK, ALBUM et PLAYLIST', () => {
-  it('conserve le snapshot ordonné et calcule PARTIALLY_COMPLETED puis COMPLETED', () => {
-    const { handle } = setup();
-    const ownerId = insertUser(handle, 'owner', 'OWNER');
-    const userId = insertUser(handle, 'listener');
-    const trackRequest = createMusicRequest(handle, {
-      userId,
-      requestType: 'TRACK',
-      title: 'Single',
-      artist: 'Artist',
-    });
-    const albumRequest = createMusicRequest(handle, {
-      userId,
-      requestType: 'ALBUM',
-      title: 'Album',
-      artist: 'Artist',
-      items: [{ title: 'A' }, { title: 'B' }],
-    });
-    const playlist = createMusicRequest(handle, {
-      userId,
-      requestType: 'PLAYLIST',
-      title: 'Playlist',
-      externalUrl: 'https://example.com/list',
-      items: [{ title: 'First' }, { title: 'Second' }],
-    });
-    expect(trackRequest.requestType).toBe('TRACK');
-    expect(albumRequest.requestType).toBe('ALBUM');
-    expect(playlist.items.map((item) => item.title)).toEqual(['First', 'Second']);
-
-    const firstTrack = insertTrack(handle, {
-      hash: 'c'.repeat(64),
-      title: 'First',
-      artist: 'Artist',
-    });
-    const secondTrack = insertTrack(handle, {
-      hash: 'd'.repeat(64),
-      title: 'Second',
-      artist: 'Artist',
-    });
-    assignMusicRequestItemTrack(handle, {
-      ownerId,
-      requestId: playlist.id,
-      itemId: playlist.items[0]!.id,
-      trackId: firstTrack,
-    });
-    ownerUpdateMusicRequestItem(handle, {
-      ownerId,
-      itemId: playlist.items[1]!.id,
-      status: 'UNAVAILABLE',
-    });
-    expect(reconcileMusicRequestStatus(handle, playlist.id).status).toBe('PARTIALLY_COMPLETED');
-    assignMusicRequestItemTrack(handle, {
-      ownerId,
-      requestId: playlist.id,
-      itemId: playlist.items[1]!.id,
-      trackId: secondTrack,
-    });
-    expect(reconcileMusicRequestStatus(handle, playlist.id).status).toBe('COMPLETED');
-    expect(handle.db.select().from(userTracks).where(eq(userTracks.userId, userId)).all())
-      .toHaveLength(2);
-
-    expect(() => ownerUpdateMusicRequest(handle, {
-      ownerId,
-      requestId: albumRequest.id,
-      status: 'COMPLETED',
-    })).toThrowError(MusicRequestError);
-    expect(handle.db.select().from(musicRequestItems).where(
-      eq(musicRequestItems.musicRequestId, playlist.id),
-    ).all()).toHaveLength(2);
     handle.sqlite.close();
   });
 });

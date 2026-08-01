@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  HomeSpotify Storage Agent - configuration WinSW ACTIVE (Phase 3)
+  ============================================================================
+
+  Source de verite versionnee. La copie deployee vit dans
+  C:\ProgramData\HomeSpotify\StorageAgent\service\HomeSpotifyStorageAgent.xml,
+  a cote de HomeSpotifyStorageAgent.exe (WinSW 2.12.0, meme binaire que le
+  service HomeSpotifyApi).
+
+  AUCUN SECRET DANS CE FICHIER. Il est versionne dans Git.
+  Le secret partage vit uniquement dans config\agent.env, protege par ACL.
+  STORAGE_AGENT_ENV_FILE ne transporte qu'un CHEMIN.
+
+  Identite du service : NON declaree ici volontairement. WinSW installe le
+  service sous LocalSystem par defaut, puis le script d'installation elevee
+  bascule immediatement l'identite vers le compte de service virtuel
+  NT SERVICE\HomeSpotifyStorageAgent via `sc.exe config obj=` avec un mot de
+  passe vide. Aucun mot de passe n'existe, donc aucun mot de passe ne peut
+  fuiter - ni dans ce XML, ni dans Git, ni dans un script.
+
+  Demarrage automatique DIFFERE + dependance au tunnel WireGuard : l'adresse
+  10.8.0.2 n'existe pas tant que le tunnel n'est pas monte, et l'agent refuse
+  de demarrer s'il ne peut pas s'y lier.
+
+  Redemarrage BORNE : trois tentatives espacees, puis arret definitif. Un
+  agent qui boucle doit devenir visible, pas se relancer indefiniment.
+-->
+<service>
+  <id>HomeSpotifyStorageAgent</id>
+  <name>HomeSpotify Storage Agent</name>
+  <description>Sert les fichiers audio locaux au VPS HomeSpotify via WireGuard (lecture seule).</description>
+
+  <!-- Node installe pour la machine, jamais un chemin de profil utilisateur. -->
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>"C:\ProgramData\HomeSpotify\StorageAgent\app\dist\main.js"</arguments>
+
+  <!-- Repertoire de travail EXPLICITE : aucune dependance au CWD herite. -->
+  <workingdirectory>C:\ProgramData\HomeSpotify\StorageAgent\app</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <depend>Tcpip</depend>
+  <depend>WireGuardTunnel$HomeSpotify-VPS</depend>
+
+  <env name="NODE_ENV" value="production" />
+  <!-- Chemin du fichier d'environnement protege. Valeur non secrete. -->
+  <env name="STORAGE_AGENT_ENV_FILE" value="C:\ProgramData\HomeSpotify\StorageAgent\config\agent.env" />
+
+  <hidewindow>true</hidewindow>
+
+  <!-- Logs rotatifs bornes : 8 fichiers de 16 Mo maximum. -->
+  <logpath>C:\ProgramData\HomeSpotify\StorageAgent\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>16384</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <onfailure action="restart" delay="15 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <onfailure action="restart" delay="120 sec" />
+  <onfailure action="none" />
+  <resetfailure>1 hour</resetfailure>
+
+  <!-- Arret gracieux : les flux en cours ont le temps de se terminer. -->
+  <stoptimeout>30 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <priority>Normal</priority>
+</service>

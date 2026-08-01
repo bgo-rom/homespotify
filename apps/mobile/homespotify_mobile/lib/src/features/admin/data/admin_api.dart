@@ -183,124 +183,6 @@ class AdminUser {
   bool get isOwner => role == 'OWNER';
 }
 
-class AdminMusicRequest {
-  const AdminMusicRequest({
-    required this.id,
-    required this.requesterName,
-    required this.requesterId,
-    required this.requesterUsername,
-    required this.title,
-    required this.artist,
-    required this.itemType,
-    required this.status,
-    required this.createdAt,
-    required this.presentInRequesterLibrary,
-    required this.requestedItemCount,
-    required this.completedItemCount,
-    required this.unavailableItemCount,
-    required this.items,
-    this.album,
-    this.artworkUrl,
-    this.userNote,
-    this.ownerNote,
-    this.externalUrl,
-    this.resultingTrackId,
-    this.externalSource,
-  });
-
-  factory AdminMusicRequest.fromJson(Map<String, dynamic> json) {
-    final requester = json['requester'] as Map<String, dynamic>? ?? const {};
-    return AdminMusicRequest(
-      id: (json['id'] as num).toInt(),
-      requesterName: requester['displayName'] as String? ?? '?',
-      requesterId: (requester['id'] as num?)?.toInt() ?? 0,
-      requesterUsername: requester['username'] as String? ?? '',
-      title: json['title'] as String? ?? '',
-      artist: json['artist'] as String? ?? '',
-      album: json['album'] as String?,
-      artworkUrl: json['artworkUrl'] as String? ?? json['coverUrl'] as String?,
-      itemType:
-          json['requestType'] as String? ??
-          json['itemType'] as String? ??
-          'TRACK',
-      status: json['status'] as String? ?? 'SENT',
-      userNote: json['userNote'] as String?,
-      ownerNote: json['ownerNote'] as String?,
-      externalUrl: json['externalUrl'] as String?,
-      resultingTrackId: (json['resultingTrackId'] as num?)?.toInt(),
-      createdAt: json['createdAt'] as String? ?? '',
-      presentInRequesterLibrary:
-          json['presentInRequesterLibrary'] as bool? ?? false,
-      requestedItemCount: (json['requestedItemCount'] as num?)?.toInt() ?? 0,
-      completedItemCount: (json['completedItemCount'] as num?)?.toInt() ?? 0,
-      unavailableItemCount:
-          (json['unavailableItemCount'] as num?)?.toInt() ?? 0,
-      externalSource: json['externalSource'] as String?,
-      items: (json['items'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(AdminMusicRequestItem.fromJson)
-          .toList(growable: false),
-    );
-  }
-
-  final int id;
-  final String requesterName;
-  final int requesterId;
-  final String requesterUsername;
-  final String title;
-  final String artist;
-  final String? album;
-  final String? artworkUrl;
-  final String itemType;
-  final String status;
-  final String? userNote;
-  final String? ownerNote;
-  final String? externalUrl;
-  final int? resultingTrackId;
-  final String createdAt;
-  final bool presentInRequesterLibrary;
-  final int requestedItemCount;
-  final int completedItemCount;
-  final int unavailableItemCount;
-  final String? externalSource;
-  final List<AdminMusicRequestItem> items;
-}
-
-class AdminMusicRequestItem {
-  const AdminMusicRequestItem({
-    required this.id,
-    required this.position,
-    required this.title,
-    required this.status,
-    required this.presentInRequesterLibrary,
-    this.artist,
-    this.album,
-    this.resultingTrackId,
-  });
-
-  factory AdminMusicRequestItem.fromJson(Map<String, dynamic> json) =>
-      AdminMusicRequestItem(
-        id: (json['id'] as num).toInt(),
-        position: (json['position'] as num?)?.toInt() ?? 0,
-        title: json['title'] as String? ?? '',
-        artist: json['artist'] as String?,
-        album: json['album'] as String?,
-        status: json['status'] as String? ?? 'PENDING',
-        resultingTrackId: (json['resultingTrackId'] as num?)?.toInt(),
-        presentInRequesterLibrary:
-            json['presentInRequesterLibrary'] as bool? ?? false,
-      );
-
-  final int id;
-  final int position;
-  final String title;
-  final String? artist;
-  final String? album;
-  final String status;
-  final int? resultingTrackId;
-  final bool presentInRequesterLibrary;
-}
-
 class AdminTrackSearchResult {
   const AdminTrackSearchResult({
     required this.id,
@@ -326,31 +208,6 @@ class AdminTrackSearchResult {
   final double? durationSeconds;
 }
 
-class AdminSpotifyLink {
-  const AdminSpotifyLink({
-    required this.url,
-    required this.exact,
-    required this.source,
-    required this.title,
-    required this.artist,
-  });
-
-  factory AdminSpotifyLink.fromJson(Map<String, dynamic> json) =>
-      AdminSpotifyLink(
-        url: json['url'] as String? ?? '',
-        exact: json['exact'] as bool? ?? false,
-        source: json['source'] as String? ?? 'SPOTIFY_SEARCH',
-        title: json['title'] as String? ?? '',
-        artist: json['artist'] as String? ?? '',
-      );
-
-  final String url;
-  final bool exact;
-  final String source;
-  final String title;
-  final String artist;
-}
-
 class AdminImportJob {
   const AdminImportJob({
     required this.id,
@@ -364,10 +221,7 @@ class AdminImportJob {
     this.sizeBytes,
     this.metadata,
     this.trackId,
-    this.musicRequestId,
-    this.musicRequestItemId,
     this.errorMessage,
-    this.availableRequestItems = const [],
   });
 
   factory AdminImportJob.fromJson(Map<String, dynamic> json) {
@@ -396,14 +250,7 @@ class AdminImportJob {
       sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
       metadata: metadata,
       trackId: (json['trackId'] as num?)?.toInt(),
-      musicRequestId: (json['musicRequestId'] as num?)?.toInt(),
-      musicRequestItemId: (json['musicRequestItemId'] as num?)?.toInt(),
       errorMessage: json['errorMessage'] as String?,
-      availableRequestItems:
-          (json['availableRequestItems'] as List<dynamic>? ?? const [])
-              .whereType<Map<String, dynamic>>()
-              .map(AdminImportRequestItem.fromJson)
-              .toList(growable: false),
     );
   }
 
@@ -418,38 +265,9 @@ class AdminImportJob {
   final int? sizeBytes;
   final Map<String, dynamic>? metadata;
   final int? trackId;
-  final int? musicRequestId;
-  final int? musicRequestItemId;
   final String? errorMessage;
-  final List<AdminImportRequestItem> availableRequestItems;
 }
 
-class AdminImportRequestItem {
-  const AdminImportRequestItem({
-    required this.id,
-    required this.requestId,
-    required this.position,
-    required this.title,
-    this.artist,
-  });
-
-  factory AdminImportRequestItem.fromJson(Map<String, dynamic> json) =>
-      AdminImportRequestItem(
-        id: (json['id'] as num).toInt(),
-        requestId: (json['requestId'] as num).toInt(),
-        position: (json['position'] as num?)?.toInt() ?? 0,
-        title: json['title'] as String? ?? '',
-        artist: json['artist'] as String?,
-      );
-
-  final int id;
-  final int requestId;
-  final int position;
-  final String title;
-  final String? artist;
-}
-
-/// Santé du moteur de recommandations (diagnostics OWNER).
 class AdminRecommendationHealth {
   const AdminRecommendationHealth({
     required this.status,
@@ -622,51 +440,6 @@ class AdminApi {
     );
   }
 
-  Future<List<AdminMusicRequest>> listMusicRequests({
-    int? userId,
-    String? type,
-    String? status,
-    String? query,
-  }) async {
-    final json = await _request(
-      () => _dio.get(
-        '/api/admin/music-requests',
-        queryParameters: {
-          'userId': ?userId,
-          'type': ?type,
-          'status': ?status,
-          'q': ?query,
-        },
-      ),
-    );
-    return (json['items'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map(AdminMusicRequest.fromJson)
-        .toList(growable: false);
-  }
-
-  Future<void> updateMusicRequest(
-    int id, {
-    String? status,
-    String? ownerNote,
-  }) async {
-    await _request(
-      () => _dio.patch(
-        '/api/admin/music-requests/$id',
-        data: {'status': ?status, 'ownerNote': ?ownerNote},
-      ),
-    );
-  }
-
-  Future<void> assignTrack(int requestId, int itemId, int trackId) async {
-    await _request(
-      () => _dio.post(
-        '/api/admin/music-requests/$requestId/items/$itemId/assign-track',
-        data: {'trackId': trackId},
-      ),
-    );
-  }
-
   Future<List<AdminTrackSearchResult>> searchTracks(String query) async {
     final json = await _request(
       () => _dio.get(
@@ -678,13 +451,6 @@ class AdminApi {
         .whereType<Map<String, dynamic>>()
         .map(AdminTrackSearchResult.fromJson)
         .toList(growable: false);
-  }
-
-  Future<AdminSpotifyLink> resolveSpotifyLink(int requestId) async {
-    final json = await _request(
-      () => _dio.get('/api/admin/music-requests/$requestId/spotify-link'),
-    );
-    return AdminSpotifyLink.fromJson(json);
   }
 
   Future<List<AdminImportJob>> listImports({
@@ -712,25 +478,6 @@ class AdminApi {
 
   Future<void> rejectImport(int jobId) async {
     await _request(() => _dio.post('/api/admin/imports/$jobId/reject'));
-  }
-
-  Future<void> assignImport({
-    required int jobId,
-    required int itemId,
-    required int trackId,
-  }) async {
-    await _request(
-      () => _dio.post(
-        '/api/admin/imports/$jobId/assign',
-        data: {'itemId': itemId, 'trackId': trackId},
-      ),
-    );
-  }
-
-  Future<void> reconcileMusicRequest(int requestId) async {
-    await _request(
-      () => _dio.post('/api/admin/music-requests/$requestId/reconcile'),
-    );
   }
 
   Future<AdminRecommendationHealth> fetchRecommendationHealth() async {

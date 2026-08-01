@@ -87,7 +87,13 @@ réellement un fichier, utiliser la syntaxe Vitest de filtrage depuis
   sinon il marque en échec un travail déjà réussi.
 - Un processus externe encore vivant doit être arrêté au shutdown du serveur.
 
-## E. Périmètre : acquisition distante
+## E. Périmètre : acquisition distante — **PÉRIMÉ depuis le 2026-07-25**
+
+> Cette section décrivait l'état du dépôt au moment de l'audit, sous
+> `TD-Remote-Acquisition-Removed`. Cette décision a été **révoquée le
+> 2026-07-25** par `TD-Remote-Acquisition-Lucida` (décision du propriétaire) et
+> l'acquisition distante Lucida est désormais implémentée. Texte d'origine
+> conservé ci-dessous pour traçabilité.
 
 Le dépôt **ne contient aucune intégration d'acquisition distante**, et ce n'est
 pas un manque à combler.
@@ -109,6 +115,14 @@ pas un manque à combler.
 Le chemin d'ajout audio pris en charge reste : dépôt d'un fichier que le
 propriétaire possède dans l'inbox surveillée, puis import par
 `UserImportService`, avec association facultative à une `music_request`.
+
+### État réel après révocation
+
+L-059 et L-078 **restent valides** : la recherche catalogue ne déclenche
+toujours aucun téléchargement (elle crée une `music_request`), et l'autorisation
+d'acquisition vient bien d'une décision tracée du propriétaire, pas d'un fichier
+`.env`. Le fetch-node reste supprimé. Seule l'interdiction de principe visant
+Lucida est levée.
 
 ## À vérifier
 

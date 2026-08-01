@@ -4,7 +4,6 @@ import {
   appMeta,
   favorites,
   listeningSessions,
-  musicRequests,
   playEvents,
   playlists,
   playlistTracks,
@@ -86,7 +85,6 @@ export const PREVIEW_CONFIDENCE_FLOOR = 0.8;
 
 // --- Poids du profil de goût ------------------------------------------------
 const WEIGHT_FAVORITE = 5;
-const WEIGHT_CONFIRMED_REQUEST = 4;
 const WEIGHT_LIKE = 3;
 const WEIGHT_PLAYLIST_FIRST = 2;
 const WEIGHT_PLAYLIST_EXTRA = 1;
@@ -250,18 +248,6 @@ export function buildUserTasteProfile(handle: DbHandle, userId: number): UserTas
     const recentBonus = row.lastPlayed >= recentCutoff ? WEIGHT_RECENT_LISTEN : 0;
     bumpTrack(row.title, row.artist, listenWeight + recentBonus);
   }
-
-  // Demandes ABOUTIES : intention confirmée.
-  const confirmedRequests = db
-    .select({ title: recommendationCandidates.title, artist: recommendationCandidates.artist })
-    .from(musicRequests)
-    .innerJoin(
-      recommendationCandidates,
-      eq(recommendationCandidates.id, musicRequests.candidateId),
-    )
-    .where(and(eq(musicRequests.requestedByUserId, userId), eq(musicRequests.status, 'COMPLETED')))
-    .all();
-  for (const row of confirmedRequests) bumpTrack(row.title, row.artist, WEIGHT_CONFIRMED_REQUEST);
 
   // Feedback Découvrir, par candidat.
   const swipeRows = db

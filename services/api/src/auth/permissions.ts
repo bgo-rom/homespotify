@@ -5,7 +5,7 @@ import type { Role } from './roles.js';
 
 export type AdminAction =
   | 'admin.view' // overview, listes, audit
-  | 'music_request.review' // examiner/annoter les demandes de musique des utilisateurs
+  | 'admin.review' // examiner les imports, diagnostics et outils serveur
   | 'user.create'
   | 'user.block'
   | 'user.unblock'

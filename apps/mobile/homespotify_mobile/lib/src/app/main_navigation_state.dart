@@ -11,7 +11,7 @@ abstract final class HomeDestination {
 }
 
 /// Index de branche correspondant à une location, ou `null` si la location est
-/// HORS du shell (route empilée par-dessus : `/albums`, `/player`, `/requests`…).
+/// HORS du shell (route empilée par-dessus : `/albums`, `/player`, `/catalog-search`…).
 int? branchIndexForLocation(String location) {
   if (location == '/') return HomeDestination.home;
   if (location.startsWith('/library')) return HomeDestination.library;

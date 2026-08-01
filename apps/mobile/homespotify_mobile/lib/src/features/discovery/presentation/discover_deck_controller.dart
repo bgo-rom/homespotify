@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../remote_download/data/remote_download_api.dart';
+import '../../remote_download/domain/remote_download_models.dart';
 import '../data/discovery_api.dart';
 import '../domain/discovery_models.dart';
 
@@ -285,21 +287,48 @@ class DiscoverDeckController extends Notifier<DiscoverDeckState> {
     advance();
   }
 
-  /// Envoie la demande (le LIKE d'affinité part en parallèle). Retourne
-  /// true si la carte doit être retirée du paquet.
-  Future<bool> request(RecommendationCandidate candidate) async {
+  /// Installe le titre directement (le LIKE d'affinité part en parallèle).
+  ///
+  /// Aucune demande n'est créée et aucune validation n'est attendue : le job
+  /// de téléchargement est lancé côté serveur, avec l'identité complète du
+  /// candidat. Retourne true si la carte doit être retirée du paquet.
+  Future<bool> install(RecommendationCandidate candidate) async {
     if (state.busy) return false;
     state = state.copyWith(busy: true);
     try {
       sendActionSilently(candidate.id, RecommendationSwipeAction.like);
-      await _repository.createRequest(candidate.id);
-      logUi('demande envoyée candidat=${candidate.id}');
-      return true;
-    } on DiscoveryApiException catch (error) {
+      final durationMs = candidate.durationMs;
+      final outcome = await ref
+          .read(remoteDownloadApiProvider)
+          .searchAndDownload(
+            query: '${candidate.artist} ${candidate.title}'.trim(),
+            title: candidate.title,
+            artist: candidate.artist,
+            album: candidate.album,
+            durationSeconds: durationMs == null || durationMs <= 0
+                ? null
+                : (durationMs / 1000).round(),
+          );
+      if (outcome is RemoteDownloadQueued) {
+        logUi('installation lancée candidat=${candidate.id}');
+        return true;
+      }
+      if (ref.mounted) {
+        state = state.copyWith(
+          error: switch (outcome) {
+            RemoteDownloadAmbiguous(:final message) ||
+            RemoteDownloadNoMatch(:final message) =>
+              message ?? 'Aucune source disponible pour ce titre.',
+            _ => 'Aucune source disponible pour ce titre.',
+          },
+        );
+      }
+      // Le morceau reste dans le paquet : rien n'a été installé.
+      return false;
+    } on RemoteDownloadException catch (error) {
       if (ref.mounted) state = state.copyWith(error: error.message);
-      // Doublon/déjà possédée : on retire quand même la carte du paquet.
-      return error.code == 'duplicate_active_request' ||
-          error.code == 'already_owned';
+      // Déjà en cours de téléchargement : la carte a rempli son office.
+      return error.isDuplicate;
     } finally {
       if (ref.mounted) state = state.copyWith(busy: false);
     }

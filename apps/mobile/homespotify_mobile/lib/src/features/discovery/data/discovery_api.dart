@@ -5,7 +5,7 @@ import '../../../core/config/app_config.dart';
 import '../../../core/network/api_client.dart';
 import '../domain/discovery_models.dart';
 
-/// Erreur découverte/demandes présentable à l'utilisateur.
+/// Erreur découverte présentable à l'utilisateur.
 class DiscoveryApiException implements Exception {
   const DiscoveryApiException(this.message, {this.code});
 
@@ -16,69 +16,6 @@ class DiscoveryApiException implements Exception {
 
   @override
   String toString() => message;
-}
-
-class MusicRequestDraftItem {
-  const MusicRequestDraftItem({
-    required this.title,
-    this.artist,
-    this.album,
-    this.durationMs,
-    this.isrc,
-  });
-
-  final String title;
-  final String? artist;
-  final String? album;
-
-  /// Snapshot catalogue : durée et ISRC quand la source les fournit.
-  final int? durationMs;
-  final String? isrc;
-
-  Map<String, dynamic> toJson(int position) => {
-    'position': position,
-    'title': title,
-    'artist': ?artist,
-    'album': ?album,
-    'durationMs': ?durationMs,
-    'isrc': ?isrc,
-  };
-}
-
-class MusicRequestDraft {
-  const MusicRequestDraft({
-    required this.requestType,
-    required this.title,
-    this.artist,
-    this.album,
-    this.externalUrl,
-    this.coverUrl,
-    this.userNote,
-    this.items = const [],
-  });
-
-  final MusicRequestType requestType;
-  final String title;
-  final String? artist;
-  final String? album;
-  final String? externalUrl;
-  final String? coverUrl;
-  final String? userNote;
-  final List<MusicRequestDraftItem> items;
-
-  Map<String, dynamic> toJson() => {
-    'requestType': requestType.wireName,
-    'title': title,
-    'artist': ?artist,
-    'album': ?album,
-    'externalUrl': ?externalUrl,
-    'coverUrl': ?coverUrl,
-    'userNote': ?userNote,
-    'items': [
-      for (var index = 0; index < items.length; index += 1)
-        items[index].toJson(index + 1),
-    ],
-  };
 }
 
 abstract interface class DiscoveryRepository {
@@ -94,15 +31,11 @@ abstract interface class DiscoveryRepository {
   Future<RecommendationQueueStatus> fetchStatus();
 
   Future<void> sendAction(int candidateId, RecommendationSwipeAction action);
-  Future<MusicRequest> createRequest(int candidateId);
-  Future<MusicRequest> createCustomRequest(MusicRequestDraft draft);
-  Future<List<MusicRequest>> fetchRequests();
-  Future<MusicRequest> cancelRequest(int requestId);
 }
 
-/// Accès backend découverte + demandes. Le userId n'est JAMAIS envoyé : il
-/// vient du token porté par l'intercepteur du Dio partagé. Aucune de ces
-/// méthodes ne déclenche de téléchargement.
+/// Accès backend découverte. Le userId n'est JAMAIS envoyé : il vient du token
+/// porté par l'intercepteur du Dio partagé. Aucune de ces méthodes ne crée de
+/// demande : l'installation passe par `/api/downloads/search`.
 class DiscoveryApi implements DiscoveryRepository {
   DiscoveryApi(this._dio);
 
@@ -151,50 +84,6 @@ class DiscoveryApi implements DiscoveryRepository {
         data: {'action': action.wireName},
       ),
     );
-  }
-
-  @override
-  Future<MusicRequest> createRequest(int candidateId) async {
-    final res = await _request<Map<String, dynamic>>(
-      () => _dio.post<Map<String, dynamic>>(
-        '/api/music-requests',
-        data: {'candidateId': candidateId},
-      ),
-    );
-    return MusicRequest.fromJson(res.data ?? const <String, dynamic>{});
-  }
-
-  @override
-  Future<MusicRequest> createCustomRequest(MusicRequestDraft draft) async {
-    final res = await _request<Map<String, dynamic>>(
-      () => _dio.post<Map<String, dynamic>>(
-        '/api/music-requests',
-        data: draft.toJson(),
-      ),
-    );
-    return MusicRequest.fromJson(res.data ?? const <String, dynamic>{});
-  }
-
-  @override
-  Future<List<MusicRequest>> fetchRequests() async {
-    final res = await _request<Map<String, dynamic>>(
-      () => _dio.get<Map<String, dynamic>>('/api/music-requests'),
-    );
-    final items = res.data?['items'] as List<dynamic>? ?? const [];
-    return items
-        .whereType<Map<String, dynamic>>()
-        .map(MusicRequest.fromJson)
-        .toList(growable: false);
-  }
-
-  @override
-  Future<MusicRequest> cancelRequest(int requestId) async {
-    final res = await _request<Map<String, dynamic>>(
-      () => _dio.post<Map<String, dynamic>>(
-        '/api/music-requests/$requestId/cancel',
-      ),
-    );
-    return MusicRequest.fromJson(res.data ?? const <String, dynamic>{});
   }
 
   Future<Response<T>> _request<T>(

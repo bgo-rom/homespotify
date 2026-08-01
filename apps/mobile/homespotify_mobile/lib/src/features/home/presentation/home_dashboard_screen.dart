@@ -16,6 +16,8 @@ import '../../library/presentation/library_filters.dart';
 import '../../library/presentation/library_playback_controller.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../player/presentation/player_providers.dart';
+import '../application/home_sections.dart';
+import 'home_library_sections.dart';
 
 class HomeDashboardScreen extends ConsumerStatefulWidget {
   const HomeDashboardScreen({super.key});
@@ -27,6 +29,7 @@ class HomeDashboardScreen extends ConsumerStatefulWidget {
 
 class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
   int? _loadingTrackId;
+  bool _shuffling = false;
 
   Future<void> _playTrack(List<Track> tracks, Track track) async {
     if (_loadingTrackId == track.id) return;
@@ -51,6 +54,31 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
       if (mounted && _loadingTrackId == track.id) {
         setState(() => _loadingTrackId = null);
       }
+    }
+  }
+
+  /// Lecture aléatoire de TOUTE la bibliothèque.
+  ///
+  /// L'ordre est tiré ici puis envoyé tel quel au lecteur : la file visible
+  /// correspond exactement à ce qui sera joué.
+  Future<void> _shuffleLibrary(List<Track> tracks) async {
+    if (tracks.isEmpty || _shuffling) return;
+    setState(() => _shuffling = true);
+    try {
+      final queue = shuffledLibraryQueue(tracks);
+      await ref
+          .read(libraryPlaybackControllerProvider)
+          .playQueue(tracks: queue, initialIndex: 0);
+    } catch (error) {
+      if (!mounted) return;
+      final message = error is AudioPlaybackException
+          ? error.userMessage
+          : 'La lecture n’a pas pu démarrer.';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) setState(() => _shuffling = false);
     }
   }
 
@@ -99,6 +127,16 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
               ),
               const SliverToBoxAdapter(
                 child: _CenteredContent(child: ContinueListeningCard()),
+              ),
+              SliverToBoxAdapter(
+                child: _CenteredContent(
+                  child: _ShuffleLibraryButton(
+                    busy: _shuffling,
+                    trackCount: library.asData?.value.length ?? 0,
+                    onPressed: () =>
+                        _shuffleLibrary(library.asData?.value ?? const []),
+                  ),
+                ),
               ),
               SliverToBoxAdapter(
                 child: _CenteredContent(
@@ -174,6 +212,14 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                         ),
                         SliverToBoxAdapter(
                           child: _CenteredContent(
+                            child: HomeLibrarySections(
+                              loadingTrackId: _loadingTrackId,
+                              onPlayTrack: _playTrack,
+                            ),
+                          ),
+                        ),
+                        SliverToBoxAdapter(
+                          child: _CenteredContent(
                             child: _LibrarySnapshot(tracks: tracks),
                           ),
                         ),
@@ -181,6 +227,60 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 32)),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Bouton de lecture aléatoire de toute la bibliothèque.
+///
+/// Masqué tant qu'il n'y a rien à jouer : proposer « Lecture aléatoire » sur
+/// une bibliothèque vide serait une promesse en l'air.
+class _ShuffleLibraryButton extends StatelessWidget {
+  const _ShuffleLibraryButton({
+    required this.busy,
+    required this.trackCount,
+    required this.onPressed,
+  });
+
+  final bool busy;
+  final int trackCount;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    if (trackCount == 0) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        HomeDesign.space16,
+        HomeDesign.space16,
+        HomeDesign.space16,
+        0,
+      ),
+      child: SizedBox(
+        height: 48,
+        width: double.infinity,
+        child: FilledButton.icon(
+          key: const ValueKey('home-shuffle-library'),
+          onPressed: busy ? null : onPressed,
+          icon: busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.shuffle_rounded),
+          label: Text(
+            busy
+                ? 'Préparation…'
+                : 'Lecture aléatoire · $trackCount '
+                      '${trackCount > 1 ? 'titres' : 'titre'}',
           ),
         ),
       ),

@@ -32,7 +32,7 @@ export function registerImportRoutes(
   guards: AuthGuards,
   service: UserImportService,
 ): void {
-  const ownerOnly = guards.requireAdmin('music_request.review');
+  const ownerOnly = guards.requireAdmin('admin.review');
 
   app.get<{ Querystring: { userId?: string; status?: string } }>(
     '/api/admin/imports',
@@ -97,24 +97,4 @@ export function registerImportRoutes(
     },
   );
 
-  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
-    '/api/admin/imports/:id/assign',
-    { preHandler: ownerOnly },
-    async (request, reply) => {
-      const id = parseId(reply, request.params.id);
-      if (id === null) return reply;
-      const itemId = Number(request.body?.itemId);
-      const trackId = Number(request.body?.trackId);
-      if (!Number.isInteger(itemId) || itemId < 1 || !Number.isInteger(trackId) || trackId < 1) {
-        return badRequest(reply, 'itemId et trackId doivent être des entiers positifs.');
-      }
-      try {
-        service.assignJob(id, itemId, trackId, request.authUser.id);
-        return { assigned: true };
-      } catch (error) {
-        if (error instanceof UserImportError) return sendImportError(reply, error);
-        throw error;
-      }
-    },
-  );
 }

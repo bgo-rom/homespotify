@@ -76,7 +76,7 @@ Bloc est rejeté pour cette phase : robuste, mais plus verbeux et moins direct p
 
 ### Navigation, Modèles et Qualité
 
-- **`go_router`** : navigation déclarative sombre avec routes bibliothèque, albums, artistes, favoris, playlists, paramètres, découverte par swipe, demandes de musique, administration OWNER et lecteur (`/`, `/albums`, `/albums/:albumKey`, `/artists`, `/artists/:artistRouteId`, `/favorites`, `/playlists`, `/playlists/:playlistId`, `/settings`, `/discover`, `/requests`, `/admin`, `/admin/users`, `/player`). Les paramètres album/artiste sont des identifiants base64Url, jamais des noms bruts.
+- **`go_router`** : navigation déclarative sombre avec routes bibliothèque, albums, artistes, favoris, playlists, paramètres, découverte par swipe, recherche distante, administration OWNER et lecteur (`/`, `/albums`, `/albums/:albumKey`, `/artists`, `/artists/:artistRouteId`, `/favorites`, `/playlists`, `/playlists/:playlistId`, `/settings`, `/discover`, `/catalog-search`, `/admin`, `/admin/users`, `/player`). Les paramètres album/artiste sont des identifiants base64Url, jamais des noms bruts. `/catalog-search` est l'UNIQUE écran de recherche distante et d'installation (`TD-Single-Remote-Search`).
 - **`freezed` + `json_serializable`** : modèles immuables, parsing strict des DTO API, unions d'état si nécessaire.
 - **`connectivity_plus`** : détection réseau pour éviter les téléchargements offline hors Wi-Fi si l'utilisateur ne l'a pas autorisé.
 - **`flutter_lints`** : lint Flutter minimal dès l'initialisation.
@@ -144,7 +144,6 @@ apps/mobile/homespotify_mobile/
             discovery_models.dart
           presentation/
             discover_screen.dart
-            music_requests_screen.dart
         library/
           data/
             favorites_api.dart
@@ -330,13 +329,15 @@ flutter run --profile --dart-define=HOMESPOTIFY_API_BASE_URL=http://<IP_LAN_DU_P
 - `POST /api/recommendations/:candidateId/action` : journalise LIKE / DISLIKE /
   SKIP / OPEN / REQUEST (DISLIKE masque le candidat pour ce compte et le retire
   immédiatement de la file ; LIKE/DISLIKE/REQUEST relancent le job async).
-- `POST/GET /api/music-requests`, `GET /api/music-requests/:id`,
-  `POST /api/music-requests/:id/cancel` : demandes de musique du SEUL compte du
-  token, traitées manuellement par le OWNER — aucune recherche ne déclenche de
-  téléchargement ; annulation permise uniquement avant `IMPORTING`.
-- `GET /api/discovery/search` et fiches `/api/discovery/artists|albums/*` :
-  recherche publique mise en cache ; la sélection ouvre uniquement la création
-  d'une demande. Aucun écran ni route mobile d'import distant n'existe.
+- `POST /api/downloads/search` : installation directe d'une piste désignée
+  (`query`, `title`, `artist`, `album`, `isrc`, `durationSeconds`). Le serveur
+  résout seul les URL candidates : l'application n'en fournit JAMAIS. Réponse
+  202 avec `jobId`, suivi par SSE `GET /api/downloads/:id/events`. Le job est
+  rattaché au compte du token, jamais à un `userId` fourni par le client.
+- `GET /api/downloads` : jobs du SEUL compte du token — sert à retrouver une
+  installation active au retour sur l'écran de recherche.
+- `GET /api/discovery/search?type=track` : recherche catalogue publique mise en
+  cache, pistes uniquement. Aucun écran d'import par URL n'existe côté mobile.
 - `DELETE /api/library/tracks/:trackId` : suppression douce — retire l'accès de
   ce compte (fichier physique intact), favoris/occurrences playlists compris,
   et masque la piste pour les futures recommandations.

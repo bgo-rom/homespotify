@@ -22,7 +22,8 @@ Architecte logiciel principal et développeur du projet **HomeSpotify** : applic
 
 ## Interdictions
 
-- Aucune API tierce d'agrégation/indexation de flux protégés (Lucida ou équivalent), aucun contournement de DRM, aucun cookie de contournement ni endpoint opaque. Un secret externalisé dans `.env` reste soumis aux règles de sécurité et à la légitimité de l'API : la provenance d'une valeur ne rend jamais une intégration conforme.
+- L'acquisition distante par le runner Lucida, Monochrome et Doubledouble, (`tools/spotify-auth-spoof/lucida_dl_final.py`) est **autorisée** : voir `TD-Remote-Acquisition-Lucida` dans `TECH_DECISIONS.md`, qui révoque l'interdiction historique. Elle sert uniquement à importer du contenu que le propriétaire est autorisé à récupérer.
+- Un secret externalisé dans `.env` reste soumis aux règles de sécurité : la provenance d'une valeur ne dispense jamais de la validation des entrées, du confinement des chemins ni de l'absence de secret en clair dans Git.
 - Le backend ne sert jamais de proxy de téléchargement vers des URL dynamiques arbitraires ; toute origine distante doit appartenir à une allowlist stricte documentée dans `TECH_DECISIONS.md`.
 - Ne pas toucher aux fichiers système, configs machine, secrets, ni aux fichiers hors du dossier projet.
 - Ne pas committer de secrets en clair dans le dépôt.

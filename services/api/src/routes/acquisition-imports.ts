@@ -10,6 +10,8 @@ import {
 import {
   AcquisitionImportService,
   AcquisitionImportServiceError,
+  type ManualVerificationResult,
+  type MonochromeManualResult,
 } from '../import/acquisition-import-service.js';
 import {
   AcquisitionJobRepositoryError,
@@ -50,11 +52,37 @@ interface CreateJobBody {
   service?: unknown;
   downloadTimeoutSeconds?: unknown;
   downloadRetries?: unknown;
+  targetTitle?: unknown;
+  targetArtist?: unknown;
+  targetAlbum?: unknown;
+  targetDurationSeconds?: unknown;
 }
 
 interface SearchBody {
   query?: unknown;
 }
+
+interface ManualVerificationResultBody {
+  result?: unknown;
+}
+
+const MONOCHROME_MANUAL_RESULTS = new Set<MonochromeManualResult>([
+  'download_ready',
+  'cancelled',
+  'timeout',
+  'no_exact_match',
+  'ambiguous_match',
+  'file_rejected',
+  'dry_run_completed',
+  'provider_error',
+]);
+
+const MANUAL_VERIFICATION_RESULTS = new Set<ManualVerificationResult>([
+  'verification_completed',
+  'cancelled',
+  'timeout',
+  'provider_error',
+]);
 
 function sendError(
   reply: FastifyReply,
@@ -133,6 +161,24 @@ function parseQuery(
   }
 
   return query;
+}
+
+function parseOptionalTargetText(
+  reply: FastifyReply,
+  field: string,
+  value: unknown,
+): string | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    sendError(reply, 400, 'bad_request', `${field} invalide.`);
+    return null;
+  }
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  if (!normalized || normalized.length > 500 || CONTROL_CHARACTERS.test(value)) {
+    sendError(reply, 400, 'bad_request', `${field} invalide.`);
+    return null;
+  }
+  return normalized;
 }
 
 function parseInteger(
@@ -251,7 +297,13 @@ function publicJob(job: AcquisitionJobRow) {
   return {
     id: job.id,
     query: job.query,
-    provider: 'Qobuz' as const,
+    provider:
+      job.providerUsed === 'MONOCHROME_MANUAL'
+        ? ('Monochrome' as const)
+        : ('Qobuz' as const),
+    providerUsed: job.providerUsed,
+    fallbackFrom: job.fallbackFrom,
+    fallbackReasonCode: job.fallbackReasonCode,
     resultIndex: job.resultIndex,
     status: job.status,
     stage: job.stage,
@@ -290,6 +342,21 @@ function sendServiceError(
 
     case 'service_stopped':
       return sendError(reply, 503, error.code, error.message);
+
+    case 'provider_cooldown':
+    case 'probe_in_progress':
+      return reply.code(409).send({
+        error: error.code,
+        message: error.message,
+        retryAt:
+          error instanceof AcquisitionImportServiceError
+            ? error.retryAt
+            : null,
+      });
+
+    case 'manual_verification_invalid':
+    case 'manual_result_invalid':
+      return sendError(reply, 409, error.code, error.message);
 
     default:
       return sendError(
@@ -342,6 +409,7 @@ export function registerAcquisitionImportRoutes(
   dependencies: AcquisitionImportRouteDependencies,
 ): void {
   const authenticated = guards.requireAuth();
+  const ownerOnly = guards.requireAdmin('admin.review');
   const searchTimeoutMs =
     dependencies.searchTimeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS;
 
@@ -361,7 +429,6 @@ export function registerAcquisitionImportRoutes(
     async (request, reply) => {
       const runner = dependencies.searchRunner;
       if (!runner) return unavailable(reply);
-
       const body = asRecord(request.body);
       if (!body) {
         return sendError(
@@ -488,6 +555,46 @@ export function registerAcquisitionImportRoutes(
       );
       if (downloadRetries === null) return reply;
 
+      const targetTitle = parseOptionalTargetText(
+        reply,
+        'targetTitle',
+        body.targetTitle,
+      );
+      if (targetTitle === null) return reply;
+      const targetArtist = parseOptionalTargetText(
+        reply,
+        'targetArtist',
+        body.targetArtist,
+      );
+      if (targetArtist === null) return reply;
+      const targetAlbum = parseOptionalTargetText(
+        reply,
+        'targetAlbum',
+        body.targetAlbum,
+      );
+      if (targetAlbum === null) return reply;
+      if (
+        (targetTitle === undefined) !== (targetArtist === undefined)
+      ) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'targetTitle et targetArtist doivent être fournis ensemble.',
+        );
+      }
+      const targetDurationSeconds =
+        body.targetDurationSeconds === undefined
+          ? undefined
+          : parseInteger(
+              reply,
+              'targetDurationSeconds',
+              body.targetDurationSeconds,
+              1,
+              86_400,
+            );
+      if (targetDurationSeconds === null) return reply;
+
       try {
         const job = acquisitionService.enqueue({
           userId: request.authUser.id,
@@ -496,6 +603,12 @@ export function registerAcquisitionImportRoutes(
           resultIndex,
           downloadTimeoutSeconds,
           downloadRetries,
+          ...(targetTitle === undefined ? {} : { targetTitle }),
+          ...(targetArtist === undefined ? {} : { targetArtist }),
+          ...(targetAlbum === undefined ? {} : { targetAlbum }),
+          ...(targetDurationSeconds === undefined
+            ? {}
+            : { targetDurationSeconds }),
         });
 
         request.log.info(
@@ -548,7 +661,18 @@ export function registerAcquisitionImportRoutes(
             status,
           )
           .map(publicJob),
+        providerStatus: acquisitionService.providerStatus(),
       };
+    },
+  );
+
+  app.get(
+    '/api/imports/provider-status',
+    { preHandler: authenticated },
+    async (_request, reply) => {
+      const acquisitionService = dependencies.service;
+      if (!acquisitionService) return unavailable(reply);
+      return acquisitionService.providerStatus();
     },
   );
 
@@ -582,6 +706,200 @@ export function registerAcquisitionImportRoutes(
       }
 
       return { item: publicJob(job) };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/imports/jobs/:id/manual-verification',
+    { preHandler: authenticated },
+    async (request, reply) => {
+      const acquisitionService = dependencies.service;
+      if (!acquisitionService) return unavailable(reply);
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Identifiant de job invalide.',
+        );
+      }
+
+      try {
+        const { job, timeoutSeconds } =
+          acquisitionService.manualVerificationContext(
+          request.params.id,
+          request.authUser.id,
+        );
+        return {
+          jobId: job.id,
+          query: job.query,
+          resultIndex: job.resultIndex ?? 0,
+          verificationTimeoutSeconds: timeoutSeconds,
+        };
+      } catch (error) {
+        if (
+          error instanceof AcquisitionImportServiceError ||
+          error instanceof AcquisitionJobRepositoryError
+        ) {
+          return sendServiceError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: ManualVerificationResultBody;
+  }>(
+    '/api/imports/jobs/:id/manual-verification-result',
+    { preHandler: authenticated },
+    async (request, reply) => {
+      const acquisitionService = dependencies.service;
+      if (!acquisitionService) return unavailable(reply);
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Identifiant de job invalide.',
+        );
+      }
+      const body = asRecord(request.body);
+      if (
+        !body ||
+        Object.keys(body).some((key) => key !== 'result') ||
+        typeof body.result !== 'string' ||
+        !MANUAL_VERIFICATION_RESULTS.has(
+          body.result as ManualVerificationResult,
+        )
+      ) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Résultat de vérification invalide.',
+        );
+      }
+
+      try {
+        const job = await acquisitionService.applyManualVerificationResult(
+          request.params.id,
+          request.authUser.id,
+          request.authUser.username,
+          body.result as ManualVerificationResult,
+        );
+        return reply.code(202).send({
+          accepted: true,
+          item: publicJob(job),
+        });
+      } catch (error) {
+        if (
+          error instanceof AcquisitionImportServiceError ||
+          error instanceof AcquisitionJobRepositoryError
+        ) {
+          return sendServiceError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/imports/jobs/:id/monochrome-manual',
+    { preHandler: ownerOnly },
+    async (request, reply) => {
+      const acquisitionService = dependencies.service;
+      if (!acquisitionService) return unavailable(reply);
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Identifiant de job invalide.',
+        );
+      }
+      try {
+        const { job, timeoutSeconds } =
+          acquisitionService.monochromeManualContext(
+            request.params.id,
+            request.authUser.id,
+          );
+        return {
+          jobId: job.id,
+          target: {
+            title: job.selectedTitle,
+            artist: job.selectedArtist,
+            album: job.selectedAlbum,
+            durationSeconds: job.selectedDurationSeconds,
+          },
+          timeoutSeconds,
+        };
+      } catch (error) {
+        if (
+          error instanceof AcquisitionImportServiceError ||
+          error instanceof AcquisitionJobRepositoryError
+        ) {
+          return sendServiceError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: ManualVerificationResultBody;
+  }>(
+    '/api/imports/jobs/:id/monochrome-manual-result',
+    { preHandler: ownerOnly },
+    async (request, reply) => {
+      const acquisitionService = dependencies.service;
+      if (!acquisitionService) return unavailable(reply);
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Identifiant de job invalide.',
+        );
+      }
+      const body = asRecord(request.body);
+      if (
+        !body ||
+        Object.keys(body).some((key) => key !== 'result') ||
+        typeof body.result !== 'string' ||
+        !MONOCHROME_MANUAL_RESULTS.has(
+          body.result as MonochromeManualResult,
+        )
+      ) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Résultat Monochrome invalide.',
+        );
+      }
+      try {
+        const job = await acquisitionService.applyMonochromeManualResult(
+          request.params.id,
+          request.authUser.id,
+          request.authUser.username,
+          body.result as MonochromeManualResult,
+        );
+        return reply.code(202).send({
+          accepted: true,
+          item: publicJob(job),
+        });
+      } catch (error) {
+        if (
+          error instanceof AcquisitionImportServiceError ||
+          error instanceof AcquisitionJobRepositoryError
+        ) {
+          return sendServiceError(reply, error);
+        }
+        throw error;
+      }
     },
   );
 
@@ -629,6 +947,43 @@ export function registerAcquisitionImportRoutes(
           accepted,
           jobId: current.id,
           status: current.status,
+        });
+      } catch (error) {
+        if (
+          error instanceof AcquisitionImportServiceError ||
+          error instanceof AcquisitionJobRepositoryError
+        ) {
+          return sendServiceError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/api/imports/jobs/:id/retry',
+    { preHandler: authenticated },
+    async (request, reply) => {
+      const acquisitionService = dependencies.service;
+      if (!acquisitionService) return unavailable(reply);
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'Identifiant de job invalide.',
+        );
+      }
+
+      try {
+        const job = acquisitionService.retryPaused(
+          request.params.id,
+          request.authUser.id,
+          request.authUser.username,
+        );
+        return reply.code(202).send({
+          accepted: true,
+          item: publicJob(job),
         });
       } catch (error) {
         if (

@@ -15,7 +15,6 @@ const int kCatalogSearchMinLength = 2;
 class CatalogSearchState {
   const CatalogSearchState({
     this.query = '',
-    this.type = CatalogEntityType.track,
     this.results = const [],
     this.providers = const [],
     this.nextCursor,
@@ -27,7 +26,6 @@ class CatalogSearchState {
   });
 
   final String query;
-  final CatalogEntityType type;
   final List<CatalogResult> results;
   final List<ProviderStatus> providers;
   final String? nextCursor;
@@ -47,7 +45,6 @@ class CatalogSearchState {
 
   CatalogSearchState copyWith({
     String? query,
-    CatalogEntityType? type,
     List<CatalogResult>? results,
     List<ProviderStatus>? providers,
     String? nextCursor,
@@ -61,7 +58,6 @@ class CatalogSearchState {
   }) {
     return CatalogSearchState(
       query: query ?? this.query,
-      type: type ?? this.type,
       results: results ?? this.results,
       providers: providers ?? this.providers,
       nextCursor: clearCursor ? null : (nextCursor ?? this.nextCursor),
@@ -110,22 +106,6 @@ class CatalogSearchController extends Notifier<CatalogSearchState> {
     _debounce = Timer(kCatalogSearchDebounce, () => _runSearch());
   }
 
-  /// Changement d'onglet : recherche immédiate avec le même texte.
-  void onTypeChanged(CatalogEntityType type) {
-    if (type == state.type) return;
-    _debounce?.cancel();
-    state = state.copyWith(
-      type: type,
-      results: const [],
-      clearCursor: true,
-      partialResults: false,
-      clearError: true,
-    );
-    if (state.query.trim().length >= kCatalogSearchMinLength) {
-      _runSearch();
-    }
-  }
-
   /// Relance manuelle (bouton Réessayer / pull-to-refresh).
   Future<void> retry() => _runSearch();
 
@@ -137,7 +117,7 @@ class CatalogSearchController extends Notifier<CatalogSearchState> {
     try {
       final page = await ref
           .read(catalogSearchApiProvider)
-          .search(query: query, type: state.type);
+          .search(query: query);
       if (sequence != _sequence || !ref.mounted) return; // réponse périmée
       state = state.copyWith(
         results: page.items,
@@ -173,7 +153,7 @@ class CatalogSearchController extends Notifier<CatalogSearchState> {
     try {
       final page = await ref
           .read(catalogSearchApiProvider)
-          .search(query: query, type: state.type, cursor: cursor);
+          .search(query: query, cursor: cursor);
       if (sequence != _sequence || !ref.mounted) return;
       final known = state.results.map((result) => result.canonicalKey).toSet();
       state = state.copyWith(

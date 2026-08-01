@@ -54,6 +54,25 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.1)(tsx@4.23.0)
 
+  services/storage-agent:
+    dependencies:
+      fastify:
+        specifier: ^5.4.0
+        version: 5.10.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.3
+        version: 4.23.0
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.0)
+
 packages:
 
   '@borewit/text-codec@0.2.2':

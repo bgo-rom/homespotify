@@ -1,4 +1,11 @@
 import { EventEmitter } from 'node:events';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import {
   join,
@@ -63,6 +70,8 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
+const temporaryRoots: string[] = [];
+
 interface SetupResult {
   runner: LucidaProcessRunner;
   child: FakeChildProcess;
@@ -85,8 +94,13 @@ function setup(options: {
     ) => child.asChildProcess(),
   );
 
-  const importRoot = resolve('test-data', 'imports');
+  const temporaryRoot = mkdtempSync(
+    join(tmpdir(), 'homespotify-lucida-runner-'),
+  );
+  temporaryRoots.push(temporaryRoot);
+  const importRoot = join(temporaryRoot, 'imports');
   const outputDir = join(importRoot, '1_alice', 'inbox');
+  mkdirSync(outputDir, { recursive: true });
   const scriptPath = resolve(
     'tools',
     'spotify-auth-spoof',
@@ -118,6 +132,11 @@ function eventLine(event: Record<string, unknown>): string {
 
 afterEach(() => {
   vi.useRealTimers();
+  delete process.env.HOMESPOTIFY_RUNNER_SECRET_TEST;
+  delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 describe('LucidaProcessRunner', () => {
@@ -129,6 +148,12 @@ describe('LucidaProcessRunner', () => {
       outputDir,
       scriptPath,
     } = setup();
+
+    process.env.HOMESPOTIFY_RUNNER_SECRET_TEST = 'ne-doit-pas-fuiter';
+    process.env.PLAYWRIGHT_BROWSERS_PATH = resolve(
+      'storage',
+      'playwright-browsers',
+    );
 
     const promise = runner.run({
       mode: 'download',
@@ -152,6 +177,9 @@ describe('LucidaProcessRunner', () => {
         outputDir,
       ]),
     );
+    expect(args).not.toContain('--visible');
+    expect(args).not.toContain('--interactive-verification');
+    expect(args).not.toContain('--verification-timeout');
     expect(options).toMatchObject({
       cwd: resolve('tools', 'spotify-auth-spoof'),
       shell: false,
@@ -161,8 +189,16 @@ describe('LucidaProcessRunner', () => {
     expect(options.env).toMatchObject({
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
+      PLAYWRIGHT_BROWSERS_PATH: resolve(
+        'storage',
+        'playwright-browsers',
+      ),
     });
+    expect(options.env).not.toHaveProperty(
+      'HOMESPOTIFY_RUNNER_SECRET_TEST',
+    );
 
+    writeFileSync(join(outputDir, 'creeper.flac'), 'FLAC-test');
     child.writeStdout(
       eventLine({
         type: 'success',
@@ -300,12 +336,12 @@ describe('LucidaProcessRunner', () => {
   });
 
   it('propage l’événement error lors d’un code de sortie non nul', async () => {
-    const { runner, child } = setup();
+    const { runner, child, outputDir } = setup();
     const promise = runner.run({
       mode: 'download',
       query: 'Test',
       resultIndex: 0,
-      outputDir: resolve('test-data', 'imports', '1_alice', 'inbox'),
+      outputDir,
     });
 
     child.writeStdout(
@@ -346,12 +382,46 @@ describe('LucidaProcessRunner', () => {
     });
   });
 
+  it('valide et propage uniquement les champs fournisseur sûrs', async () => {
+    const { runner, child } = setup();
+    const promise = runner.run({ mode: 'search', query: 'Test' });
+    child.writeStdout(
+      eventLine({
+        type: 'error',
+        code: 'PROVIDER_RATE_LIMITED',
+        message: 'Le fournisseur limite temporairement les requêtes.',
+        provider: 'Lucida',
+        retryable: false,
+        retryAfterSeconds: 1_200,
+        html: '<html>secret</html>',
+        unsafeDetail: 'secret',
+      }),
+    );
+    await child.close(4);
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'PROVIDER_RATE_LIMITED',
+      details: {
+        provider: 'Lucida',
+        retryable: false,
+        retryAfterSeconds: 1_200,
+      },
+    });
+    await expect(promise).rejects.not.toMatchObject({
+      details: { html: expect.anything(), unsafeDetail: expect.anything() },
+    });
+  });
+
   it('gère l’erreur de démarrage du processus', async () => {
     const child = new FakeChildProcess();
     const spawnMock = vi.fn<LucidaSpawn>(() => child.asChildProcess());
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), 'homespotify-lucida-stop-'),
+    );
+    temporaryRoots.push(temporaryRoot);
     const runner = new LucidaProcessRunner({
       scriptPath: resolve('tools', 'spotify-auth-spoof', 'lucida_dl_final.py'),
-      importRoot: resolve('test-data', 'imports'),
+      importRoot: join(temporaryRoot, 'imports'),
       spawnImpl: spawnMock,
     });
 
@@ -458,6 +528,91 @@ describe('LucidaProcessRunner', () => {
 
     await expect(promise).rejects.toMatchObject({
       code: 'OUTPUT_PATH_VIOLATION',
+    });
+  });
+
+  it('refuse un success dont le fichier n’existe pas réellement', async () => {
+    const { runner, child, outputDir } = setup();
+
+    const promise = runner.run({
+      mode: 'download',
+      query: 'Test',
+      resultIndex: 0,
+      outputDir,
+    });
+
+    child.writeStdout(
+      eventLine({
+        type: 'success',
+        filepath: join(outputDir, 'missing.flac'),
+        title: 'Test',
+        artist: 'Artist',
+        album: 'Album',
+        duration: 100,
+      }),
+    );
+    await child.close(0);
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'OUTPUT_FILE_INVALID',
+    });
+  });
+
+  it('refuse un type de fichier non accepté même s’il existe', async () => {
+    const { runner, child, outputDir } = setup();
+    const filePath = join(outputDir, 'track.mp3');
+    writeFileSync(filePath, 'fake-mp3');
+
+    const promise = runner.run({
+      mode: 'download',
+      query: 'Test',
+      resultIndex: 0,
+      outputDir,
+    });
+
+    child.writeStdout(
+      eventLine({
+        type: 'success',
+        filepath: filePath,
+        title: 'Test',
+        artist: 'Artist',
+        album: 'Album',
+        duration: 100,
+      }),
+    );
+    await child.close(0);
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'OUTPUT_FILE_INVALID',
+    });
+  });
+
+  it('refuse un fichier vide malgré un événement success', async () => {
+    const { runner, child, outputDir } = setup();
+    const filePath = join(outputDir, 'empty.flac');
+    writeFileSync(filePath, '');
+
+    const promise = runner.run({
+      mode: 'download',
+      query: 'Test',
+      resultIndex: 0,
+      outputDir,
+    });
+
+    child.writeStdout(
+      eventLine({
+        type: 'success',
+        filepath: filePath,
+        title: 'Test',
+        artist: 'Artist',
+        album: 'Album',
+        duration: 100,
+      }),
+    );
+    await child.close(0);
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'OUTPUT_FILE_INVALID',
     });
   });
 

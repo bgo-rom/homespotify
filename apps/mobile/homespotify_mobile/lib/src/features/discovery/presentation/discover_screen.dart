@@ -46,7 +46,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   /// à chaque rebuild).
   int? _lastArmedId;
 
-  /// true tant que l'overlay « Demande envoyée » est visible : suspend
+  /// true tant que l'overlay « Installation lancée » est visible : suspend
   /// l'autoplay pour que le prochain extrait ne démarre QUE sur carte stable.
   bool _overlayActive = false;
 
@@ -83,7 +83,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     }
   }
 
-  /// Une route vient d'être empilée PAR-DESSUS Découvrir (ex. `/requests`,
+  /// Une route vient d'être empilée PAR-DESSUS Découvrir (ex. `/catalog-search`,
   /// `/player`, tout push/go) : l'écran n'est plus visible → l'extrait s'arrête
   /// IMMÉDIATEMENT. C'est un ÉVÉNEMENT de navigation (hors phase de build), donc
   /// la mutation de provider est légale — contrairement à dispose/deactivate.
@@ -209,21 +209,21 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     return ref.read(discoverDeckProvider.notifier).dislike(candidate);
   }
 
-  /// Swipe droite : confirmation obligatoire avant l'envoi de la demande.
+  /// Swipe droite : confirmation obligatoire avant l'installation.
   Future<bool> _onRequest(RecommendationCandidate candidate) async {
-    // La confirmation de demande coupe l'extrait (geste utilisateur).
+    // La confirmation coupe l'extrait (geste utilisateur).
     _preview.stop(reportEarlyStop: true);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: _card,
         title: const Text(
-          'Envoyer une demande ?',
+          'Installer ce titre ?',
           style: TextStyle(color: Colors.white),
         ),
         content: Text(
-          '« ${candidate.title} » de ${candidate.artist} sera demandé au '
-          'propriétaire du serveur, qui le traitera manuellement.',
+          '« ${candidate.title} » de ${candidate.artist} sera téléchargé puis '
+          'ajouté à votre bibliothèque.',
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [
@@ -240,18 +240,18 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
               foregroundColor: Colors.black,
             ),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Envoyer la demande'),
+            child: const Text('Installer'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return false;
 
-    final accepted = await _deck.request(candidate);
+    final accepted = await _deck.install(candidate);
     if (!mounted) return accepted;
-    // Succès RÉEL (créé, sans erreur) : overlay premium. Un doublon / déjà
-    // possédée retire aussi la carte (accepted) mais porte une erreur : pas
-    // d'overlay de succès, seulement le message compact.
+    // Succès RÉEL (job créé, sans erreur) : overlay premium. Un doublon retire
+    // aussi la carte (accepted) mais porte une erreur : pas d'overlay de
+    // succès, seulement le message compact.
     final hasError = ref.read(discoverDeckProvider).error != null;
     if (accepted && !hasError) {
       _showSuccessOverlay(candidate);
@@ -260,7 +260,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     return accepted;
   }
 
-  /// Overlay animé « Demande envoyée » : coupe l'extrait, suspend l'autoplay
+  /// Overlay animé « Installation lancée » : coupe l'extrait, suspend l'autoplay
   /// puis, une fois l'overlay terminé et la nouvelle carte stable, réarme
   /// l'autoplay sur la carte du dessus.
   void _showSuccessOverlay(RecommendationCandidate candidate) {
@@ -380,11 +380,6 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
               onPressed: deck.busy || deck.loading || deck.refreshing
                   ? null
                   : () => ref.read(discoverDeckProvider.notifier).refresh(),
-            ),
-            IconButton(
-              tooltip: 'Mes demandes',
-              icon: const Icon(Icons.inbox_rounded),
-              onPressed: () => openMusicRequests(context),
             ),
           ],
         ),
@@ -536,7 +531,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
               _RoundAction(
                 icon: Icons.favorite_rounded,
                 color: _accent,
-                tooltip: 'Envoyer une demande',
+                tooltip: 'Installer ce titre',
                 onPressed: deck.busy
                     ? null
                     : () async {

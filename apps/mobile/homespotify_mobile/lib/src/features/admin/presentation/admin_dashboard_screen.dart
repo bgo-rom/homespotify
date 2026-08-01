@@ -284,14 +284,6 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: () => context.push('/admin/music-requests'),
-                        icon: const Icon(Icons.inbox_rounded),
-                        label: const Text('Demandes'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
                         onPressed: () => context.push('/admin/imports'),
                         icon: const Icon(Icons.move_to_inbox_rounded),
                         label: const Text('Imports'),

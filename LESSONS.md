@@ -507,6 +507,311 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
 - **Leçon** : un gain signé doit être séparé selon les capacités réelles du pipeline. La baisse se fait par multiplication linéaire du volume effectif, la hausse par l’effet Android, tandis que le volume affiché et choisi par l’utilisateur reste inchangé. La remise à zéro doit être sérialisée avant la mesure du titre suivant pour empêcher une ancienne opération asynchrone d’écraser le nouveau gain.
 - **Conséquence** : HomeSpotify n’envoie jamais de valeur négative au `LoudnessEnhancer`, conserve une atténuation ReplayGain distincte dans le handler et teste explicitement la course changement de titre/remise à zéro. Sans mesure EBU R128 valide, aucun des deux chemins n’est activé.
 
+### L-087 — Un script PowerShell d'inventaire doit être ASCII-sûr et porter un BOM (2026-07-25)
+- **Contexte** : `scripts/windows_phase15_inventory.ps1` a d'abord produit un
+  rapport aux accents corrompus, puis a refusé de s'analyser. Deux causes
+  distinctes : PowerShell 5.1 lit un `.ps1` sans BOM comme de l'ANSI, et
+  l'apostrophe typographique `’` est un délimiteur de chaîne **valide** en
+  PowerShell — placée dans un littéral `'…n’est…'`, elle ferme la chaîne et
+  décale le parsing jusqu'à une erreur lointaine et trompeuse.
+- **Leçon** : tout script PowerShell du dépôt doit être écrit en UTF-8 **avec
+  BOM**, et n'utiliser que l'apostrophe droite dans les littéraux. Les fichiers
+  lus par le script doivent l'être avec `-Encoding UTF8` explicite, sans quoi un
+  fichier UTF-8 sans BOM (ex. `HomeSpotifyApi.xml`) ressort doublement encodé.
+- **Conséquence** : l'inventaire Windows produit un rapport lisible, et le
+  script documente la contrainte en commentaire à l'endroit du piège.
+
+### L-088 — Une règle de pare-feu par programme annule le cloisonnement par port (2026-07-25)
+- **Contexte** : l'inventaire Phase 1.5 a montré une règle nominative
+  « HomeSpotify API 3000 » correctement limitée au profil Private et une règle
+  « HomeSpotify API via WireGuard » limitée à `10.8.0.1` — mais aussi une règle
+  générique « Node.js JavaScript Runtime » autorisant `node.exe` en entrée sur
+  **tous les ports**, profils Private ET Public. Le service tournant avec ce même
+  `node.exe`, le port 3000 est joignable depuis le LAN Wi-Fi malgré l'intention
+  des règles nominatives.
+- **Leçon** : sous Windows, les règles entrantes sont une union d'autorisations.
+  Une règle par programme couvrant tous les ports rend inutile toute restriction
+  par port ou par adresse distante posée ailleurs pour le même exécutable. Le
+  confinement doit être vérifié par l'ensemble des règles applicables, jamais par
+  la seule règle que l'on vient d'écrire.
+- **Conséquence** : le Storage Agent (port 3100) devra lier son écoute à
+  `10.8.0.2` plutôt qu'à `0.0.0.0`, et la règle générique Node.js devra être
+  traitée avant toute exposition réseau. Documenté dans
+  `docs/VPS_PHASE15_WINDOWS_READINESS.md`.
+
+### L-089 — Un HEAD utile ne peut pas passer par la réponse vide de Fastify (2026-07-26)
+- **Contexte** : le Storage Agent doit répondre aux `HEAD` en annonçant la
+  taille réelle de la piste sans jamais ouvrir de flux. Deux pièges se sont
+  cumulés. D'une part, `exposeHeadRoutes` (actif par défaut) fabrique une route
+  HEAD qui **rejoue le handler GET** et jette le corps : le `ReadStream` est bien
+  ouvert, l'emplacement de concurrence consommé, le disque sollicité. D'autre
+  part, `reply.send()` sans charge utile force `content-length: 0`, écrasant tout
+  en-tête posé auparavant — un HEAD correct devenait impossible à écrire.
+- **Leçon** : une route HEAD qui doit différer du GET se déclare explicitement,
+  avec `exposeHeadRoutes: false`, et sa réponse s'écrit en direct via
+  `reply.hijack()` + `reply.raw.writeHead()`. Vérifier l'absence d'ouverture de
+  flux demande un test qui **compte les appels** à `createReadStream`, pas une
+  simple lecture du code : le comportement provient d'une option par défaut du
+  framework, pas du handler écrit.
+- **Conséquence** : `services/storage-agent/src/server.ts` déclare HEAD à part et
+  hijacke la réponse ; un test injecte un `createReadStream` compteur et exige
+  zéro ouverture, un autre vérifie que le compteur de flux actifs reste à zéro.
+
+### L-090 — Un compteur de concurrence doit se libérer sur un événement unique (2026-07-26)
+- **Contexte** : un flux HTTP peut se terminer de cinq façons — fin normale,
+  abandon client, erreur disque, fermeture par le framework, exception. Libérer
+  l'emplacement dans chaque gestionnaire mène soit à une double libération
+  (compteur négatif, limite contournée), soit à un oubli sur un chemin rare
+  (fuite définitive : après huit incidents, l'agent refuse tout).
+- **Leçon** : centraliser la libération sur l'événement `close` de la réponse,
+  qui survient dans **tous** les cas, et rendre la fonction de libération
+  idempotente. `writableFinished` distingue ensuite une fin normale d'un abandon
+  pour le seul besoin du journal. Réserver l'emplacement après toutes les
+  validations et avant l'ouverture du fichier : un refus ne coûte alors aucun
+  descripteur.
+- **Conséquence** : `StreamLimiter.acquire()` retourne une fonction de libération
+  à usage unique, appelée uniquement depuis `reply.raw.once('close')`. Trois
+  tests vérifient le retour à zéro après succès, après abandon client et après
+  erreur disque.
+
+### L-091 — Un doublon de clé JSON n'est pas observable après parsing (2026-07-26)
+- **Contexte** : le schéma de l'index du Storage Agent devait refuser un
+  « doublon d'identifiant ». Or `JSON.parse` applique la sémantique JavaScript :
+  deux clés littéralement identiques sont silencieusement fusionnées, la
+  dernière l'emportant. Aucune validation post-parsing ne peut les distinguer,
+  et retrouver le doublon par analyse textuelle du JSON est fragile dès qu'un
+  chemin contient un guillemet.
+- **Leçon** : la seule forme de doublon réellement observable est l'**alias** —
+  `"01"` et `"1"` désignant la même piste. Exiger une forme canonique stricte
+  pour les clés (`^[1-9][0-9]*$`) supprime la classe entière d'ambiguïtés, au
+  lieu de courir après une détection impossible.
+- **Conséquence** : `parseStorageIndex` refuse toute clé non canonique, le CLI
+  d'export n'émet que des clés canoniques, et la limite du parsing JSON est
+  documentée dans `docs/VPS_PHASE2_STORAGE_AGENT.md` plutôt que masquée par un
+  test qui prétendrait la couvrir.
+
+### L-092 — `pnpm deploy` produit un artefact lié au store de l'utilisateur (2026-07-26)
+- **Contexte** : préparer l'artefact de production du Storage Agent pour un
+  service Windows tournant sous une identité dédiée. `pnpm deploy --prod` était
+  le premier choix. pnpm 10.12.1 l'a refusé
+  (`ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE`), et l'examen de la contrepartie a
+  révélé un problème plus grave que le refus lui-même.
+- **Leçon** : `pnpm deploy`, même en `--legacy`, matérialise `node_modules` par
+  **liens durs vers le store pnpm global de l'utilisateur qui exécute la
+  commande**. Un artefact « déployé » reste alors couplé à un profil
+  utilisateur. Pour un service qui tourne sous une autre identité, c'est une
+  dépendance invisible qui casse le jour où ce profil ou ce store est purgé.
+  Un artefact de service doit être vérifiable : compter les liens résiduels et
+  échouer s'il y en a.
+- **Conséquence** : `scripts/deploy_storage_agent.ps1` reconstruit
+  `node_modules` par `npm install --omit=dev` dans un staging isolé, contrôle
+  qu'aucun lien symbolique ni jonction ne subsiste, puis publie par
+  `robocopy /MIR`. 2040 fichiers, 7,35 Mo, 0 lien.
+
+### L-093 — PowerShell 5.1 lit les `.ps1` en ANSI sans BOM (2026-07-26)
+- **Contexte** : le premier script de déploiement, écrit en UTF-8 sans BOM et
+  contenant des accents dans les chaînes et les commentaires, échouait à
+  l'analyse syntaxique avec « Le terminateur " est manquant dans la chaîne » à
+  une ligne parfaitement bien formée.
+- **Leçon** : Windows PowerShell 5.1 décode un `.ps1` sans BOM avec la page de
+  codes ANSI du système. Chaque caractère accentué devient deux octets, ce qui
+  décale le contenu des chaînes et peut casser l'analyse à un endroit sans
+  rapport avec la vraie cause. L'erreur pointe la conséquence, jamais l'origine.
+- **Conséquence** : tout `.ps1` de ce dépôt est écrit en **UTF-8 avec BOM**, et
+  la syntaxe est validée par
+  `[System.Management.Automation.PSParser]::Tokenize()` avant toute exécution.
+  Corollaire : `Set-StrictMode -Version Latest` est à proscrire dans les scripts
+  qui appellent `pnpm` ou `npm` — leurs shims PowerShell déclenchent des
+  `PropertyNotFoundStrict` sur des objets internes sans rapport avec le script.
+
+### L-094 — Un contrôle anti-fuite sur sous-chaîne produit de faux positifs (2026-07-26)
+- **Contexte** : le client de test HMAC vérifiait qu'aucun chemin ne fuitait
+  dans `/health` en cherchant la sous-chaîne `musicRoot` dans la réponse. Le
+  test a échoué. Or `/health` expose légitimement le booléen
+  `musicRootAvailable`, dont le nom **contient** cette sous-chaîne. L'agent ne
+  fuitait rien : c'est le contrôle qui était faux.
+- **Leçon** : un contrôle de sécurité qui crie au loup sur un nom de champ perd
+  sa valeur de signal — la réaction naturelle est de le désactiver, et la vraie
+  fuite passe ensuite inaperçue. Un anti-fuite doit chercher la **donnée**
+  (chemin absolu, nom de fichier audio, valeur du secret) et des **clés
+  exactes**, jamais une sous-chaîne de nom de champ.
+- **Conséquence** : `_detect_leaks()` teste des clés exactes (`"musicRoot":`,
+  `"relativePath":`, `"entries":`) et des motifs de donnée (`[A-Za-z]:\\`,
+  extensions audio), et rapporte la liste précise de ce qu'il a trouvé.
+
+### L-095 — Ne pas comparer l'empreinte d'une base SQLite vivante (2026-07-26)
+- **Contexte** : la procédure de rafraîchissement d'index devait prouver que
+  l'export n'écrit pas dans la base. Premier réflexe : comparer le SHA-256 de
+  `homespotify.db` avant et après. `Get-FileHash` a échoué — le fichier est
+  ouvert en écriture par l'API. Le contournement par `FileShare.ReadWrite`
+  fonctionne techniquement, mais aurait été pire : l'API écrit légitimement
+  pendant l'export (historique de lecture, favoris), donc la comparaison aurait
+  échoué au hasard, en production, sans qu'aucune anomalie n'existe.
+- **Leçon** : un contrôle d'intégrité sur une ressource concurremment modifiée
+  est un générateur de fausses alertes, pas une garantie. Quand la vraie
+  garantie existe ailleurs et qu'elle est plus forte, il faut l'invoquer plutôt
+  que d'en fabriquer une faible.
+- **Conséquence** : `refresh_storage_agent_index.ps1` vérifie seulement la
+  présence et l'absence de troncature de la base. La garantie de non-écriture
+  vient du CLI, qui ouvre SQLite en `readonly` + `fileMustExist`, et de
+  `storage-index-export.test.ts`, qui vérifie que la base est inchangée octet à
+  octet après un export. Le raisonnement est écrit dans le script, pour que
+  personne ne « rétablisse » le hash plus tard.
+
+### L-096 — Un compte de service virtuel exige un mot de passe NULL, pas vide (2026-07-26)
+- **Contexte** : bascule du service `HomeSpotifyStorageAgent` vers l'identité
+  `NT SERVICE\HomeSpotifyStorageAgent`. `Invoke-CimMethod Win32_Service Change`
+  avec `StartPassword = ''` retourne **le code 22, « paramètre invalide »**.
+  L'alternative `sc.exe config … password= ""` ne marche pas davantage en
+  PowerShell, qui supprime purement et simplement l'argument vide : `sc.exe`
+  reçoit alors `password=` sans valeur.
+- **Leçon** : « chaîne vide » et « absence de valeur » ne sont pas la même chose
+  pour le SCM. Un compte virtuel n'a pas de mot de passe vide — il n'en a
+  **aucun**, et le paramètre doit être **omis**, pas neutralisé. Aucune API qui
+  force la présence du paramètre ne peut donc convenir, y compris WMI.
+- **Conséquence** : `scripts/install_storage_agent_service.ps1` utilise
+  `sc.exe config <nom> obj= "NT SERVICE\<nom>"` **sans aucun argument
+  `password`**, puis relit `Win32_Service.StartName` immédiatement et échoue si
+  la valeur appliquée diffère ou si elle correspond à une identité privilégiée.
+
+### L-097 — WinSW 2.12 ignore silencieusement un `<depend>` contenant « $ » (2026-07-26)
+- **Contexte** : le XML du Storage Agent déclare deux dépendances, `Tcpip` et
+  `WireGuardTunnel$HomeSpotify-VPS`. Après `winsw install`, `sc qc` ne montre
+  que `DEPENDENCIES : Tcpip`. Aucune erreur, aucun avertissement : la seconde
+  dépendance a disparu. Or c'est précisément la plus importante — l'adresse
+  `10.8.0.2` n'existe pas tant que le tunnel n'est pas monté, et l'agent refuse
+  de démarrer s'il ne peut pas s'y lier.
+- **Leçon** : une configuration acceptée sans erreur n'est pas une configuration
+  appliquée. Tout élément de configuration qui porte une garantie
+  opérationnelle doit être **relu depuis le système** après écriture, jamais
+  supposé effectif parce que l'outil n'a rien dit.
+- **Conséquence** : le script pose la liste explicitement via
+  `sc.exe config <nom> depend= "Tcpip/WireGuardTunnel$HomeSpotify-VPS"` (le
+  séparateur est `/` et la liste est remplacée en entier), puis relit
+  `ServicesDependedOn` et avertit nommément si une dépendance manque encore.
+  L'avertissement n'est pas bloquant : c'est une garantie d'ordre de démarrage,
+  pas une propriété de sécurité, et les redémarrages bornés (15/60/120 s)
+  couvrent un tunnel monté tardivement.
+
+### L-098 — Un HEAD sans corps doit porter son code d'erreur en en-tête (2026-07-26)
+- **Contexte** : le provider distant doit distinguer `TRACK_NOT_INDEXED` de
+  `FILE_NOT_FOUND`. Les deux réponses de l'agent valent 404, et HTTP interdit
+  tout corps utile sur HEAD : le JSON d'erreur n'arrive donc jamais au client.
+- **Leçon** : si plusieurs erreurs partagent un statut sur une opération sans
+  corps, leur discriminant stable doit vivre dans un en-tête dédié. Déduire le
+  motif depuis `Content-Length`, le texte du message ou une seconde requête GET
+  serait fragile et ouvrirait un flux précisément quand HEAD doit rester léger.
+- **Conséquence** : l'agent ajoute `X-HS-Error-Code` à toutes ses erreurs. Le
+  provider mappe `TRACK_NOT_INDEXED` vers 503 et `FILE_NOT_FOUND` vers 404. Un
+  agent ancien sans l'en-tête produit par sécurité un 503 d'index suspect.
+
+### L-099 — Une réponse HEAD complète n'est pas encore une socket réutilisable (2026-07-26)
+- **Contexte** : le premier test keep-alive ouvrait deux ports clients malgré
+  `Agent({keepAlive:true})`. Le code vérifiait `IncomingMessage.complete`, qui
+  signifie que le message HTTP a été parsé, pas que l'événement `end` a rendu la
+  socket au pool.
+- **Leçon** : avant de considérer une réponse drainée, attendre
+  `readableEnded`/`end`. Une optimisation de connexion se prouve côté serveur
+  par la réutilisation effective du port, pas par la seule présence d'une option
+  `keepAlive`.
+- **Conséquence** : `stat()` reprend la socket seulement après la fin lisible du
+  HEAD ; le test enchaîne deux HEAD et exige le même port client.
+### L-100 — Un chemin HTTP direct doit répéter les headers contractuels (2026-07-26)
+- **Contexte** : validation Phase 4.5 de `X-HS-Error-Code`. Les réponses 416
+  HEAD et GET étaient écrites directement afin de préserver `Content-Range` et
+  le corps vide ; elles contournaient donc le header centralisé dans
+  `sendError`.
+- **Leçon** : lorsqu'un handler utilise `reply.raw.writeHead`, `hijack` ou une
+  réponse vide spécialisée, tout nouveau header contractuel doit être testé
+  explicitement sur ce chemin.
+- **Conséquence** : `INVALID_RANGE` est maintenant présent sur HEAD et GET 416,
+  sans changer leur statut, leur corps ou leurs autres en-têtes.
+
+### L-101 — Un build JavaScript n'est pas un artefact de déploiement complet (2026-07-26)
+- **Contexte** : la première API parallèle Phase 4.5 quittait avant d'écouter.
+  Son artefact contenait `dist/` et `package.json`, mais pas `drizzle/`.
+  `migrate.ts` résout pourtant les migrations à l'exécution, relativement au
+  JavaScript compilé. Les tests locaux passaient parce que l'arborescence source
+  fournissait implicitement ces fichiers.
+- **Leçon** : auditer toutes les lectures de fichiers effectuées à l'exécution
+  avant d'assembler un artefact autonome. Compiler TypeScript ne copie ni les
+  migrations, ni les templates, ni les autres ressources non TypeScript.
+- **Conséquence** : l'artefact VPS inclut désormais `drizzle/` et le harnais
+  refuse de transférer ou lancer une API sans `drizzle/meta/_journal.json`.
+  Son préflight vérifie aussi les dépendances natives, SQLite, les permissions,
+  les ports et la configuration avant le lancement.
+
+### L-102 — Ne pas imbriquer du code interprété dans SSH depuis PowerShell (2026-07-26)
+- **Contexte** : après correction de l'artefact, les deux API VPS ont démarré,
+  mais la commande PowerShell → SSH → shell distant → `python3 -c` a perdu les
+  guillemets entourant le code Python. Bash a tenté d'interpréter directement
+  `import json; print(...)`.
+- **Leçon** : chaque couche de shell possède ses propres règles de quoting.
+  Une commande correcte dans un shell isolé devient fragile dès qu'elle traverse
+  plusieurs parseurs. Les données structurées doivent être lues par un fichier
+  exécutable transféré, avec chemins et clés passés comme arguments.
+- **Conséquence** : les smoke tests et tests du provider sont désormais des
+  scripts VPS autonomes. Un lecteur Python restreint extrait les quatre entiers
+  autorisés de l'état JSON. Aucun `python3 -c` imbriqué ne subsiste, et un test
+  de régression couvre notamment un chemin contenant des espaces.
+
+### L-103 — Une preuve de log doit tolérer le buffering et parser le champ exact (2026-07-26)
+- **Contexte** : les 36 contrôles distants Phase 4.5 étaient verts, mais le
+  harnais concluait que `phase45-remote-propagation` manquait. Le journal WinSW
+  contient pourtant 67 événements JSON avec cet identifiant, dont des
+  `STORAGE_AGENT_REQUEST_COMPLETED` HEAD/GET réussis.
+- **Leçon** : une recherche textuelle immédiate, filtrée par l'horodatage du
+  fichier, confond visibilité différée du collecteur et absence fonctionnelle.
+  Une preuve de corrélation doit employer un identifiant unique, parser le champ
+  JSON exact, exiger un événement terminal réussi et réessayer pendant une
+  fenêtre courte bornée.
+- **Conséquence** : le harnais utilise désormais un requestId unique et un
+  parseur dédié sur les journaux courants ou rotatifs. Il tente au maximum dix
+  lectures espacées de 500 ms et exige méthode, trackId, événement terminal et
+  statut 200/206. Un mode `-RequestIdOnly` permet de rejouer uniquement cette
+  preuve, sans installation npm, flux complet, saturation ou arrêt de l'agent.
+  L'exécution finale a retrouvé dès la première tentative le requestId
+  `phase45-requestid-20260726T192509523-00ed8c22` dans un
+  `STORAGE_AGENT_REQUEST_COMPLETED` HEAD 200 (`trackId=78`), puis a confirmé
+  zéro secret et zéro listener résiduels. Cette preuve clôt la Phase 4.5 en GO.
+
+### L-104 — Un cache audio sûr publie un objet, jamais un téléchargement (2026-07-26)
+- **Contexte** : Phase 5 doit servir simultanément le client et le disque sans
+  charger une piste entière en mémoire ni rendre visible un remplissage.
+- **Leçon** : l'objet final est un résultat de transaction : fichier temporaire
+  privé, backpressure sur chaque chunk, taille et SHA-256 validés, `fsync`, puis
+  renommage atomique. Le nom final ou une ligne d'index ne suffisent pas seuls.
+- **Conséquence** : les Range MISS bypassent, les `.part` ne sont jamais servis,
+  l'abandon détruit l'amont, et l'index séparé ne référence que des objets
+  complets. Les requêtes concurrentes bypassent plutôt que d'attendre un writer.
+
+### L-105 — Une base de validation contient des données piégées : ne jamais y piocher « la première ligne » (2026-07-27)
+- **Contexte** : le harnais Phase 5 choisissait sa piste d'abandon par
+  `ORDER BY size_bytes ASC LIMIT 1`. La base de validation, copiée depuis la
+  Phase 4.5, contient une piste **volontairement périmée** (`size_bytes = 4096`,
+  `hash = "f" × 64`, absente de l'index du Storage Agent) servant à éprouver
+  le chemin « index obsolète ». La plus petite piste réelle pesant ~9,2 Mo, la
+  piste piégée était systématiquement retenue : l'agent répondait
+  `404 TRACK_NOT_INDEXED` → `INDEX_STALE` → **503**, et le scénario
+  d'abandon ne pouvait jamais démarrer.
+- **Leçon** : un jeu de données de test contient par construction des entrées
+  hostiles. Une sélection ordinale (« la plus petite », « la première ») y est
+  un tirage au sort. Un critère de sélection doit énoncer ce que la donnée doit
+  **être**, pas la place qu'elle occupe. Et la validation de forme ne suffit
+  pas : `"f" × 64` est un SHA-256 parfaitement bien formé — seul un contrôle
+  de **servabilité réelle** (un `HEAD` de bout en bout) écarte l'imposteur.
+- **Conséquence** : `scripts/phase5_track_selection.py` centralise la
+  sélection, avec plancher de taille, ordre déterministe et empreinte validée.
+  `vps_phase5_write_env.py` (dimensionnement du cache) et
+  `vps_phase5_cache_test.py` (choix de la piste) l'**importent tous les
+  deux** : dimensionner pour une piste et tester avec une autre rendrait
+  l'éviction non déterministe. Le test ajoute un `HEAD` obligatoire, et
+  produit un **SKIP explicite** plutôt qu'un `ok=false` opaque si aucune
+  candidate ne convient.
+- **Corollaire sur les rapports** : un booléen d'acceptation agrégé sur dix
+  conditions doit publier le détail de chacune. `ok=false` seul a coûté un
+  aller-retour complet d'exécution VPS pour identifier laquelle avait cédé ;
+  le harnais publie désormais `checks` et `failedChecks`.
 ### L-106 — Un harnais dont les scénarios partagent un état détruit ses propres préconditions (2026-07-27)
 - **Contexte** : quatrième exécution réelle Phase 5. Les modes `-FinalizeOnly`
   et `-AbortOnly` étaient verts isolément, mais le mode complet échouait
@@ -582,3 +887,193 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
   échoue en sortie 3 si aucune ligne JSON structurée n'est capturée après que
   l'API répond, et publie les cibles réelles de `fd/1` et `fd/2`. Le `.env` du
   harnais est en `NODE_ENV=production`.
+
+### L-109 — Une panne fournisseur doit suspendre la file, pas fabriquer des échecs (2026-07-29)
+- **Contexte** : un challenge de sécurité ou un 429 était auparavant réduit à
+  une erreur HTTP générique du processus. Chaque nouvelle demande pouvait donc
+  relancer Chromium et aggraver le blocage.
+- **Leçon** : l'état d'un fournisseur est global, persistant et distinct du
+  cycle d'un job. Le cooldown ne constitue jamais une autorisation de relance :
+  il rend seulement une probe manuelle possible.
+- **Conséquence** : `provider_health` réserve une probe HALF_OPEN unique,
+  `PAUSED_PROVIDER` garde les jobs visibles et dédupliqués, et les imports
+  locaux déjà téléchargés continuent indépendamment. Les diagnostics stockés
+  restent publics et bornés ; les preuves sensibles restent hors base et hors
+  API.
+
+### L-110 — Un test widget ne valide pas la compilation native d'un plugin (2026-07-29)
+- **Contexte** : `file_picker 11.0.2` fonctionnait côté Dart et dans les tests,
+  mais son module Android ne compilait pas ses sources Kotlin avec AGP 9.0.1.
+  Le registrant Java référençait donc une classe native absente.
+- **Leçon** : toute nouvelle dépendance Flutter native doit être qualifiée par
+  un build de la variante réellement distribuée ; `flutter analyze` et
+  `flutter test` ne compilent pas nécessairement son implémentation Android.
+- **Conséquence** : le repli WAV/FLAC utilise désormais `file_selector`, plugin
+  officiel compatible avec le Kotlin intégré d'AGP 9, et la validation inclut
+  `flutter build apk --release` avec la configuration de production.
+
+### L-111 — Une intervention humaine ne doit pas être simulée par le service (2026-07-30)
+
+- **Contexte** : fermer immédiatement Chromium sur un challenge protège un
+  service headless, mais empêche une personne connectée au serveur de terminer
+  une vérification légitime dans une fenêtre visible.
+- **Leçon** : séparer l'orchestration persistante du service et l'interaction
+  graphique. Le service bloque et expose un état métier ; un helper explicite
+  observe passivement le retour au formulaire normal sans automatiser le
+  challenge.
+- **Conséquence** : `MANUAL_VERIFICATION_REQUIRED` n'a ni compte à rebours ni
+  retry headless. Le helper ne transmet que son résultat, et le circuit n'est
+  déclaré sain qu'après le vrai import local.
+
+### L-112 — Un état global d'intervention doit référencer son travail actif (2026-07-30)
+
+- **Contexte** : migrer un ancien circuit challenge sans job éligible a produit
+  un fournisseur demandant une intervention alors que l'interface ne pouvait
+  présenter aucun import actif.
+- **Leçon** : une transition distribuée entre une ligne fournisseur et une
+  ligne de job doit être atomique et porter un invariant vérifiable.
+- **Conséquence** : l'état manuel sans job actif cohérent est fermé
+  automatiquement, sans ressusciter les échecs historiques.
+
+### L-113 — Un fallback interactif doit séparer sélection, geste humain et preuve disque (2026-07-30)
+
+- **Contexte** : proposer un second site après l'échec d'un provider crée trois
+  risques distincts : sélectionner une homonymie, automatiser par accident le
+  geste réservé à l'utilisateur, ou importer arbitrairement le dernier fichier
+  d'un dossier partagé.
+- **Leçon** : chaque frontière porte sa propre preuve. La ligne visible exige
+  titre et artiste exacts ; le code ne possède aucune primitive de clic
+  Download ; le fichier exige un snapshot antérieur, trois tailles stables et
+  des métadonnées/durée compatibles. Une extension ou un nom de fichier ne
+  constitue aucune de ces preuves.
+- **Conséquence** : Monochrome reste un provider manuel distinct, avec holder
+  global et statut actif. Le backend n'accepte son succès qu'après le pipeline
+  local réel et un `trackId`, jamais sur le seul exit code du helper.
+
+### L-114 — Une annulation doit être vérifiée à CHAQUE frontière asynchrone (2026-08-01)
+
+- **Contexte** : le service de téléchargement marquait `cancelRequested`, puis
+  demandait au moteur de s'arrêter. Mais entre la prise du job par le worker et
+  l'appel réel à `provider.start()`, il y a plusieurs `await` (création des
+  dossiers, inventaire du staging). Une annulation tombant dans cette fenêtre
+  ordonnait l'arrêt d'un processus pas encore lancé — puis le processus
+  démarrait quand même, et plus personne ne l'annulait : le job restait bloqué
+  jusqu'au délai global.
+- **Leçon** : marquer une intention d'annulation ne suffit pas. Toute étape
+  asynchrone traversée entre la demande et le démarrage effectif doit relire
+  cet état AVANT d'engager la ressource, et une seconde fois APRÈS l'avoir
+  obtenue — car l'obtention est elle-même asynchrone.
+- **Conséquence** : `processItem` contrôle l'annulation juste avant
+  `provider.start()` (sortie immédiate en `cancelled`, aucun processus lancé)
+  et juste après (arrêt immédiat du processus fraîchement démarré). Un test
+  déterministe bloque la phase de préparation pour verrouiller la régression.
+
+### L-115 — Une allowlist de domaines ne se décrit pas par un motif générique (2026-08-01)
+
+- **Contexte** : Amazon Music étant régional, le motif
+  `^music\.amazon\.[a-z]{2,}(\.[a-z]{2,})?$` semblait raisonnable. Il accepte
+  `music.amazon.evil.com` — un sous-domaine que n'importe qui crée en quelques
+  minutes sur son propre domaine.
+- **Leçon** : un motif conçu pour couvrir « toutes les variantes légitimes »
+  couvre aussi les variantes hostiles qui partagent le même préfixe. Pour une
+  frontière de sécurité, seule une liste explicite d'hôtes est vérifiable.
+- **Conséquence** : les TLD Amazon Music sont énumérés explicitement, côté
+  backend ET côté Flutter, et un test couvre spécifiquement le sous-domaine
+  trompeur. Même règle pour les suffixes : `endsWith('.qobuz.com')` et non
+  `endsWith('qobuz.com')`, sans quoi `notqobuz.com` passerait.
+
+### L-116 — Un moteur externe ne remonte pas forcément le chemin de son résultat (2026-08-01)
+
+- **Contexte** : `EngineEvent` d'Antra porte bien un champ `file_path`, mais
+  `emit_event` de sa JSON CLI ne le recopie pas dans la charge utile. Le chemin
+  final n'est donc jamais visible depuis l'extérieur, alors que le champ existe
+  dans le modèle interne.
+- **Leçon** : la présence d'un champ dans le modèle d'un outil ne garantit pas
+  sa présence dans son contrat de sortie. Lire l'émetteur, pas la structure.
+- **Conséquence** : plutôt que de modifier Antra ou de ramasser « le fichier le
+  plus récent », chaque job reçoit un dossier de staging dédié dont
+  l'inventaire est relevé avant lancement. Le contexte remplace le chemin
+  manquant, et la règle reste valable si une future version d'Antra publie
+  enfin ce chemin.
+
+### L-117 — L'URL soumise à un moteur détermine sa stratégie de sources (2026-08-01)
+
+- **Contexte** : classer les URL candidates par « qualité du service » semblait
+  naturel. La lecture de `core/service.py` d'Antra montre autre chose : une URL
+  Deezer, Tidal ou Amazon applique `source_rule="exclusive"` et verrouille le
+  moteur sur un unique adaptateur, tandis qu'une URL Spotify n'applique aucun
+  `source_intent` et laisse toute la chaîne de résolution disponible.
+- **Leçon** : dans une chaîne de repli, le premier candidat ne doit pas être
+  « le meilleur service » mais « celui qui laisse le plus d'options au moteur ».
+  Un service excellent mais verrouillé échoue en bloc ; un service moyen mais
+  ouvert retombe sur ses pieds.
+- **Conséquence** : `sourceRank` suit spotify > qobuz > apple > tidal > deezer >
+  amazon, et le commentaire cite le fichier qui le justifie — sans quoi une
+  relecture future prendrait cet ordre pour une préférence esthétique.
+
+### L-118 — « Illisible » et « hors specs » sont deux diagnostics différents (2026-08-01)
+
+- **Contexte** : le détecteur classait tout refus d'`analyzeAudioFile` en
+  `unreadable`. Le test réel a montré deux sources livrant du FLAC 32 bits :
+  fichiers parfaitement valides, simplement hors de la politique d'ingestion
+  16/24 bits du projet. Le journal annonçait « fichier illisible » — on aurait
+  cherché une corruption inexistante.
+- **Leçon** : un code d'erreur qui agrège deux causes distinctes envoie le
+  diagnostic dans la mauvaise direction, d'autant plus quand la cause réelle est
+  une règle du projet et non un défaut du fichier.
+- **Conséquence** : code `FORMAT_REJECTED` distinct, toujours éligible au repli,
+  et test verrouillant le cas FLAC 32 bits.
+
+### L-119 — Un staging par tentative doit être purgé à la fin du job (2026-08-01)
+
+- **Contexte** : isoler chaque tentative dans son propre dossier a résolu
+  l'ambiguïté de détection, mais le test réel a laissé deux FLAC de 37 Mo par
+  job — ceux des sources rejetées — sans que rien ne les reprenne.
+- **Leçon** : la règle « ne jamais détruire un enregistrement valide » protège
+  ce qui n'a pas encore été traité, pas ce qui a été explicitement écarté. Les
+  fichiers acceptés ayant été DÉPLACÉS vers l'inbox, ce qui reste dans le
+  staging est du rebut par construction.
+- **Conséquence** : purge de l'arborescence du job sur état terminal, SAUF
+  après annulation — où un fichier complet peut exister sans avoir été jugé.
+
+### L-120 — Un écran qui doit trancher entre deux parcours n'en a en réalité qu'un seul de légitime (2026-08-01)
+
+- **Contexte** : l'installation d'un morceau passait par quatre entrées de
+  profil (Mes demandes, Télécharger un lien, Importer une musique, File
+  d'installation) et un écran de recherche à quatre onglets. Chaque bouton
+  installait « un peu » : l'un créait une demande à valider, l'autre lançait un
+  téléchargement direct, un troisième repliait sur une demande quand le moteur
+  n'était pas configuré.
+- **Leçon** : quand un même geste utilisateur peut aboutir à deux mécanismes
+  différents selon l'état du serveur, ce n'est pas de la robustesse, c'est une
+  ambiguïté de produit. L'utilisateur ne sait plus ce que « Installer » veut
+  dire, et le code porte deux pipelines qu'il faut maintenir à l'identique.
+- **Conséquence** : un seul écran, un seul bouton, un seul contrat
+  (`POST /api/downloads/search`). Le système de demandes est supprimé, pas
+  désactivé — un repli conservé « au cas où » aurait recréé la même ambiguïté.
+
+### L-121 — Une confirmation ne peut pas être déclenchée par la fin de l'appel qui la provoque (2026-08-01)
+
+- **Contexte** : l'écran annonçait le succès juste après `await install()`.
+  Cet appel ne fait que **créer** le job ; son issue arrive plusieurs secondes
+  plus tard par le SSE. La confirmation ne s'affichait donc jamais, et le test
+  widget le prouvait dès la première exécution.
+- **Leçon** : avec un travail qui vit côté serveur, la fin de la requête HTTP
+  n'est pas la fin de l'action. Toute annonce doit s'accrocher à la
+  **transition d'état** observée, pas au retour de la fonction qui l'a lancée.
+- **Conséquence** : `ref.listen` sur l'état d'installation + un ensemble de
+  clés déjà annoncées, pour qu'un état terminal réémis ne produise qu'une seule
+  confirmation. Corollaire : un état simplement *retrouvé* au retour sur
+  l'écran est pré-marqué comme annoncé — il s'affiche, il ne notifie pas.
+
+### L-122 — Un indicateur de progression rend `pumpAndSettle` inutilisable (2026-08-01)
+
+- **Contexte** : trois tests widgets de l'installation ont échoué en
+  « pumpAndSettle timed out ». Rien n'était cassé : la carte affichait un
+  `CircularProgressIndicator`, qui anime indéfiniment par construction.
+- **Leçon** : `pumpAndSettle` attend l'absence de frame planifiée. Tout écran
+  qui affiche un travail en cours ne se stabilise jamais ; l'échec ressemble à
+  un blocage applicatif alors qu'il décrit l'état attendu.
+- **Conséquence** : `pump()` (éventuellement répété avec un délai court) sur
+  tout test traversant un état actif, et `pumpAndSettle` réservé aux états
+  terminaux.

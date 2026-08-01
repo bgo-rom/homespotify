@@ -8,7 +8,7 @@ Application musicale personnelle type Spotify, **100 % auto-hébergée** sur un 
 
 ## Statut actuel
 
-**Phase 0 produit en qualification → Phase 1 hors connexion ensuite.** Le backend et l'app Flutter couvrent déjà import/scanner WAV/FLAC, bibliothèque multi-utilisateur, streaming HTTP Range, lecture Android de fond, demandes musicales, diagnostics, sauvegardes et santé OWNER. Le dernier correctif de fin de piste doit encore réussir une session réelle de 4 h avant l'ouverture du code Phase 1. Voir [ROADMAP.md](ROADMAP.md). **Ingestion native : WAV PCM 16 bit / 44,1–48 kHz et FLAC lossless 16/24 bit / 44,1–192 kHz, sans transformation de la source.**
+**Phase 0 produit en qualification → Phase 1 hors connexion ensuite.** Le backend et l'app Flutter couvrent déjà import/scanner WAV/FLAC, bibliothèque multi-utilisateur, streaming HTTP Range, lecture Android de fond, recherche et installation distante, diagnostics, sauvegardes et santé OWNER. Le dernier correctif de fin de piste doit encore réussir une session réelle de 4 h avant l'ouverture du code Phase 1. Voir [ROADMAP.md](ROADMAP.md). **Ingestion native : WAV PCM 16 bit / 44,1–48 kHz et FLAC lossless 16/24 bit / 44,1–192 kHz, sans transformation de la source.**
 
 ## Stack pressentie
 
@@ -24,6 +24,7 @@ Node.js LTS + TypeScript + Fastify · SQLite (WAL) + Drizzle · ffmpeg/ffprobe �
 6. [AUDIO_SOURCING.md](AUDIO_SOURCING.md) — acquisition et qualité audio
 7. [AGENTS.md](AGENTS.md) — règles pour les sous-agents
 8. [LESSONS.md](LESSONS.md) — leçons apprises
+9. [docs/ANTRA_INTEGRATION.md](docs/ANTRA_INTEGRATION.md) — moteur de téléchargement Antra (fournisseur principal)
 
 ## Structure du dépôt
 

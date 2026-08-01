@@ -1,6 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import {
+  parseAudioStorageMode,
+  type AudioStorageMode,
+} from './storage/provider-factory.js';
+import {
+  loadRemoteStorageConfig,
+  type RemoteStorageConfig,
+} from './storage/remote/remote-config.js';
+import {
+  loadAudioCacheConfig,
+  type AudioCacheConfig,
+} from './storage/cache/cache-config.js';
 
 export interface AppConfig {
   nodeEnv: 'development' | 'production' | 'test';
@@ -13,6 +25,16 @@ export interface AppConfig {
   /** Racine confinée des inbox/rejected/processed par utilisateur. */
   importRoot: string;
   coversDir: string;
+  /**
+   * Origine des fichiers audio (plan de migration VPS, Phase 1).
+   * `local` seul est implémenté ; `remote`/`cached` échouent explicitement.
+   * Optionnel : absent = `local`, soit le comportement historique.
+   */
+  audioStorageMode?: AudioStorageMode;
+  /** Obligatoire uniquement lorsque `audioStorageMode === "remote"`. */
+  audioRemote?: RemoteStorageConfig;
+  /** Obligatoire uniquement lorsque `audioStorageMode === "cached"`. */
+  audioCache?: AudioCacheConfig;
   maxUploadBytes: number;
   /** Secret HMAC des access tokens — env AUTH_TOKEN_SECRET, obligatoire en production. */
   authTokenSecret: string;
@@ -24,6 +46,13 @@ export interface AppConfig {
    * n'est pas configuré : aucun processus Python n'est alors créé.
    */
   lucida?: LucidaConfig;
+  acquisitionProviders: AcquisitionProviderConfig;
+  /**
+   * Moteur de téléchargement Antra — fournisseur PRINCIPAL par défaut.
+   * Absent tant que `ANTRA_DIR` n'est pas configuré : aucun processus Python
+   * n'est alors créé et les routes `/api/downloads` répondent 503.
+   */
+  antra?: AntraConfig;
   /** Cache serveur des dérivées Opus hors ligne (Phase 1A). Optionnel pour la
    * rétro-compatibilité des configs de test : buildApp applique
    * defaultOfflineConfig() en absence. */
@@ -60,6 +89,76 @@ export interface LucidaConfig {
   pythonPath: string;
   /** Délai global du processus complet, distinct du timeout HTTP du script. */
   processTimeoutMs: number;
+  /**
+   * Téléchargements simultanés autorisés (1 à 4).
+   *
+   * Chaque unité = un processus Python + un Chromium. Au-delà de 4, la machine
+   * devient le goulot et la rafale vers le service distant ressemble à un abus.
+   */
+  maxConcurrentDownloads: number;
+  challengeCooldownSeconds: number;
+  rateLimitDefaultCooldownSeconds: number;
+  unavailableCooldownSeconds: number;
+  maxCooldownSeconds: number;
+  providerFailureWindowSeconds: number;
+  providerFailureThreshold: number;
+  /**
+   * Autorise uniquement le workflow manuel externe. Le service ne lance
+   * jamais Chromium visible, même lorsque cette option vaut true.
+   */
+  interactiveVerificationEnabled: boolean;
+  interactiveVerificationTimeoutSeconds: number;
+}
+
+/**
+ * Configuration du moteur Antra.
+ *
+ * La clé Premium n'apparaît JAMAIS ici : elle vit dans le `.env` du dépôt Antra
+ * et n'est lue que par le processus Python, grâce au `cwd` positionné sur
+ * [dir]. Le backend ne la lit pas, ne la journalise pas et ne l'expose pas.
+ */
+export interface AntraConfig {
+  /** Racine du dépôt Antra ; devient le `cwd` du processus Python. */
+  dir: string;
+  /** Interpréteur Python du venv Antra ; résolu par spawn, jamais par un shell. */
+  pythonPath: string;
+  /** Racine de staging des téléchargements (un sous-dossier par job). */
+  outputDir: string;
+  /** Préférence de source Antra (`auto` par défaut). */
+  source: string;
+  /** Format de sortie demandé à Antra (`flac` par défaut). */
+  format: string;
+  /** Extensions acceptées à l'issue du téléchargement (minuscules, avec point). */
+  allowedExtensions: readonly string[];
+  /** Téléchargements simultanés (1 à 4). */
+  maxConcurrent: number;
+  /** Délai global d'un job, arbre de processus tué au-delà. */
+  jobTimeoutMs: number;
+  /**
+   * Toujours `false` en pratique : Soulseek ne doit jamais être amorcé par le
+   * backend, sinon le processus attend une configuration interactive.
+   */
+  slskdAutoBootstrap: boolean;
+  /** Logs Antra détaillés relayés en debug. Jamais activé en production. */
+  verbose: boolean;
+}
+
+export interface AcquisitionProviderConfig {
+  /**
+   * Chaîne d'acquisition HISTORIQUE (Lucida / Monochrome / DoubleDouble).
+   *
+   * `false` par défaut depuis l'intégration d'Antra : les anciens fournisseurs
+   * ne sont plus jamais lancés automatiquement. Les fichiers restent en place
+   * et le service redevient identique à l'ancien comportement en repassant
+   * `ACQUISITION_LEGACY_ENABLED=true`.
+   */
+  legacyEnabled: boolean;
+  order: readonly ('LUCIDA' | 'MONOCHROME_MANUAL')[];
+  monochromeManualFallbackEnabled: boolean;
+  monochromeBaseUrl: string;
+  monochromeManualTimeoutSeconds: number;
+  monochromeDownloadDirectory: string;
+  monochromeFileStabilitySeconds: number;
 }
 
 export interface BackupConfig {
@@ -196,16 +295,327 @@ function loadLucidaConfig(env: NodeJS.ProcessEnv): LucidaConfig | undefined {
     1_800,
   );
 
+  const maxConcurrentDownloads = boundedInt(
+    'LUCIDA_MAX_CONCURRENT_DOWNLOADS',
+    env.LUCIDA_MAX_CONCURRENT_DOWNLOADS,
+    3,
+    1,
+    4,
+  );
+  const challengeCooldownSeconds = boundedInt(
+    'LUCIDA_CHALLENGE_COOLDOWN_SECONDS',
+    env.LUCIDA_CHALLENGE_COOLDOWN_SECONDS,
+    1_800,
+    60,
+    21_600,
+  );
+  const rateLimitDefaultCooldownSeconds = boundedInt(
+    'LUCIDA_RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS',
+    env.LUCIDA_RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS,
+    900,
+    60,
+    86_400,
+  );
+  const unavailableCooldownSeconds = boundedInt(
+    'LUCIDA_UNAVAILABLE_COOLDOWN_SECONDS',
+    env.LUCIDA_UNAVAILABLE_COOLDOWN_SECONDS,
+    600,
+    60,
+    21_600,
+  );
+  const maxCooldownSeconds = boundedInt(
+    'LUCIDA_MAX_COOLDOWN_SECONDS',
+    env.LUCIDA_MAX_COOLDOWN_SECONDS,
+    21_600,
+    60,
+    86_400,
+  );
+  const providerFailureWindowSeconds = boundedInt(
+    'LUCIDA_PROVIDER_FAILURE_WINDOW_SECONDS',
+    env.LUCIDA_PROVIDER_FAILURE_WINDOW_SECONDS,
+    600,
+    60,
+    3_600,
+  );
+  const providerFailureThreshold = boundedInt(
+    'LUCIDA_PROVIDER_FAILURE_THRESHOLD',
+    env.LUCIDA_PROVIDER_FAILURE_THRESHOLD,
+    2,
+    1,
+    10,
+  );
+  const interactiveVerificationEnabled = strictBool(
+    'LUCIDA_INTERACTIVE_VERIFICATION_ENABLED',
+    env.LUCIDA_INTERACTIVE_VERIFICATION_ENABLED,
+    false,
+  );
+  const interactiveVerificationTimeoutSeconds = boundedInt(
+    'LUCIDA_INTERACTIVE_VERIFICATION_TIMEOUT_SECONDS',
+    env.LUCIDA_INTERACTIVE_VERIFICATION_TIMEOUT_SECONDS,
+    120,
+    30,
+    600,
+  );
+  if (
+    maxCooldownSeconds < challengeCooldownSeconds ||
+    maxCooldownSeconds < unavailableCooldownSeconds ||
+    maxCooldownSeconds < rateLimitDefaultCooldownSeconds
+  ) {
+    throw new Error(
+      'Config invalide : LUCIDA_MAX_COOLDOWN_SECONDS doit être supérieur ou égal aux cooldowns configurés',
+    );
+  }
+
   return {
     scriptPath,
     pythonPath,
     processTimeoutMs: processTimeoutSeconds * 1_000,
+    maxConcurrentDownloads,
+    challengeCooldownSeconds,
+    rateLimitDefaultCooldownSeconds,
+    unavailableCooldownSeconds,
+    maxCooldownSeconds,
+    providerFailureWindowSeconds,
+    providerFailureThreshold,
+    interactiveVerificationEnabled,
+    interactiveVerificationTimeoutSeconds,
+  };
+}
+
+const ANTRA_SOURCES = [
+  'auto',
+  'hifi',
+  'amazon',
+  'apple',
+  'tidal',
+  'qobuz',
+  'deezer',
+  'jiosaavn',
+  'soulseek',
+] as const;
+
+const ANTRA_FORMATS = ['flac', 'source', 'alac', 'm4a', 'aac', 'mp3'] as const;
+
+/**
+ * Extensions réellement importables par le pipeline local
+ * (`UserImportService`, bit-perfect WAV/FLAC). Autoriser autre chose ferait
+ * échouer l'import APRÈS un téléchargement réussi : c'est un choix explicite,
+ * pas un défaut.
+ */
+const ANTRA_ACCEPTED_EXTENSIONS = ['.flac', '.wav', '.m4a', '.mp3', '.aac'] as const;
+
+const DEFAULT_ANTRA_EXTENSIONS = ['.flac', '.wav'] as const;
+
+/**
+ * Charge la configuration Antra. Absente si `ANTRA_DIR` n'est pas fourni : le
+ * backend démarre normalement, seul le fournisseur devient indisponible.
+ *
+ * Les chemins sont validés ici pour échouer tôt et lisiblement, jamais au
+ * milieu d'un téléchargement.
+ */
+function loadAntraConfig(env: NodeJS.ProcessEnv): AntraConfig | undefined {
+  const rawDir = env.ANTRA_DIR?.trim() ?? '';
+  if (rawDir.length === 0) return undefined;
+
+  const dir = resolve(rawDir);
+  if (!existsSync(dir)) {
+    throw new Error(`Config invalide : ANTRA_DIR="${rawDir}" introuvable`);
+  }
+
+  const rawPython = env.ANTRA_PYTHON?.trim() ?? '';
+  const pythonPath = rawPython.length > 0 ? resolve(rawPython) : '';
+  if (pythonPath.length === 0) {
+    throw new Error(
+      'Config invalide : ANTRA_PYTHON est obligatoire dès que ANTRA_DIR est défini',
+    );
+  }
+  if (!existsSync(pythonPath)) {
+    throw new Error(`Config invalide : ANTRA_PYTHON="${rawPython}" introuvable`);
+  }
+
+  const outputDir = resolve(
+    env.ANTRA_OUTPUT_DIR?.trim() ||
+      env.HOMESPOTIFY_IMPORT_ROOT?.trim() ||
+      env.INCOMING_DIR?.trim() ||
+      '../../storage/imports',
+  );
+
+  const source = (env.ANTRA_SOURCE?.trim() || 'auto').toLowerCase();
+  if (!(ANTRA_SOURCES as readonly string[]).includes(source)) {
+    throw new Error(
+      `Config invalide : ANTRA_SOURCE="${env.ANTRA_SOURCE}" (attendu : ${ANTRA_SOURCES.join(', ')})`,
+    );
+  }
+
+  const format = (env.ANTRA_FORMAT?.trim() || 'flac').toLowerCase();
+  if (!(ANTRA_FORMATS as readonly string[]).includes(format)) {
+    throw new Error(
+      `Config invalide : ANTRA_FORMAT="${env.ANTRA_FORMAT}" (attendu : ${ANTRA_FORMATS.join(', ')})`,
+    );
+  }
+
+  const rawExtensions = env.ANTRA_ALLOWED_EXTENSIONS?.trim() ?? '';
+  const allowedExtensions =
+    rawExtensions.length === 0
+      ? [...DEFAULT_ANTRA_EXTENSIONS]
+      : rawExtensions
+          .split(',')
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+          .map((value) => (value.startsWith('.') ? value : `.${value}`));
+  if (
+    allowedExtensions.length === 0 ||
+    allowedExtensions.some(
+      (value) => !(ANTRA_ACCEPTED_EXTENSIONS as readonly string[]).includes(value),
+    )
+  ) {
+    throw new Error(
+      `Config invalide : ANTRA_ALLOWED_EXTENSIONS="${rawExtensions}" (attendu : ${ANTRA_ACCEPTED_EXTENSIONS.join(', ')})`,
+    );
+  }
+
+  const maxConcurrent = boundedInt(
+    'ANTRA_MAX_CONCURRENT',
+    env.ANTRA_MAX_CONCURRENT,
+    2,
+    1,
+    4,
+  );
+  const jobTimeoutMs = boundedInt(
+    'ANTRA_JOB_TIMEOUT_MS',
+    env.ANTRA_JOB_TIMEOUT_MS,
+    900_000,
+    30_000,
+    3_600_000,
+  );
+  const slskdAutoBootstrap = strictBool(
+    'ANTRA_SLSKD_AUTO_BOOTSTRAP',
+    env.ANTRA_SLSKD_AUTO_BOOTSTRAP,
+    false,
+  );
+  if (slskdAutoBootstrap) {
+    throw new Error(
+      'Config invalide : ANTRA_SLSKD_AUTO_BOOTSTRAP doit rester false — Soulseek exigerait une configuration interactive impossible côté serveur',
+    );
+  }
+
+  return {
+    dir,
+    pythonPath,
+    outputDir,
+    source,
+    format,
+    allowedExtensions,
+    maxConcurrent,
+    jobTimeoutMs,
+    slskdAutoBootstrap: false,
+    verbose: strictBool('ANTRA_VERBOSE', env.ANTRA_VERBOSE, false),
+  };
+}
+
+function loadAcquisitionProviderConfig(
+  env: NodeJS.ProcessEnv,
+): AcquisitionProviderConfig {
+  const rawOrder =
+    env.ACQUISITION_PROVIDER_ORDER ?? 'LUCIDA,MONOCHROME_MANUAL';
+  const order = rawOrder
+    .split(',')
+    .map((value) => value.trim().toLocaleUpperCase('en-US'))
+    .filter(Boolean);
+  if (
+    order.length < 1 ||
+    order.length > 2 ||
+    new Set(order).size !== order.length ||
+    order.some(
+      (value) => value !== 'LUCIDA' && value !== 'MONOCHROME_MANUAL',
+    ) ||
+    order[0] !== 'LUCIDA'
+  ) {
+    throw new Error(
+      'Config invalide : ACQUISITION_PROVIDER_ORDER doit commencer par LUCIDA et ne contenir que LUCIDA,MONOCHROME_MANUAL',
+    );
+  }
+
+  const monochromeBaseUrl =
+    env.MONOCHROME_BASE_URL ?? 'https://monochrome.tf/';
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(monochromeBaseUrl);
+  } catch {
+    throw new Error(
+      'Config invalide : MONOCHROME_BASE_URL doit être une URL HTTPS valide',
+    );
+  }
+  if (
+    parsedBaseUrl.protocol !== 'https:' ||
+    parsedBaseUrl.username ||
+    parsedBaseUrl.password ||
+    parsedBaseUrl.search ||
+    parsedBaseUrl.hash
+  ) {
+    throw new Error(
+      'Config invalide : MONOCHROME_BASE_URL doit être une URL HTTPS publique sans credentials, query ni fragment',
+    );
+  }
+  const monochromeDownloadDirectory =
+    env.MONOCHROME_DOWNLOAD_DIRECTORY ?? '';
+  if (
+    monochromeDownloadDirectory &&
+    !resolve(monochromeDownloadDirectory).match(/^[A-Za-z]:\\/u)
+  ) {
+    throw new Error(
+      'Config invalide : MONOCHROME_DOWNLOAD_DIRECTORY doit être un chemin Windows absolu',
+    );
+  }
+
+  return {
+    legacyEnabled: strictBool(
+      'ACQUISITION_LEGACY_ENABLED',
+      env.ACQUISITION_LEGACY_ENABLED,
+      false,
+    ),
+    order: order as ('LUCIDA' | 'MONOCHROME_MANUAL')[],
+    monochromeManualFallbackEnabled: strictBool(
+      'MONOCHROME_MANUAL_FALLBACK_ENABLED',
+      env.MONOCHROME_MANUAL_FALLBACK_ENABLED,
+      true,
+    ),
+    monochromeBaseUrl: parsedBaseUrl.toString(),
+    monochromeManualTimeoutSeconds: boundedInt(
+      'MONOCHROME_MANUAL_TIMEOUT_SECONDS',
+      env.MONOCHROME_MANUAL_TIMEOUT_SECONDS,
+      600,
+      30,
+      1_800,
+    ),
+    monochromeDownloadDirectory,
+    monochromeFileStabilitySeconds: boundedInt(
+      'MONOCHROME_FILE_STABILITY_SECONDS',
+      env.MONOCHROME_FILE_STABILITY_SECONDS,
+      3,
+      1,
+      30,
+    ),
   };
 }
 
 function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value.length === 0) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+}
+
+function strictBool(
+  name: string,
+  raw: string | undefined,
+  fallback: boolean,
+): boolean {
+  if (raw === undefined || raw.length === 0) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(
+    `Config invalide : ${name}="${raw}" (booléen attendu)`,
+  );
 }
 
 function boundedInt(name: string, raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -307,6 +717,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const nodeEnv = oneOf('NODE_ENV', env.NODE_ENV ?? 'development', NODE_ENVS);
+  const audioStorageMode = parseAudioStorageMode(env.AUDIO_STORAGE_MODE);
+  const audioRemote = loadRemoteStorageConfig(env, audioStorageMode);
+  const audioCache = loadAudioCacheConfig(env, audioStorageMode);
 
   const accessTokenTtlSeconds = Number(env.ACCESS_TOKEN_TTL_SECONDS ?? 900);
   if (!Number.isInteger(accessTokenTtlSeconds) || accessTokenTtlSeconds < 60) {
@@ -324,6 +737,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const lastfm = loadLastfmConfig(env);
   const appleMusic = loadAppleMusicConfig(env);
   const lucida = loadLucidaConfig(env);
+  const acquisitionProviders = loadAcquisitionProviderConfig(env);
+  const antra = loadAntraConfig(env);
   const backup: BackupConfig = {
     enabled: parseBool(env.BACKUP_ENABLED, nodeEnv !== 'test'),
     root: env.BACKUP_ROOT ?? '../../backups/server',
@@ -348,6 +763,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     incomingDir: env.INCOMING_DIR ?? '../../storage/imports',
     importRoot: env.HOMESPOTIFY_IMPORT_ROOT ?? env.INCOMING_DIR ?? '../../storage/imports',
     coversDir: env.COVERS_DIR ?? '../../storage/covers',
+    // Valeur inconnue -> exception au démarrage, jamais de repli sur 'local'.
+    audioStorageMode,
+    ...(audioRemote === undefined ? {} : { audioRemote }),
+    ...(audioCache === undefined ? {} : { audioCache }),
     maxUploadBytes: Math.floor(maxUploadMb * 1024 * 1024),
     offline: {
       derivedCacheDir: env.OFFLINE_CACHE_DIR ?? '../../storage/cache/offline-opus',
@@ -358,6 +777,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     refreshTokenTtlSeconds: refreshTokenTtlDays * 24 * 60 * 60,
     backup,
     ...(lucida ? { lucida } : {}),
+    acquisitionProviders,
+    ...(antra ? { antra } : {}),
     ...(lastfm ? { lastfm } : {}),
     ...(appleMusic ? { appleMusic } : {}),
     discovery: loadDiscoveryConfig(env),

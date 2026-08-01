@@ -4,7 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Retour visuel PREMIUM et éphémère « Demande envoyée ».
+/// Retour visuel PREMIUM et éphémère « Installation lancée ».
 ///
 /// S'affiche via un [OverlayEntry] enveloppé d'un [IgnorePointer] : l'overlay
 /// ne bloque JAMAIS l'interface (le paquet continue de s'animer dessous). La
@@ -231,7 +231,7 @@ class _AnimatedSuccessOverlayState extends State<AnimatedSuccessOverlay>
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Demande envoyée',
+              'Installation lancée',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white,

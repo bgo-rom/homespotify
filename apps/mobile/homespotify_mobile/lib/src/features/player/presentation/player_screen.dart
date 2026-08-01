@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/navigation.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/home_design.dart';
 import '../../library/presentation/library_albums.dart';
 import '../../library/presentation/library_artists.dart';
 import '../../library/application/track_library_membership.dart';
@@ -144,6 +145,14 @@ class PlayerScreen extends ConsumerWidget {
                       _PlayerMenu(mediaItem: mediaItem),
                     ],
                   );
+                  // Clé de la fiche artiste, ou `null` s'il n'y a rien à
+                  // ouvrir : aucune piste, ou artiste non identifié.
+                  final String? playerArtistKey = () {
+                    if (!hasTrack) return null;
+                    final key = artistKeyForName(mediaItem.artist);
+                    return key == unknownArtistKey ? null : key;
+                  }();
+
                   final controlsBlock = Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -151,6 +160,14 @@ class PlayerScreen extends ConsumerWidget {
                         title: mediaItem?.title ?? 'Aucune piste en lecture',
                         artist: mediaItem?.artist ?? '—',
                         dimmed: !hasTrack,
+                        // Même règle que l'entrée « Voir la page de l'artiste »
+                        // du menu : rien à ouvrir sans piste ni artiste connu.
+                        onArtistTap: playerArtistKey == null
+                            ? null
+                            : () => openArtistDetailFromPlayer(
+                                context,
+                                playerArtistKey,
+                              ),
                       ),
                       if (hasError)
                         _ErrorBanner(message: playback?.errorMessage),
@@ -819,14 +836,36 @@ class _TrackInfo extends StatelessWidget {
     required this.title,
     required this.artist,
     required this.dimmed,
+    this.onArtistTap,
   });
 
   final String title;
   final String artist;
   final bool dimmed;
 
+  /// Ouvre la fiche artiste. `null` quand il n'y a rien à ouvrir (aucune piste
+  /// en lecture, ou artiste inconnu) : le nom reste alors du texte inerte,
+  /// jamais un bouton qui ne mène nulle part.
+  final VoidCallback? onArtistTap;
+
   @override
   Widget build(BuildContext context) {
+    final tappable = onArtistTap != null;
+
+    final artistLabel = Text(
+      artist,
+      maxLines: 1,
+      textAlign: TextAlign.center,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        // Repris du style existant ; l'état cliquable est signalé par une
+        // teinte plus vive, pas par un soulignement qui alourdirait l'écran.
+        color: tappable ? Colors.white : Colors.white60,
+        fontSize: 15,
+        fontWeight: tappable ? FontWeight.w600 : FontWeight.w400,
+      ),
+    );
+
     return Column(
       children: [
         Text(
@@ -841,13 +880,30 @@ class _TrackInfo extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 6),
-        Text(
-          artist,
-          maxLines: 1,
-          textAlign: TextAlign.center,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Colors.white60, fontSize: 15),
-        ),
+        if (!tappable)
+          artistLabel
+        else
+          Semantics(
+            button: true,
+            label: 'Voir la page de $artist',
+            child: InkWell(
+              key: const ValueKey('player-artist-link'),
+              onTap: onArtistTap,
+              borderRadius: BorderRadius.circular(HomeDesign.radiusSmall),
+              child: Padding(
+                // Zone tactile confortable sans déplacer le texte.
+                padding: const EdgeInsets.symmetric(
+                  horizontal: HomeDesign.space12,
+                  vertical: HomeDesign.space8,
+                ),
+                // Le texte n'expose pas sa propre sémantique : sinon le lecteur
+                // d'écran annonce l'artiste deux fois. L'action tap de l'InkWell
+                // est préservée (ce que ferait perdre un `excludeSemantics` sur
+                // le parent).
+                child: ExcludeSemantics(child: artistLabel),
+              ),
+            ),
+          ),
       ],
     );
   }

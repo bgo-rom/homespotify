@@ -1,8 +1,11 @@
+import { fileURLToPath } from 'node:url';
 import { buildApp } from './app.js';
 import { loadConfig, loadDotEnv } from './config.js';
 
-// Secrets locaux (LASTFM_API_KEY…) : .env jamais commité (cf. .gitignore).
-loadDotEnv();
+// Toujours charger services/api/.env, même lorsque le processus est lancé par
+// un service Windows dont le dossier de travail est C:\Windows\System32.
+const envPath = fileURLToPath(new URL('../.env', import.meta.url));
+loadDotEnv(envPath);
 const config = loadConfig();
 
 // buildApp applique les migrations AVANT d'enregistrer la moindre route. Si le

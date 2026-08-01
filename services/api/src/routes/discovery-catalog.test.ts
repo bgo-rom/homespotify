@@ -354,59 +354,6 @@ describe('GET /api/discovery/providers et santé OWNER', () => {
   });
 });
 
-describe('lien Spotify depuis une demande OWNER', () => {
-  async function createTrackRequest(): Promise<number> {
-    const created = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: { authorization: `Bearer ${ownerToken}` },
-      payload: {
-        requestType: 'TRACK',
-        title: 'Titre',
-        artist: 'Artiste',
-      },
-    });
-    expect(created.statusCode).toBe(201);
-    return created.json().id as number;
-  }
-
-  it('retourne le lien exact fourni par l’API Spotify officielle', async () => {
-    const spotify = new FakeProvider('spotify', [fakeResult({})]);
-    await startApp(
-      providersWith({
-        spotify: { id: 'spotify', enabled: true, disabledReason: null, provider: spotify },
-      }),
-    );
-    const requestId = await createTrackRequest();
-    const response = await app.inject({
-      method: 'GET',
-      url: `/api/admin/music-requests/${requestId}/spotify-link`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      url: 'https://open.spotify.com/track/t1',
-      exact: true,
-      source: 'SPOTIFY_WEB_API',
-      title: 'Titre',
-      artist: 'Artiste',
-    });
-  });
-
-  it('fournit une recherche Spotify préremplie quand l’API n’est pas configurée', async () => {
-    await startApp(providersWith({}));
-    const requestId = await createTrackRequest();
-    const response = await app.inject({
-      method: 'GET',
-      url: `/api/admin/music-requests/${requestId}/spotify-link`,
-      headers: { authorization: `Bearer ${ownerToken}` },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ exact: false, source: 'SPOTIFY_SEARCH' });
-    expect(response.json().url).toBe('https://open.spotify.com/search/Titre%20Artiste');
-  });
-});
-
 describe('fiches et résolution', () => {
   it('fiche album : tracklist ordonnée du provider', async () => {
     const spotify = new FakeProvider('spotify', []);
@@ -460,103 +407,24 @@ describe('fiches et résolution', () => {
   });
 });
 
-describe('demandes créées depuis le catalogue (système music_requests réutilisé)', () => {
-  it('refuse userId dans le payload (dérivé du token) et crée un ALBUM ordonné', async () => {
+describe('système de demandes musicales supprimé', () => {
+  it('ne sert plus aucune route de demande, ni utilisateur ni OWNER', async () => {
     await startApp(providersWith({}));
-    const aliceToken = await createUser('alice');
-    const created = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: { authorization: `Bearer ${aliceToken}` },
-      payload: {
-        requestType: 'ALBUM',
-        title: 'Album catalogue',
-        artist: 'Artiste',
-        externalUrl: 'https://open.spotify.com/album/al1',
-        userId: 999, // ignoré : jamais accepté
-        items: [
-          { position: 1, title: 'Un', artist: 'Artiste', isrc: 'frz030100001' },
-          { position: 2, title: 'Deux', artist: 'Artiste' },
-        ],
-      },
-    });
-    expect(created.statusCode).toBe(201);
-    const body = created.json();
-    expect(body.items.map((item: { isrc: string | null }) => item.isrc)).toEqual(['FRZ030100001', null]);
-    // La demande appartient à alice (token), pas au userId injecté.
-    const ownRequests = await app.inject({
-      method: 'GET',
-      url: '/api/music-requests',
-      headers: { authorization: `Bearer ${aliceToken}` },
-    });
-    expect(ownRequests.json().items).toHaveLength(1);
-    const ownerView = await app.inject({
-      method: 'GET',
-      url: '/api/admin/music-requests',
-      headers: { authorization: `Bearer ${ownerToken}` },
-    });
-    expect(ownerView.json().items[0].requester.username).toBe('alice');
-  });
-
-  it('refuse un album ENTIÈREMENT possédé, accepte un album partiel', async () => {
-    await startApp(providersWith({}));
-    const aliceToken = await createUser('alice');
-    // Alice possède déjà « Un » : insertion directe (piste + accès visible).
-    const me = await app.inject({
-      method: 'GET',
-      url: '/api/auth/me',
-      headers: { authorization: `Bearer ${aliceToken}` },
-    });
-    const aliceId = me.json().user?.id ?? me.json().id;
-    const now = new Date().toISOString();
-    const track = app.dbHandle.db
-      .insert(tracks)
-      .values({
-        hash: 'hash-un',
-        path: 'un.flac',
-        sizeBytes: 10,
-        title: 'Un',
-        artist: 'Artiste',
-        album: 'Album catalogue',
-        createdAt: now,
-      })
-      .returning()
-      .get();
-    app.dbHandle.db
-      .insert(userTracks)
-      .values({ userId: aliceId, trackId: track.id, addedAt: now, source: 'ADMIN', isVisible: true })
-      .run();
-
-    const fullyOwned = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: { authorization: `Bearer ${aliceToken}` },
-      payload: {
-        requestType: 'ALBUM',
-        title: 'Album catalogue',
-        artist: 'Artiste',
-        externalUrl: 'https://open.spotify.com/album/al1',
-        items: [{ position: 1, title: 'Un', artist: 'Artiste' }],
-      },
-    });
-    expect(fullyOwned.statusCode).toBe(409);
-    expect(fullyOwned.json().error).toBe('already_owned');
-
-    const partial = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: { authorization: `Bearer ${aliceToken}` },
-      payload: {
-        requestType: 'ALBUM',
-        title: 'Album catalogue',
-        artist: 'Artiste',
-        externalUrl: 'https://open.spotify.com/album/al1',
-        items: [
-          { position: 1, title: 'Un', artist: 'Artiste' },
-          { position: 2, title: 'Deux', artist: 'Artiste' },
-        ],
-      },
-    });
-    expect(partial.statusCode).toBe(201);
+    const userToken = await createUser('alice');
+    const routes: Array<{ method: 'GET' | 'POST'; url: string; token: string }> = [
+      { method: 'POST', url: '/api/music-requests', token: userToken },
+      { method: 'GET', url: '/api/music-requests', token: userToken },
+      { method: 'GET', url: '/api/admin/music-requests', token: ownerToken },
+      { method: 'GET', url: '/api/admin/music-requests/1/spotify-link', token: ownerToken },
+    ];
+    for (const route of routes) {
+      const response = await app.inject({
+        method: route.method,
+        url: route.url,
+        headers: { authorization: `Bearer ${route.token}` },
+        ...(route.method === 'POST' ? { payload: { candidateId: 1 } } : {}),
+      });
+      expect(response.statusCode).toBe(404);
+    }
   });
 });

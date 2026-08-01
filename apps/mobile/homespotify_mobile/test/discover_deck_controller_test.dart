@@ -4,7 +4,10 @@ import 'package:homespotify_mobile/src/features/discovery/data/discovery_api.dar
 import 'package:homespotify_mobile/src/features/discovery/domain/discovery_models.dart';
 import 'package:homespotify_mobile/src/features/discovery/presentation/discover_deck_controller.dart';
 
+import 'package:homespotify_mobile/src/features/remote_download/data/remote_download_api.dart';
+
 import 'support/fake_discovery.dart';
+import 'support/fake_remote_download.dart';
 
 RecommendationCandidate candidate(int id) {
   return RecommendationCandidate(
@@ -15,10 +18,16 @@ RecommendationCandidate candidate(int id) {
 }
 
 (ProviderContainer, DiscoverDeckController) makeController(
-  FakeDiscoveryRepository fake,
-) {
+  FakeDiscoveryRepository fake, {
+  FakeRemoteDownloadRepository? downloads,
+}) {
   final container = ProviderContainer(
-    overrides: [discoveryApiProvider.overrideWithValue(fake)],
+    overrides: [
+      discoveryApiProvider.overrideWithValue(fake),
+      remoteDownloadApiProvider.overrideWithValue(
+        downloads ?? FakeRemoteDownloadRepository(),
+      ),
+    ],
   );
   return (container, container.read(discoverDeckProvider.notifier));
 }
@@ -93,16 +102,32 @@ void main() {
     },
   );
 
-  test('demande déjà existante : la carte est quand même retirée', () async {
+  test('installer envoie l’identité du candidat, sans aucune demande', () async {
     final fake = FakeDiscoveryRepository(recommendations: [candidate(1)]);
-    fake.nextCreateError = const DiscoveryApiException(
-      'Demande déjà en cours.',
-      code: 'duplicate_active_request',
-    );
-    final (container, controller) = makeController(fake);
+    final downloads = FakeRemoteDownloadRepository();
+    final (container, controller) = makeController(fake, downloads: downloads);
     await controller.load();
     expect(
-      await controller.request(container.read(discoverDeckProvider).top!),
+      await controller.install(container.read(discoverDeckProvider).top!),
+      isTrue,
+    );
+    expect(downloads.calls.single.title, 'Titre 1');
+    expect(downloads.calls.single.artist, 'Artiste 1');
+    container.dispose();
+  });
+
+  test('téléchargement déjà en cours : la carte est quand même retirée', () async {
+    final fake = FakeDiscoveryRepository(recommendations: [candidate(1)]);
+    final downloads = FakeRemoteDownloadRepository(
+      failWith: const RemoteDownloadException(
+        'Ce lien est déjà en cours de téléchargement.',
+        statusCode: 409,
+      ),
+    );
+    final (container, controller) = makeController(fake, downloads: downloads);
+    await controller.load();
+    expect(
+      await controller.install(container.read(discoverDeckProvider).top!),
       isTrue,
     );
     container.dispose();

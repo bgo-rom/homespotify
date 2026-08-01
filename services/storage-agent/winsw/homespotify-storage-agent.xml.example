@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CONFIGURATION WinSW — NON INSTALLÉE, NON ACTIVE (préparation Phase 3)
+  ============================================================================
+
+  Ce fichier est un MODÈLE. Il n'est pas exécuté, aucun service n'est déclaré,
+  aucun compte Windows n'est créé par la Phase 2.
+
+  Pour l'activer en Phase 3 (et seulement à ce moment-là) :
+    1. créer le compte de service dédié `HomeSpotifySA` (non administrateur,
+       « Ouvrir une session en tant que service » uniquement) ;
+    2. copier ce fichier en `homespotify-storage-agent.xml` à côté de
+       `WinSW.exe`, renommé `homespotify-storage-agent.exe` ;
+    3. renseigner `<serviceaccount>` et créer `agent.env` avec des ACL
+       restreintes (voir plus bas) ;
+    4. `homespotify-storage-agent.exe install` puis `start`.
+
+  Décisions de sécurité figées ici :
+    - JAMAIS LocalSystem ni un compte administrateur ;
+    - démarrage automatique DIFFÉRÉ : le tunnel WireGuard et le volume musical
+      doivent être disponibles avant l'agent ;
+    - répertoire de travail explicite : aucune dépendance au CWD hérité ;
+    - secret et racine musicale lus depuis un fichier d'environnement protégé,
+      jamais depuis cette configuration (qui, elle, peut être versionnée) ;
+    - redémarrage automatique BORNÉ : un agent qui boucle doit s'arrêter et
+      être vu, pas se relancer indéfiniment ;
+    - arrêt gracieux : SIGINT logique puis délai avant terminaison forcée.
+-->
+<service>
+  <id>homespotify-storage-agent</id>
+  <name>HomeSpotify Storage Agent</name>
+  <description>Sert les fichiers audio locaux au VPS HomeSpotify via WireGuard (lecture seule).</description>
+
+  <!-- Node installé pour la machine, jamais un chemin utilisateur. -->
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>dist\main.js</arguments>
+
+  <!-- Répertoire de travail EXPLICITE : racine du workspace compilé. -->
+  <workingdirectory>F:\dev\homespotify\services\storage-agent</workingdirectory>
+
+  <!--
+    Compte dédié non privilégié. À renseigner en Phase 3.
+    `allowservicelogon` accorde le droit « Ouvrir une session en tant que
+    service » sans aucun autre privilège.
+  -->
+  <serviceaccount>
+    <username>.\HomeSpotifySA</username>
+    <password>__A_RENSEIGNER_EN_PHASE_3__</password>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <!-- Démarrage automatique différé : après le réseau et les volumes. -->
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <depend>Tcpip</depend>
+
+  <!--
+    Variables d'environnement lues depuis un fichier PROTÉGÉ, hors dépôt.
+    ACL attendues : SYSTEM + Administrateurs + HomeSpotifySA en lecture seule.
+    Contenu attendu (une variable par ligne) :
+      STORAGE_AGENT_HOST=10.8.0.2
+      STORAGE_AGENT_PORT=3100
+      STORAGE_AGENT_MUSIC_ROOT=...
+      STORAGE_AGENT_INDEX_PATH=...
+      STORAGE_AGENT_SHARED_SECRET=...
+      STORAGE_AGENT_ALLOWED_REMOTE_IP=10.8.0.1
+  -->
+  <envFile>C:\ProgramData\HomeSpotify\storage-agent\agent.env</envFile>
+  <env name="NODE_ENV" value="production" />
+
+  <!-- Logs rotatifs bornés : 8 fichiers de 16 Mo maximum. -->
+  <log mode="roll-by-size">
+    <logpath>C:\ProgramData\HomeSpotify\storage-agent\logs</logpath>
+    <sizeThreshold>16384</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <!--
+    Redémarrage automatique BORNÉ : deux tentatives espacées, puis arrêt
+    définitif. Un agent en boucle de crash doit devenir visible.
+  -->
+  <onfailure action="restart" delay="15 sec" />
+  <onfailure action="restart" delay="120 sec" />
+  <onfailure action="none" />
+  <resetfailure>1 hour</resetfailure>
+
+  <!-- Arrêt gracieux : les flux en cours ont le temps de se terminer. -->
+  <stoptimeout>30 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <priority>Normal</priority>
+</service>

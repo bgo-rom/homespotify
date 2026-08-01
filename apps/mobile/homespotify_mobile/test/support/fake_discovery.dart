@@ -1,20 +1,17 @@
 import 'package:homespotify_mobile/src/features/discovery/data/discovery_api.dart';
 import 'package:homespotify_mobile/src/features/discovery/domain/discovery_models.dart';
 
-/// Fake en mémoire du dépôt découverte/demandes pour les tests widgets.
+/// Fake en mémoire du dépôt découverte pour les tests widgets.
 class FakeDiscoveryRepository implements DiscoveryRepository {
   FakeDiscoveryRepository({
     List<RecommendationCandidate> recommendations = const [],
-    List<MusicRequest> requests = const [],
     this.pageSize = 15,
     this.fetchDelay,
     this.statusRefreshing = false,
     this.refreshingPolls = 0,
-  }) : recommendations = List.of(recommendations),
-       requests = List.of(requests);
+  }) : recommendations = List.of(recommendations);
 
   List<RecommendationCandidate> recommendations;
-  List<MusicRequest> requests;
   final int pageSize;
 
   /// Latence artificielle du fetch (test des skeletons).
@@ -26,17 +23,11 @@ class FakeDiscoveryRepository implements DiscoveryRepository {
   final int refreshingPolls;
 
   final List<(int, RecommendationSwipeAction)> actions = [];
-  final List<int> createdRequests = [];
-  final List<MusicRequestDraft> customRequests = [];
-  final List<int> cancelledRequests = [];
   int refreshCount = 0;
   int fetchCount = 0;
 
   /// Nombre d'appels à `fetchStatus` (vérifie l'arrêt du sondage au terminal).
   int statusCalls = 0;
-
-  /// Si non null, la prochaine création de demande échoue avec ce code.
-  DiscoveryApiException? nextCreateError;
 
   /// Si non null, la prochaine action de swipe échoue (test de rollback).
   DiscoveryApiException? nextActionError;
@@ -91,62 +82,5 @@ class FakeDiscoveryRepository implements DiscoveryRepository {
       throw error;
     }
     actions.add((candidateId, action));
-  }
-
-  @override
-  Future<MusicRequest> createRequest(int candidateId) async {
-    final error = nextCreateError;
-    if (error != null) {
-      nextCreateError = null;
-      throw error;
-    }
-    createdRequests.add(candidateId);
-    final request = MusicRequest(
-      id: 100 + createdRequests.length,
-      candidateId: candidateId,
-      title: 'Titre $candidateId',
-      artist: 'Artiste',
-      status: MusicRequestStatus.sent,
-    );
-    requests = [request, ...requests];
-    return request;
-  }
-
-  @override
-  Future<MusicRequest> createCustomRequest(MusicRequestDraft draft) async {
-    customRequests.add(draft);
-    final request = MusicRequest(
-      id: 200 + customRequests.length,
-      candidateId: 0,
-      title: draft.title,
-      artist: draft.artist ?? '',
-      album: draft.album,
-      requestType: draft.requestType,
-      status: MusicRequestStatus.sent,
-      requestedItemCount: draft.items.length,
-    );
-    requests = [request, ...requests];
-    return request;
-  }
-
-  @override
-  Future<List<MusicRequest>> fetchRequests() async => List.of(requests);
-
-  @override
-  Future<MusicRequest> cancelRequest(int requestId) async {
-    cancelledRequests.add(requestId);
-    final existing = requests.firstWhere((r) => r.id == requestId);
-    final updated = MusicRequest(
-      id: existing.id,
-      candidateId: existing.candidateId,
-      title: existing.title,
-      artist: existing.artist,
-      album: existing.album,
-      artworkUrl: existing.artworkUrl,
-      status: MusicRequestStatus.cancelled,
-      ownerNote: existing.ownerNote,
-    );
-    requests = [for (final r in requests) r.id == requestId ? updated : r];
-    return updated;
   }
 }

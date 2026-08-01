@@ -288,6 +288,49 @@ void main() {
     expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
   });
 
+  testWidgets(
+    'appui sur le nom de l’artiste : ouvre la même fiche que le menu',
+    (tester) async {
+      final router = await pumpPlayer(tester);
+
+      // Le nom sous le titre est un raccourci, comme sur les apps du marché.
+      expect(find.byKey(const ValueKey('player-artist-link')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('player-artist-link')));
+      await tester.pumpAndSettle();
+
+      expect(
+        router.state.uri.path,
+        artistDetailPath(artistKeyForName('Justice')),
+      );
+      expect(find.text('EN LECTURE'), findsNothing);
+      // La lecture n'est pas interrompue par la navigation.
+      expect(find.byIcon(Icons.pause_rounded), findsOneWidget);
+    },
+  );
+
+  testWidgets('le raccourci artiste est accessible aux lecteurs d’écran', (
+    tester,
+  ) async {
+    await pumpPlayer(tester);
+    final handle = tester.ensureSemantics();
+
+    expect(
+      tester.getSemantics(find.byKey(const ValueKey('player-artist-link'))),
+      matchesSemantics(
+        // Le nom de l'artiste n'est PAS répété : le label du Text enfant est
+        // exclu, sinon le lecteur d'écran annonce « ... Justice / Justice ».
+        label: 'Voir la page de Justice',
+        isButton: true,
+        isFocusable: true,
+        hasTapAction: true,
+        hasFocusAction: true,
+      ),
+    );
+
+    handle.dispose();
+  });
+
   testWidgets('Voir les albums artiste ouvre la section pertinente', (
     tester,
   ) async {

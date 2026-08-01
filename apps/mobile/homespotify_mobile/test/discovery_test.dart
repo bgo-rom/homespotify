@@ -8,11 +8,13 @@ import 'package:homespotify_mobile/src/features/discovery/domain/discovery_model
 import 'package:homespotify_mobile/src/features/discovery/presentation/discover_deck_controller.dart';
 import 'package:homespotify_mobile/src/features/discovery/presentation/discover_screen.dart';
 import 'package:homespotify_mobile/src/features/discovery/presentation/discovery_preview_controller.dart';
-import 'package:homespotify_mobile/src/features/discovery/presentation/music_requests_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/fake_audio_player.dart';
+import 'package:homespotify_mobile/src/features/remote_download/data/remote_download_api.dart';
+
 import 'support/fake_discovery.dart';
+import 'support/fake_remote_download.dart';
 
 RecommendationCandidate candidate(
   int id, {
@@ -32,20 +34,23 @@ RecommendationCandidate candidate(
   );
 }
 
-MusicRequest request(int id, MusicRequestStatus status, {String? ownerNote}) {
-  return MusicRequest(
-    id: id,
-    candidateId: id,
-    title: 'Titre $id',
-    artist: 'Artiste $id',
-    status: status,
-    ownerNote: ownerNote,
-  );
-}
 
-Widget wrap(FakeDiscoveryRepository fake, Widget child) {
+
+/// Dépôt de téléchargement du dernier `wrap` : les tests y lisent ce qui a
+/// réellement été envoyé au moteur (aucune demande n'existe plus).
+late FakeRemoteDownloadRepository lastDownloads;
+
+Widget wrap(
+  FakeDiscoveryRepository fake,
+  Widget child, {
+  FakeRemoteDownloadRepository? downloads,
+}) {
+  lastDownloads = downloads ?? FakeRemoteDownloadRepository();
   return ProviderScope(
-    overrides: [discoveryApiProvider.overrideWithValue(fake)],
+    overrides: [
+      discoveryApiProvider.overrideWithValue(fake),
+      remoteDownloadApiProvider.overrideWithValue(lastDownloads),
+    ],
     child: MaterialApp(home: child),
   );
 }
@@ -68,6 +73,7 @@ pumpDiscoverRouted(
   final container = ProviderContainer(
     overrides: [
       discoveryApiProvider.overrideWithValue(fake),
+      remoteDownloadApiProvider.overrideWithValue(FakeRemoteDownloadRepository()),
       discoveryPreviewPlayerFactoryProvider.overrideWithValue(() => player),
     ],
   );
@@ -94,50 +100,13 @@ pumpDiscoverRouted(
   return (navKey, container, player);
 }
 
-/// Route factice « obscurcissante » (simule /requests, /player, etc.).
+/// Route factice « obscurcissante » (simule /catalog-search, /player, etc.).
 Route<void> _coveringRoute([String label = 'Cover']) => MaterialPageRoute<void>(
   settings: RouteSettings(name: '/$label'),
   builder: (_) => Scaffold(body: Text(label)),
 );
 
 void main() {
-  group('MusicRequestStatus', () {
-    test('mappe les statuts backend vers des libellés métier lisibles', () {
-      expect(MusicRequestStatus.fromWire('SENT').label, 'Demande envoyée');
-      expect(
-        MusicRequestStatus.fromWire('REVIEWING').label,
-        'En cours de traitement',
-      );
-      expect(
-        MusicRequestStatus.fromWire('SEARCHING_MANUALLY').label,
-        'En cours de traitement',
-      );
-      expect(
-        MusicRequestStatus.fromWire('PARTIALLY_COMPLETED').label,
-        'Ajout partiel',
-      );
-      expect(
-        MusicRequestStatus.fromWire('COMPLETED').label,
-        'Ajoutée à votre bibliothèque',
-      );
-      expect(
-        MusicRequestStatus.fromWire('inconnu-du-futur').label,
-        'Statut inconnu',
-      );
-    });
-
-    test('annulable uniquement avant import/complétion', () {
-      expect(MusicRequestStatus.sent.isCancellable, isTrue);
-      expect(MusicRequestStatus.reviewing.isCancellable, isTrue);
-      expect(MusicRequestStatus.approved.isCancellable, isTrue);
-      expect(MusicRequestStatus.searchingManually.isCancellable, isTrue);
-      expect(MusicRequestStatus.importing.isCancellable, isFalse);
-      expect(MusicRequestStatus.completed.isCancellable, isFalse);
-      expect(MusicRequestStatus.cancelled.isCancellable, isFalse);
-      expect(MusicRequestStatus.rejected.isCancellable, isFalse);
-    });
-  });
-
   group('RecommendationPage', () {
     test('parse items, curseur et reasonCode', () {
       final page = RecommendationPage.fromJson({
@@ -199,28 +168,28 @@ void main() {
       expect(find.text('Titre 1'), findsOneWidget);
     });
 
-    testWidgets('bouton demande : dialogue de confirmation puis envoi', (
+    testWidgets('bouton installer : confirmation puis installation directe', (
       tester,
     ) async {
       final fake = FakeDiscoveryRepository(recommendations: [candidate(1)]);
       await tester.pumpWidget(wrap(fake, const DiscoverScreen()));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Envoyer une demande'));
+      await tester.tap(find.byTooltip('Installer ce titre'));
       await tester.pumpAndSettle();
-      expect(find.text('Envoyer une demande ?'), findsOneWidget);
+      expect(find.text('Installer ce titre ?'), findsOneWidget);
       // Refus : rien n'est envoyé, la carte reste.
       await tester.tap(find.text('Annuler'));
       await tester.pumpAndSettle();
-      expect(fake.createdRequests, isEmpty);
+      expect(lastDownloads.calls, isEmpty);
       expect(find.text('Titre 1'), findsOneWidget);
 
-      // Acceptation : demande créée, carte retirée.
-      await tester.tap(find.byTooltip('Envoyer une demande'));
+      // Acceptation : job de téléchargement créé, carte retirée.
+      await tester.tap(find.byTooltip('Installer ce titre'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Envoyer la demande'));
+      await tester.tap(find.text('Installer'));
       await tester.pumpAndSettle();
-      expect(fake.createdRequests, [1]);
+      expect(lastDownloads.calls.single.title, 'Titre 1');
       expect(find.text('Titre 1'), findsNothing);
     });
 
@@ -232,43 +201,50 @@ void main() {
       await tester.pumpWidget(wrap(fake, const DiscoverScreen()));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Envoyer une demande'));
+      await tester.tap(find.byTooltip('Installer ce titre'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Envoyer la demande'));
+      await tester.tap(find.text('Installer'));
       await tester.pump(); // ferme le dialogue + résout l'appel
       await tester.pump(const Duration(milliseconds: 300)); // overlay en cours
 
       // Overlay premium visible ; l'ancienne SnackBar blanche a disparu.
-      expect(find.text('Demande envoyée'), findsOneWidget);
+      expect(find.text('Installation lancée'), findsOneWidget);
       expect(find.text('Titre 1 — Artiste 1'), findsOneWidget);
-      expect(find.textContaining('Demande envoyée pour'), findsNothing);
-      expect(fake.createdRequests, [1]);
+      expect(find.textContaining('Installation lancée pour'), findsNothing);
+      expect(lastDownloads.calls.single.title, 'Titre 1');
 
       // Fin de l'animation → l'overlay se retire tout seul (aucune fuite).
       await tester.pumpAndSettle();
-      expect(find.text('Demande envoyée'), findsNothing);
+      expect(find.text('Installation lancée'), findsNothing);
       expect(find.text('Titre 2'), findsOneWidget);
     });
 
-    testWidgets('demande échouée : rollback visuel + SnackBar, AUCUN overlay '
+    testWidgets('installation refusée : rollback visuel + SnackBar, AUCUN overlay '
         'de succès', (tester) async {
       final fake = FakeDiscoveryRepository(recommendations: [candidate(1)]);
-      fake.nextCreateError = const DiscoveryApiException(
-        'Serveur indisponible.',
+      final downloads = FakeRemoteDownloadRepository(
+        failWith: const RemoteDownloadException(
+          'Serveur indisponible.',
+          statusCode: 500,
+        ),
       );
-      await tester.pumpWidget(wrap(fake, const DiscoverScreen()));
+      await tester.pumpWidget(
+        wrap(fake, const DiscoverScreen(), downloads: downloads),
+      );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Envoyer une demande'));
+      await tester.tap(find.byTooltip('Installer ce titre'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Envoyer la demande'));
+      await tester.tap(find.text('Installer'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('Demande envoyée'), findsNothing);
+      expect(find.text('Installation lancée'), findsNothing);
       expect(find.text('Titre 1'), findsOneWidget); // rollback : carte en place
       expect(find.text('Serveur indisponible.'), findsOneWidget);
-      expect(fake.createdRequests, isEmpty);
+      // L'appel est bien parti au moteur : c'est le serveur qui a refusé, et
+      // aucune demande n'a été créée en repli.
+      expect(lastDownloads.calls, hasLength(1));
       await tester.pumpAndSettle();
     });
 
@@ -288,6 +264,9 @@ void main() {
             discoveryPreviewPlayerFactoryProvider.overrideWithValue(
               () => player,
             ),
+            remoteDownloadApiProvider.overrideWithValue(
+              FakeRemoteDownloadRepository(),
+            ),
           ],
           child: const MaterialApp(home: DiscoverScreen()),
         ),
@@ -301,20 +280,20 @@ void main() {
       expect(player.loadedUrls, ['https://p.example/1.m4a']);
       final stopsBefore = player.stopCalls;
 
-      await tester.tap(find.byTooltip('Envoyer une demande'));
+      await tester.tap(find.byTooltip('Installer ce titre'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Envoyer la demande'));
+      await tester.tap(find.text('Installer'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
 
       // Extrait coupé, overlay visible, la carte 2 n'a PAS encore démarré.
       expect(player.stopCalls, greaterThan(stopsBefore));
-      expect(find.text('Demande envoyée'), findsOneWidget);
+      expect(find.text('Installation lancée'), findsOneWidget);
       expect(player.loadedUrls, ['https://p.example/1.m4a']);
 
       // Fin de l'overlay (retrait auto) → l'autoplay de la carte 2 est réarmé.
       await tester.pumpAndSettle();
-      expect(find.text('Demande envoyée'), findsNothing);
+      expect(find.text('Installation lancée'), findsNothing);
       // Le délai d'autoplay écoulé sur la carte stable → son extrait démarre.
       await tester.pump(
         kPreviewAutoplayDelay + const Duration(milliseconds: 80),
@@ -449,7 +428,7 @@ void main() {
       await tester.tap(find.byTooltip('Passer'));
       await tester.pumpAndSettle();
       expect(fake.actions, contains((1, RecommendationSwipeAction.skip)));
-      expect(fake.createdRequests, isEmpty);
+      expect(lastDownloads.calls, isEmpty);
       expect(find.text('Titre 2'), findsOneWidget);
     });
 
@@ -511,7 +490,7 @@ void main() {
         final stopsBefore = player.stopCalls;
 
         // Une route couvre Découvrir → didPushNext.
-        navKey.currentState!.push(_coveringRoute('requests'));
+        navKey.currentState!.push(_coveringRoute('catalog-search'));
         await tester.pumpAndSettle();
 
         expect(tester.takeException(), isNull); // zéro assertion Riverpod
@@ -529,7 +508,7 @@ void main() {
       );
       expect(player.loadedUrls, ['https://p.example/1.m4a']);
 
-      navKey.currentState!.push(_coveringRoute('requests'));
+      navKey.currentState!.push(_coveringRoute('catalog-search'));
       await tester.pumpAndSettle();
       expect(player.playing, isFalse);
 
@@ -695,89 +674,6 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump();
       expect(player.playing, isFalse);
-    });
-  });
-
-  group('MusicRequestsScreen', () {
-    testWidgets('affiche les statuts métier lisibles et la note du OWNER', (
-      tester,
-    ) async {
-      final fake = FakeDiscoveryRepository(
-        requests: [
-          request(1, MusicRequestStatus.sent),
-          request(
-            2,
-            MusicRequestStatus.reviewing,
-            ownerNote: 'Je cherche le CD',
-          ),
-          request(3, MusicRequestStatus.completed),
-          request(4, MusicRequestStatus.rejected),
-        ],
-      );
-      await tester.pumpWidget(wrap(fake, const MusicRequestsScreen()));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Demande envoyée'), findsOneWidget);
-      expect(find.text('En cours de traitement'), findsOneWidget);
-      expect(find.text('Ajoutée à votre bibliothèque'), findsOneWidget);
-      expect(find.text('Demande refusée'), findsOneWidget);
-      expect(find.textContaining('Recherche manuelle'), findsNothing);
-      expect(
-        find.text('Note du propriétaire : Je cherche le CD'),
-        findsOneWidget,
-      );
-    });
-
-    testWidgets('annulation : uniquement avant import, avec confirmation', (
-      tester,
-    ) async {
-      final fake = FakeDiscoveryRepository(
-        requests: [
-          request(1, MusicRequestStatus.sent),
-          request(2, MusicRequestStatus.importing),
-        ],
-      );
-      await tester.pumpWidget(wrap(fake, const MusicRequestsScreen()));
-      await tester.pumpAndSettle();
-
-      // Une seule demande annulable → un seul bouton d'annulation.
-      expect(find.byTooltip('Annuler la demande'), findsOneWidget);
-
-      await tester.tap(find.byTooltip('Annuler la demande'));
-      await tester.pumpAndSettle();
-      expect(find.text('Annuler la demande ?'), findsOneWidget);
-      await tester.tap(find.widgetWithText(FilledButton, 'Annuler la demande'));
-      await tester.pumpAndSettle();
-
-      expect(fake.cancelledRequests, [1]);
-      expect(find.text('Demande annulée'), findsOneWidget);
-    });
-
-    testWidgets('le formulaire propose TRACK, ALBUM et PLAYLIST', (
-      tester,
-    ) async {
-      final fake = FakeDiscoveryRepository();
-      await tester.pumpWidget(wrap(fake, const MusicRequestsScreen()));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.text('Nouvelle demande'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byType(DropdownButtonFormField<MusicRequestType>));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Morceau'), findsWidgets);
-      expect(find.text('Album'), findsWidgets);
-      expect(find.text('Playlist'), findsOneWidget);
-      expect(find.textContaining('traitement manuel'), findsNothing);
-    });
-
-    testWidgets('liste vide : message d\'invitation vers Découvrir', (
-      tester,
-    ) async {
-      final fake = FakeDiscoveryRepository();
-      await tester.pumpWidget(wrap(fake, const MusicRequestsScreen()));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('Aucune demande'), findsOneWidget);
     });
   });
 

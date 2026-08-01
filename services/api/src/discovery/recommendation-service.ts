@@ -1,7 +1,6 @@
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { DbHandle } from '../db/client.js';
 import {
-  musicRequests,
   recommendationCandidates,
   recommendationEvents,
   recommendationImpressions,
@@ -137,18 +136,6 @@ export function buildExcludedCandidateIds(handle: DbHandle, userId: number): Set
     if (action === 'DISLIKE') excluded.add(candidateId);
   }
 
-  // Demande active ou aboutie : ne plus proposer.
-  const requestRows = db
-    .select({ candidateId: musicRequests.candidateId, status: musicRequests.status })
-    .from(musicRequests)
-    .where(eq(musicRequests.requestedByUserId, userId))
-    .all();
-  for (const row of requestRows) {
-    if (row.status !== 'CANCELLED' && row.status !== 'REJECTED' && row.status !== 'FAILED') {
-      excluded.add(row.candidateId);
-    }
-  }
-
   return excluded;
 }
 
@@ -183,16 +170,6 @@ export function buildExcludedTrackKeys(handle: DbHandle, userId: number): Set<st
   }
   for (const [key, action] of verdicts) if (action === 'DISLIKE') keys.add(key);
 
-  const requested = handle.db
-    .select({ title: recommendationCandidates.title, artist: recommendationCandidates.artist })
-    .from(musicRequests)
-    .innerJoin(
-      recommendationCandidates,
-      eq(recommendationCandidates.id, musicRequests.candidateId),
-    )
-    .where(eq(musicRequests.requestedByUserId, userId))
-    .all();
-  for (const row of requested) keys.add(`${normalizeKey(row.title)}|${normalizeKey(row.artist)}`);
   return keys;
 }
 

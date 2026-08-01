@@ -35,7 +35,8 @@ void main() {
     );
     expect(find.text('Administration'), findsOneWidget);
     expect(find.text('Tableau de bord'), findsOneWidget);
-    expect(find.text('Demandes musicales'), findsOneWidget);
+    // Le système de demandes musicales n'existe plus, à aucun rôle.
+    expect(find.text('Demandes musicales'), findsNothing);
     expect(find.text('Diagnostics recommandations'), findsOneWidget);
     expect(find.text('OWNER'), findsOneWidget);
   });

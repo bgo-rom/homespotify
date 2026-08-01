@@ -88,16 +88,85 @@ Registre des décisions techniques. Toute nouvelle décision ou changement passe
   Acoustic restent distincts. Deezer est désactivable sans dégrader les secours.
   Choisir un résultat crée exclusivement une `music_request` existante avec
   anti-doublon ; aucune recherche ne déclenche un import ou un téléchargement.
-- **TD-Remote-Acquisition-Removed (définitive)** : la ligne historique
-  « Récupération depuis un nœud privé » du registre est **remplacée**. Les
-  routes/services/configurations fetch-node et Lucida, ainsi que les écrans
-  `/node-fetch` et `/remote-search`, sont supprimés. Seuls l'inbox locale, son
-  watcher et l'association OWNER d'un fichier à une demande sont conservés.
-- **TD-Spotify-Request-Link (définitive)** : la fiche OWNER d'une demande peut
-  résoudre son URL Spotify exacte via le provider Web API officiel existant.
-  Les credentials restent exclusivement côté serveur. Sans accès Spotify
-  configuré, le backend retourne une recherche `open.spotify.com` préremplie :
-  aucune API privée, aucun scraping et aucune fausse correspondance « exacte ».
+TD-Remote-Acquisition-Removed — ~~définitive~~ RÉVOQUÉE le 2026-07-25
+par TD-Remote-Acquisition-Providers (voir § Décisions du 2026-07-25). Texte
+historique conservé pour traçabilité : la ligne « Récupération depuis un nœud
+privé » du registre était remplacée ; les routes/services/configurations
+fetch-node, Lucida, monochrome.tf et doubledouble.top, ainsi que les écrans /node-fetch et /remote-search,
+étaient supprimés ; seuls l'inbox locale, son watcher et l'association OWNER
+d'un fichier à une demande étaient conservés. Motif de la révocation : la
+décision avait été prise faute de solution d'acquisition viable ; le runner
+NDJSON sécurisé livré en 2026-07-25 lève cette contrainte. La partie
+fetch-node reste supprimée : la révocation ne concerne que les fournisseurs Lucida, monochrome.tf et doubledouble.top.
+
+TD-Spotify-Request-Link (définitive) : la fiche OWNER d'une demande peut
+résoudre son URL Spotify exacte via le provider Web API officiel existant.
+Les credentials restent exclusivement côté serveur. Sans accès Spotify
+configuré, le backend retourne une recherche open.spotify.com préremplie :
+aucune API privée, aucun scraping et aucune fausse correspondance « exacte ».
+
+## Décisions du 2026-07-25
+
+- TD-Remote-Acquisition-Providers (définitive, décision du propriétaire) :
+révoque TD-Remote-Acquisition-Removed pour les volets Lucida, monochrome.tf et doubledouble.top.
+L'acquisition distante redevient une fonctionnalité du projet, sous la forme
+livrée sur feature/multi-provider-import et à ces conditions, toutes obligatoires.
+
+  **Frontière.** Le script Python `tools/spotify-auth-spoof/lucida_dl_final.py`
+  est la seule porte de sortie réseau de l'acquisition. Le backend ne relaie
+  aucune URL distante, n'ouvre aucun flux tiers et ne sert jamais de proxy de
+  téléchargement : l'interdiction correspondante de `CLAUDE.md` reste entière.
+  La partie **fetch-node reste supprimée** et n'est pas réintroduite.
+
+  **Protocole.** Échange exclusivement en NDJSON sur `stdout` (`--json`,
+  `emit_event`, `ensure_ascii=False`, flush par événement) ; `stderr` reste
+  humain et n'est jamais exposé au client. Événements : `stage`,
+  `search_result`, `selected`, `progress`, `retry`, `success`, `error`.
+
+  **Runner.** `services/api/src/import/lucida-process-runner.ts` : `spawn`
+  uniquement, `shell: false`, arguments en tableau, `windowsHide`, chemin du
+  script et dossier de sortie imposés côté serveur, longueur de query bornée,
+  timeout global configurable (10–1800 s), `AbortSignal`, kill SIGTERM puis
+  SIGKILL. L'environnement de l'enfant est construit par **allowlist** — aucune
+  variable du serveur n'est héritée par défaut. Le fichier annoncé par
+  `success` est revalidé côté Node : chemin absolu confiné à la racine
+  d'import, refus de tout lien symbolique sur chaque composant, extension
+  `.flac`/`.wav`, fichier réel non vide, `realpath` recontrôlé.
+
+  **Persistance.** Table `acquisition_jobs` (distincte de `import_jobs`, qu'elle
+  ne remplace jamais) : 13 statuts `QUEUED → SEARCHING → SELECTING →
+  OPENING_RESULT → VERIFYING → DOWNLOADING → RETRYING → DOWNLOADED → IMPORTING
+  → COMPLETED`, plus `FAILED`, `CANCELLED`, `INTERRUPTED`. Contraintes CHECK sur
+  provider, statut, progression 0–100, index de résultat, durée et tentatives ;
+  index unique partiel de déduplication des jobs actifs. Provider autorisé
+  unique : **QOBUZ**.
+
+  **Autorité d'import inchangée.** Un job `COMPLETED` signifie que la piste est
+  réellement en bibliothèque : la finalisation délègue à
+  `UserImportService.processInboxFile`, qui reste l'unique autorité de hash,
+  d'analyse qualité et de déduplication. Aucun second scanner, aucune insertion
+  Drizzle directe depuis l'acquisition.
+
+  **API.** `POST /api/imports/search`, `POST|GET /api/imports/jobs`,
+  `GET|DELETE /api/imports/jobs/:id`, toutes authentifiées et filtrées par
+  `userId`. Aucun chemin absolu, aucune commande, aucun `stderr` brut et aucune
+  trace de pile ne sortent par l'API. Un seul téléchargement actif à la fois,
+  file FIFO ; les recherches restent concurrentes.
+
+  **Configuration.** `LUCIDA_SCRIPT_PATH` (absent ou vide ⇒ fonctionnalité
+  entièrement désactivée), `LUCIDA_PYTHON_PATH`, `LUCIDA_PROCESS_TIMEOUT_SECONDS`,
+  `PLAYWRIGHT_BROWSERS_PATH`. Chemins absolus recommandés sous service Windows.
+
+  **Usage.** Réservé au contenu que le propriétaire est autorisé à récupérer.
+  Aucun contournement de DRM, aucun secret tiers extrait d'un client, aucun
+  cookie de contournement : les conclusions C de l'audit SpotiFLAC (2026-07-12,
+  réaffirmées 2026-07-22) restent valides et ne sont pas révoquées par cette
+  décision.
+
+  **À vérifier.** (1) Aucune exécution réelle de bout en bout n'est encore
+  tracée : `tools/smoke/lucida-acquisition-smoke.ps1` existe mais son résultat
+  n'est pas consigné — la fonctionnalité n'est donc **pas qualifiée production**.
+  (2) Aucun client Flutter : l'acquisition n'est accessible qu'en HTTP direct.
 
 ## Raisons des choix
 
@@ -357,6 +426,287 @@ tag, d’un nom de fichier ou d’une extension.
 Statut : implémenté et testé automatiquement ; validation perceptive sur
 téléphone, Bluetooth et changement de vitesse encore requise avant production.
 
+## TD-Storage-Agent-Phase2-2026-07-26 — Agent de stockage Windows, minimal et authentifié
+
+Le Storage Agent (`services/storage-agent`, `@homespotify/storage-agent`) est le
+composant qui servira les octets audio du PC Windows au VPS. Il est
+volontairement **minimal** : Fastify et la bibliothèque standard de Node sont ses
+seules dépendances de production. Ni Drizzle, ni SQLite, ni authentification
+utilisateur, ni Discovery, playlists, favoris, historique, acquisition,
+administration, ni aucune logique métier de l'API principale. Cette frontière
+est la décision structurante : l'agent est petit pour pouvoir être relu ligne à
+ligne, car c'est le seul composant HomeSpotify qui aura un port ouvert sur une
+interface réseau du PC personnel.
+
+**Aucun chemin n'entre par le réseau.** Le VPS envoie un identifiant numérique de
+piste ; l'agent le traduit par un index local versionné
+(`{version:1, generatedAt, entries:{"<id>":{relativePath}}}`) validé par schéma
+strict. Une seule entrée dangereuse — vide, absolue Windows, absolue Unix, UNC,
+contenant `..`, ou de clé non canonique — invalide l'index entier. L'index est
+produit par un CLI **en lecture seule** de l'API principale
+(`pnpm --filter @homespotify/api storage-index:export`) : SQLite ouvert en
+`readonly`, aucun fichier audio ouvert ni modifié, écriture dans un temporaire
+puis `rename` atomique, résumé sans aucun chemin. Il n'existe **aucun** endpoint
+d'écriture d'index : l'agent ne peut pas se faire modifier son index par le
+réseau. La synchronisation automatique VPS → PC est explicitement hors périmètre
+de la Phase 2.
+
+**Trois barrières indépendantes** : WireGuard, puis filtrage strict de l'IP
+source lue sur `socket.remoteAddress` (jamais `X-Forwarded-For`, jamais de CIDR,
+forme IPv4-mapped IPv6 réduite sans élargir la plage), puis HMAC-SHA256 daté avec
+anti-rejeu. Chaîne canonique
+`METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nNONCE\nCONTENT_SHA256`, query string
+incluse, corps de requête refusé, fenêtre ±60 s configurable, nonce ≥128 bits à
+usage unique, cache borné à purge amortie, comparaison par `timingSafeEqual`
+après validation de taille. Le nonce n'entre dans le cache qu'**après**
+validation de la signature, sinon un tiers sans secret pourrait le saturer.
+
+**Trois routes, aucune autre** : `GET /internal/storage/health`,
+`HEAD` et `GET /internal/storage/tracks/:trackId`. Toutes authentifiées, y
+compris le health check. Une route inconnue renvoie le même 404 qu'une piste
+inconnue : un scan ne distingue pas les deux.
+
+**Décisions tranchées et documentées.** (1) La saturation de concurrence renvoie
+**503 + `Retry-After`**, pas 429 : la limite protège une ressource serveur, elle
+ne sanctionne pas un client — l'unique client légitime est le VPS. (2) Un agent
+**sans index valide est `unhealthy` (503)**, pas `degraded` : il ne peut servir
+aucune piste. Une racine musicale momentanément absente avec un index valide
+reste `degraded` (200), car réversible sans intervention. (3) Le multi-range est
+refusé en servant la représentation complète en 200 — comportement déjà celui de
+l'API publique, aucun `multipart/byteranges` n'existe dans HomeSpotify.
+
+**Confinement des chemins.** `path-safety.ts` est un portage autonome des
+primitives de la Phase 1 (`toPortableRelativePath`, `resolvePath`) plutôt qu'un
+import : importer le module de l'API traînerait Drizzle et better-sqlite3 dans
+l'agent, et un package partagé ajouterait un troisième workspace TypeScript pour
+~80 lignes de logique figée. La contrepartie est explicite et testée :
+`path-safety.test.ts` rejoue le même jeu de cas que `audio-storage.test.ts`.
+
+**Défauts sûrs.** `HOST=127.0.0.1` ; `0.0.0.0`, `::` et `*` sont refusés y
+compris explicitement ; `PORT=3100` ; 8 flux GET simultanés ; secret obligatoire
+hors test, 32 caractères minimum, jamais journalisé ni exposé. HEAD et `/health`
+ne consomment aucun emplacement de streaming, et HEAD n'ouvre jamais de
+`ReadStream`.
+
+Statut : implémenté, 147 tests verts, typecheck et build verts. **Non déployé.**
+Le bind `10.8.0.2`, le compte Windows dédié, l'installation WinSW (modèle inerte
+préparé dans `services/storage-agent/winsw/`) et le remplacement de la règle
+Windows générique Node.js relèvent de la Phase 3 — cf. L-088 et
+`docs/VPS_PHASE2_STORAGE_AGENT.md`.
+
+---
+
+### TD-Phase3-Storage-Agent-Deployment — déploiement Windows du Storage Agent (2026-07-26)
+
+**Artefact de production : copie contrôlée, pas `pnpm deploy`.** `pnpm deploy --prod`
+est **écarté définitivement** pour ce service. pnpm 10 le refuse sans
+`inject-workspace-packages=true` (qui modifierait la configuration du monorepo
+entier) ou `--legacy`, et surtout l'arborescence produite est liée par **liens
+durs au store pnpm global de l'utilisateur interactif** : un service tournant
+sous une identité dédiée casserait si ce profil ou ce store étaient purgés.
+Méthode retenue : `dist` + `package.json` de production réduit + `node_modules`
+reconstruit par `npm install --omit=dev`, qui copie réellement les fichiers.
+Le script `scripts/deploy_storage_agent.ps1` échoue si un seul lien symbolique
+ou une seule jonction subsiste dans `node_modules`. Publication par
+`robocopy /MIR`, qui purge les résidus d'une publication antérieure.
+
+**Identité de service : compte virtuel `NT SERVICE\HomeSpotifyStorageAgent`.**
+Le compte local dédié `HomeSpotifySA` envisagé en Phase 2 est **abandonné**.
+Un compte virtuel n'a **aucun mot de passe** : Windows le matérialise à partir
+du SID de service. Il n'y a donc ni secret à générer, ni à stocker, ni à faire
+tourner, ni à faire fuiter. WinSW 2.12 ne sait pas le déclarer dans son XML :
+la séquence retenue est `winsw install` (LocalSystem transitoire) puis
+`sc.exe sidtype … unrestricted` et `sc.exe config … obj= "NT SERVICE\…" password= ""`,
+avec vérification programmatique de `Win32_Service.StartName` avant tout
+démarrage. Le XML du service ne contient ni `<serviceaccount>` ni `<password>`,
+ce qui est contrôlé avant installation.
+
+**`STORAGE_AGENT_ENV_FILE` plutôt que `<envFile>`.** WinSW 2.12 est la version
+installée, et `envFile` est un apport de WinSW v3 — WinSW v2 ignore
+silencieusement les éléments inconnus, donc l'erreur ne se verrait qu'au
+démarrage du service. Plutôt que d'installer une seconde version de WinSW,
+`main.ts` lit `process.env.STORAGE_AGENT_ENV_FILE ?? '.env'`. Cette variable ne
+transporte qu'un **chemin** : elle peut figurer dans le XML versionné. Le secret
+reste dans le seul `config\agent.env`, héritage ACL rompu, restreint à SYSTEM,
+Administrateurs et l'identité du service.
+
+**Le domaine public sert de preuve transitive du chemin VPS → PC.** Caddy sert
+`https://music.romainbegot.fr` en proxy vers `10.8.0.2:3000` à travers
+WireGuard. Un 200 sur ce domaine, mesuré **depuis le PC**, prouve donc que le
+chemin VPS → WireGuard → backend Windows fonctionne, sans accès SSH au VPS.
+C'est ce contrôle qui sert de test d'acceptation à la désactivation de la règle
+de pare-feu générique Node.js, avec réactivation automatique en cas d'échec
+(`scripts/firewall_transition_generic_node.ps1`). Aucun équivalent n'existe pour
+le port 3100 : rien ne le proxifie, sa règle reste donc à valider depuis le VPS.
+
+**Règles de pare-feu restreintes par programme, pas par service.** WinSW lance
+`node.exe` en processus enfant ; une restriction `-Service` ne serait pas
+fiable. Les deux règles Phase 3 sont donc TCP / port unique / `LocalAddress`
+`10.8.0.2` / `RemoteAddress` `10.8.0.1` / profil Public / programme
+`C:\Program Files\nodejs\node.exe`. La règle préexistante
+`HomeSpotify API via WireGuard` couvrait déjà le port 3000 depuis `10.8.0.1`
+uniquement : le port 3000 ne dépend pas de la règle générique pour rester
+joignable par le VPS.
+
+Statut : **Phase 3 partielle**. Artefact, index de production (158/158), secret,
+ACL du secret, XML WinSW, bind `10.8.0.2:3100` prouvé, filtrage d'IP source
+prouvé, chaîne HMAC prouvée (23/23) et procédure de rafraîchissement d'index
+exécutée. Installation du service, ACL de service et règles de pare-feu
+**écrites mais non exécutées** : le compte de session n'est pas administrateur.
+Tests depuis le VPS non exécutés : pas d'accès SSH. Voir
+`docs/VPS_PHASE3_STORAGE_AGENT_DEPLOYMENT.md` et L-092 à L-095.
+
+**Phase 3 close en GO le 2026-07-26.** Service `HomeSpotifyStorageAgent`
+installé et démarré sous `NT SERVICE\HomeSpotifyStorageAgent`, lié à
+`10.8.0.2:3100` uniquement, index de 158 pistes chargé. Smoke test HMAC
+**23/23 depuis le VPS**, latence moyenne 43,8 ms, empreinte de secret
+concordante. Les deux règles de pare-feu génériques `Node.js JavaScript
+Runtime` sont **désactivées**, remplacées par deux règles précises
+(TCP 3000 et 3100, local `10.8.0.2`, distant `10.8.0.1`, profil Public,
+programme `node.exe`). `HomeSpotifyApi` a conservé le PID 16948 de bout en
+bout, Caddy et WireGuard sont inchangés, `AUDIO_STORAGE_MODE` reste `local`.
+Deux corrections notables : identité de service posée par `sc.exe config obj=`
+**sans argument `password`** (L-096), dépendance au tunnel WireGuard posée par
+`sc.exe config depend=` puis relue dans le registre car WinSW 2.12 ignore un
+`<depend>` contenant `$` (L-097). Détail complet dans
+`docs/VPS_PHASE3_STORAGE_AGENT_DEPLOYMENT.md` §18.
+
+---
+
+### TD-Phase4-Remote-Storage-Provider — décisions de conception (2026-07-26, implémenté)
+
+Plan : `docs/VPS_PHASE4_REMOTE_STORAGE_PROVIDER_PLAN.md`. Compte rendu :
+`docs/VPS_PHASE4_REMOTE_STORAGE_PROVIDER.md`.
+**Implémentation terminée. `AUDIO_STORAGE_MODE` reste `local`.**
+
+**Adressage par `trackId`, jamais par chemin.** Le Storage Agent n'expose
+délibérément aucune route prenant un chemin : son index **est** la liste
+d'autorisation. Le `relativePath` de `TrackStorageReference` n'est donc pas
+utilisé par le provider distant. Contrepartie assumée : deux résolutions
+`trackId → chemin` coexistent, celle de la base et celle de l'index, et
+peuvent diverger. Un `404 TRACK_NOT_INDEXED` sur une piste présente en base
+est journalisé comme **index périmé**, pas comme fichier manquant.
+
+**`stat()` interroge l'agent ; `tracks.sizeBytes` n'est qu'un contrôle
+croisé.** Se fier à la taille en base économiserait un aller-retour de ~44 ms
+mais ferait répondre 200 avec un `Content-Length` faux sur un fichier
+remplacé ou tronqué — une corruption visible seulement chez le client. Le
+`HEAD` fait autorité ; un écart avec la base est journalisé en `warn`. Le coût
+de l'aller-retour est l'objet de la Phase 5, pas d'une supposition.
+
+**Aucune reprise automatique en Phase 4.** Réessayer un
+`503 STREAM_LIMIT_REACHED` ajoute de la charge au moment exact où la ressource
+sature. Pour les erreurs réseau, la raison est autre : leur fréquence sur ce
+lien est inconnue, et une reprise masquerait le signal qu'on cherche à
+mesurer. Question rouverte en Phase 5, avec des chiffres.
+
+**`STORAGE_BUSY` ajouté à `AudioStorageErrorCode`.** « PC éteint » et « huit
+flux en cours » produisent tous deux un 503 mais appellent des réactions
+opposées. Les confondre sous `STORAGE_OFFLINE` rendrait les journaux
+inexploitables et le futur cache incapable de décider.
+
+**Un 401 de l'agent devient un 503 public, un 416 devient un 500.** Un échec
+d'authentification entre le backend et l'agent est une panne
+d'infrastructure : le répercuter en 401 déconnecterait l'auditeur. Un 416
+alors que le Range vient d'être calculé à partir d'un `stat()` signifie que
+les deux extrémités ne voient pas le même fichier — un défaut interne, pas une
+requête client invalide.
+
+**Correction du mapping d'erreurs de `serveTrackFile`.** La route convertit
+aujourd'hui *toute* erreur de `stat()` en 404 : correct sur disque local, faux
+dès que le stockage est distant, où un PC éteint deviendrait « fichier
+introuvable ». Sans effet en mode `local`, `LocalFileStorageProvider`
+n'émettant ni `STORAGE_OFFLINE` ni `STORAGE_BUSY` — vérifié par test.
+
+**Client HMAC porté, pas partagé.** Même arbitrage qu'en Phase 2 pour
+`path-safety.ts` : un package partagé ajouterait un workspace pour ~80 lignes
+figées, et un import direct créerait une dépendance backend → agent, à
+contresens. Contrepartie vérifiable : un fichier de **vecteurs de test
+partagé** rejoué par les deux implémentations, de sorte qu'une divergence
+casse les deux suites au lieu de dériver jusqu'à un 401 en production.
+
+**`offlineVariantStorage` reste local sans condition.** Les dérivées hors
+ligne sont régénérables et vivent sur la machine qui exécute l'API ; elles ne
+figurent pas dans l'index de l'agent. `createAudioStorageProvider` ne doit
+jamais leur être appliqué — un test le verrouille.
+
+**`STORAGE_AGENT_BASE_URL` restreinte aux IP privées.** Le backend ne doit pas
+pouvoir être pointé vers une origine arbitraire par une variable
+d'environnement ; c'est la règle d'allowlist de `CLAUDE.md` appliquée au sens
+sortant.
+
+**Décisions finales d'implémentation.** Les variables publiques sont préfixées
+`AUDIO_REMOTE_*`, et le pool garde 8 connexions par défaut, alignées sur les
+huit flux de l'agent. Le transport repose sur `node:http.Agent` keep-alive :
+aucune dépendance ajoutée, aucun retry implicite, délais séparés connexion /
+headers / inactivité du corps. Le flux `IncomingMessage` traverse un Transform
+de garde qui préserve la backpressure, vérifie le nombre exact d'octets et
+détruit l'amont dès l'abandon public.
+
+**HEAD public ne crée plus de flux.** `serveTrackFile` s'arrête après `stat` et
+le parsing Range, puis écrit directement les en-têtes afin de préserver le vrai
+`Content-Length`. Cette correction vaut également en local et conserve les
+en-têtes et statuts existants.
+
+**Une erreur HEAD a besoin d'un code en en-tête.** Le corps d'un HEAD est vide ;
+les deux 404 internes `TRACK_NOT_INDEXED` et `FILE_NOT_FOUND` seraient sinon
+indiscernables. Le contrat agent gagne `X-HS-Error-Code`, additif et sans donnée
+sensible. Un agent ancien sans cet en-tête est traité conservativement comme
+index périmé (503), jamais comme suppression certaine.
+
+**Mapping final.** Index périmé, indisponibilité, timeout et saturation → 503 ;
+fichier réellement absent → 404 ; auth HMAC/IP interne ou réponse incohérente
+→ 502, jamais 401 public. `cached` reste une erreur explicite Phase 5 et
+`offlineVariantStorage` reste toujours local.
+
+### TD-Phase45-Real-Remote-Qualification — qualification réelle close en GO (2026-07-26)
+
+**GO — PHASE 4.5 VALIDÉE DÉFINITIVEMENT.** L'agent Windows coordonné et
+`RemoteWindowsStorageProvider` ont été testés depuis une API VPS parallèle
+liée uniquement à `127.0.0.1`. Le smoke agent est vert à 23/23 et le provider
+réel à 36 contrôles réussis, zéro échec et trois skips volontaires documentés.
+
+Le contrat réel couvre HMAC, HEAD, GET complet, Range, keep-alive, backpressure,
+abandon, saturation et mappings publics 404/416/502/503, sans 401 interne
+exposé. `X-HS-Error-Code` est validé. Un contrôle ciblé supplémentaire a
+retrouvé dès la première tentative le requestId public exact dans un événement
+`STORAGE_AGENT_REQUEST_COMPLETED` HEAD 200 du journal agent ; la réponse
+publique seule n'est donc pas utilisée comme preuve de propagation.
+
+Mesures de référence : health agent 37,1 ms en moyenne ; TTFB HEAD 54,0 ms,
+Range 52,2 ms et GET complet 49,6 ms ; débit 28,895 Mio/s pour 9 165 881
+octets ; RSS API supplémentaire d'environ 1 052 Kio ; mémoire agent maximale
+61,7 Mio ; `activeStreams=0` après abandon. Le contrôle requestId ciblé a eu un
+TTFB de 86,4 ms.
+
+Cette qualification n'autorise aucune bascule implicite. La production reste
+sur HomeSpotifyApi Windows avec `AUDIO_STORAGE_MODE` absent/local ; Caddy,
+WireGuard et le pare-feu sont inchangés. La Phase 5 devra rester un lot séparé
+et concevoir un cache décorateur borné, révocable et compatible avec toutes les
+garanties du provider distant.
+
+### TD-Phase5-Audio-Cache — cache décorateur local au VPS (2026-07-26)
+
+**Implémenté localement, activation de production interdite.** Le cache décore
+le provider distant et utilise le SHA-256 brut `tracks.hash` comme identité de
+version et contrôle de promotion. L'index SQLite du cache est séparé de SQLite
+applicatif ; un objet est écrit en `.part`, validé taille+hash, synchronisé puis
+renommé atomiquement.
+
+Un GET complet MISS remplit en streaming ; HEAD et Range MISS ne remplissent
+jamais. Une Range ou un GET HIT fonctionne sans contacter Windows. Le
+single-flight autorise un seul writer par hash ; les concurrents bypassent vers
+le distant au lieu d'attendre ou de lire un fichier partiel. Une panne cache
+non critique ne casse pas un flux distant valide.
+
+L'éviction est LRU, bornée par limite logique et espace libre, avec protection
+des lectures et remplissages actifs. La production reste `local`. Le GO Phase 5
+reste conditionné à la validation VPS parallèle et à son cleanup.
+
+> **Condition levée le 2026-07-27** : la validation VPS parallèle et son
+> cleanup sont exécutés et verts. Voir
+> `TD-Phase5-Real-Cache-Qualification` ci-dessous. La production reste `local`.
+
 ### TD-Phase5-Real-Cache-Qualification — qualification réelle close en GO (2026-07-27)
 
 **GO FINAL — PHASE 5 VALIDÉE DÉFINITIVEMENT.** `CachedAudioStorageProvider` a
@@ -394,3 +744,296 @@ irréversible — ici l'arrêt du Storage Agent, refusé sans laissez-passer.
 Windows avec `AUDIO_STORAGE_MODE` absent/local ; Caddy, WireGuard et le
 pare-feu sont inchangés. La Phase 6 est un lot séparé, en déploiement shadow,
 sans exposition publique.
+
+### TD-HS-IMPORT-15-Provider-Circuit — indisponibilité Lucida persistante et reprise manuelle (2026-07-29)
+
+**Décision :** l'indisponibilité du fournisseur est un état métier persistant,
+pas un échec générique d'un job. `provider_health` porte la machine globale
+`CLOSED → OPEN → HALF_OPEN`, tandis que `acquisition_jobs` porte
+`PAUSED_PROVIDER`. Un challenge ouvre immédiatement ; un 429 respecte
+`Retry-After` ; les 5xx ouvrent au seuil borné. Aucun délai écoulé ne déclenche
+une reprise : seule une action utilisateur réserve atomiquement une probe.
+
+Le succès réel jusqu'à `DOWNLOADED` ferme le circuit. L'annulation libère la
+probe sans conclure à la santé du fournisseur. Les jobs `DOWNLOADED` ou
+`IMPORTING` restent sous l'autorité de `UserImportService` et ne sont jamais
+bloqués par le circuit.
+
+La détection Python produit uniquement un événement NDJSON public sûr. Le
+backend ne persiste ni HTML, ni cookies, ni en-têtes Cloudflare, ni `stderr`,
+ni URL technique. Le client réutilise le polling global de la file et le
+pipeline multipart historique pour le repli WAV/FLAC.
+
+**Limite de sécurité :** aucun CAPTCHA solver, token de clearance, stealth,
+spoofing, proxy rotatif, changement d'IP ou mécanisme de contournement n'est
+autorisé. Le shadow VPS conserve `LUCIDA_*` absent.
+
+### TD-HS-IMPORT-15-Manual-File-Selector — sélecteur natif officiel (2026-07-29)
+
+**Décision :** le repli WAV/FLAC utilise `file_selector` et non `file_picker`.
+La version stable de `file_picker` résolue lors de HS-IMPORT-15 ne compilait
+pas ses sources Kotlin sous AGP 9.0.1, bien que son registrant Android soit
+généré. `file_selector_android` prend explicitement en charge le Kotlin intégré
+d'AGP 9.
+
+Le sélecteur retourne un modèle interne minimal (`nom`, `chemin`) afin que le
+pipeline d'upload et ses tests ne dépendent pas d'un type propre au plugin.
+Le fichier reste envoyé en flux multipart vers `/api/tracks` et passe par le
+pipeline d'import existant.
+
+### TD-HS-IMPORT-16-Interactive-Verification — validation humaine séparée du service (2026-07-30)
+
+**Décision :** lorsque la configuration l'autorise, un challenge Lucida
+devient l'état persistant global et par job
+`MANUAL_VERIFICATION_REQUIRED`, sans cooldown fictif. Le service Windows reste
+headless et ne lance jamais de navigateur visible. Un helper PowerShell lancé
+par l'utilisateur connecté réserve le job déjà identifié, démarre le script
+avec `--visible --interactive-verification`, puis signale un résultat métier
+borné par une route authentifiée.
+
+Dans cet état, `reasonCode` reste `PROVIDER_CHALLENGE`, `retryAt` et
+`openedAt` sont nuls, `failureCount` n'est pas incrémenté et le holder manuel
+est distinct de la probe `HALF_OPEN`. Les nouvelles demandes restent `QUEUED`
+et aucun runner headless ne démarre avant la libération du holder. Au boot,
+une transaction idempotente convertit uniquement l'ancien couple
+`OPEN`/`PROVIDER_CHALLENGE` et ses jobs `PAUSED_PROVIDER` associés. Le cooldown
+historique reste réservé au mode interactif désactivé.
+
+L'attente Playwright est strictement passive : aucun clic, remplissage,
+rechargement, changement d'en-tête, export de cookie ou résolution
+automatique. Deux observations consécutives du formulaire normal sur le
+domaine attendu sont nécessaires. Le fichier produit revient ensuite dans
+`UserImportService`; seul un import réel `IMPORTED` ou `REUSED` ferme le
+circuit. Ownership, unicité du holder et état terminal assurent
+respectivement l'isolation, l'exclusion globale et l'anti-rejeu.
+
+Le shadow VPS reste sans variable `LUCIDA_*`.
+
+### TD-HS-IMPORT-16B-Manual-State-Invariant — état manuel atomique et réparable (2026-07-30)
+
+**Décision :** `provider_health.state = MANUAL_VERIFICATION_REQUIRED` implique
+un `manual_verification_job_id` non nul qui référence un job non terminal avec
+`status = MANUAL_VERIFICATION_REQUIRED` et
+`stage = waiting_user_verification`. La détection interactive du challenge
+écrit le fournisseur et le job dans une seule transaction SQLite, puis renvoie
+un résultat métier non terminal explicite que le worker ne peut pas convertir
+en échec générique.
+
+Un état manuel ne satisfaisant pas cet invariant est réparé vers `CLOSED` au
+démarrage et avant sa publication par l'API. La réparation ne crée aucun job et
+préserve l'historique `FAILED`, `COMPLETED` et `CANCELLED`.
+
+### TD-HS-IMPORT-17-Monochrome-Manual-Fallback — secours visible sans téléchargement automatisé (2026-07-30)
+
+**Décision :** Lucida reste toujours premier. Les seuls codes autorisant le
+passage logique au secours sont `LUCIDA_ERROR`, `PROVIDER_INVALID_RESPONSE`,
+`PROVIDER_UNAVAILABLE`, `PROVIDER_HTTP_ERROR` et `SEARCH_FAILED`, à condition
+que titre et artiste exacts soient déjà connus. Challenge, 429 avant
+`retryAt`, annulation, argument/métadonnées invalides, rejet local et job
+`IMPORTING|COMPLETED` n'autorisent jamais ce passage.
+
+Le job devient `WAITING_MANUAL_DOWNLOAD`, stage `waiting_manual_download`,
+`provider_used=MONOCHROME_MANUAL`, sans `completed_at` ni `track_id`. Un holder
+SQLite global `monochrome_manual_sessions` garantit une seule fenêtre visible
+et l'anti-rejeu. Les routes du helper sont authentifiées, OWNER, isolées par
+`userId` et ne publient que la cible sûre et le délai ; aucun chemin serveur
+n'entre dans le contrat mobile.
+
+Le service Windows ne lance jamais Chromium visible. Le helper PowerShell
+explicite demande le Bearer en saisie masquée et ne le passe à aucun enfant.
+Le provider Playwright remplit la recherche normale, presse Entrée, exige
+titre et artiste exacts, compare album et durée lorsqu'ils existent, puis
+applique seulement un contour CSS local. Il ne clique sur aucun contrôle
+Download, n'observe aucune requête réseau, ne lit aucun cookie et n'appelle
+aucun endpoint privé.
+
+Le watcher prend un snapshot avant navigation et n'accepte que les nouveaux
+fichiers audio non temporaires, stables sur trois observations. `ffprobe`
+valide lisibilité, codec, durée et tags ; absence de tags impose une
+confirmation au lieu d'un import silencieux. Seuls WAV/FLAC conformes passent
+ensuite dans `UserImportService`. `COMPLETED` exige `IMPORTED|REUSED` et un
+`trackId` réel. `--dry-run-monochrome` conserve le fichier dans le diagnostic,
+sans import ni transition `COMPLETED`.
+
+**Limite :** sélecteurs et structure des résultats Monochrome sont qualifiés
+hors réseau par doubles Playwright. Un essai visible unique reste nécessaire
+avant qualification réelle ; il ne peut être lancé qu'après annonce explicite
+au propriétaire.
+
+### TD-Antra-Download-2026-08-01 — Antra devient le moteur de téléchargement principal
+
+**Décision :** le téléchargement de musique par URL passe par le moteur Antra
+(`tools/antra`), lancé par le backend. Les fournisseurs historiques Lucida,
+Monochrome et DoubleDouble ne sont plus lancés automatiquement : leur chaîne
+complète est placée derrière `ACQUISITION_LEGACY_ENABLED`, `false` par défaut.
+Aucun fichier n'est supprimé — la fonctionnalité d'acquisition par recherche
+texte reste intacte et redevient active en repassant le drapeau à `true`.
+
+**Point d'entrée : `antra.json_cli`, jamais `antra`.** La CLI humaine appelle
+`ensure_slskd(cfg)`, qui peut demander une configuration Soulseek interactive
+impossible à satisfaire sur un serveur, et n'émet aucun événement structuré. La
+JSON CLI n'appelle jamais `ensure_slskd` et écrit du NDJSON.
+`ANTRA_SLSKD_AUTO_BOOTSTRAP=true` fait échouer le démarrage : ce n'est pas une
+option, c'est un invariant.
+
+**Configuration par environnement, pas par fichier de config.** `antra.core.config`
+charge son `.env` avec `override=False` : l'environnement injecté par le backend
+gagne pour `OUTPUT_DIR`, `OUTPUT_FORMAT`, `SOURCE_PREFERENCES`, `FETCH_LYRICS`
+et les variables Soulseek. `ANTRA_API_KEY` est en revanche **activement
+supprimée** de l'environnement transmis : la clé Premium reste lue par le
+processus Python depuis `tools/antra/.env`, grâce au `cwd`. Elle ne transite
+jamais par le code HomeSpotify, n'est jamais journalisée et `premiumKeyConfigured`
+est un booléen strict, sans valeur, longueur ni préfixe.
+
+**Détection du fichier par staging dédié.** `emit_event` de `json_cli.py` ne
+recopie pas `EngineEvent.file_path` : le chemin final n'est pas disponible par
+événement. Chaque job écrit donc dans `<importRoot>/.antra/<jobId>`, dont
+l'inventaire est relevé avant lancement. Seuls les fichiers NOUVEAUX, non
+temporaires, d'extension autorisée, stables et réellement lisibles par
+`analyzeAudioFile` sont retenus ; un extrait d'environ 30 secondes est rejeté
+quand la durée attendue est nettement supérieure. `completed` exige un `trackId`
+réel, jamais le seul code de sortie du moteur.
+
+**Aucun second indexeur.** `download_jobs` suit le processus Python ;
+`import_jobs` reste créé et finalisé uniquement par `UserImportService`, qui
+apporte la déduplication existante (SHA-256, puis ISRC, puis titre + artiste +
+durée à ±5 s).
+
+**Découplage du vocabulaire moteur.** Toute la traduction NDJSON → événements
+HomeSpotify est concentrée dans `antra-event-adapter.ts`. Une mise à jour
+d'Antra qui renommerait ses événements n'impacte que ce fichier ; aucune autre
+couche ne dépend du texte humain, des emojis ni de la langue des logs.
+
+**Sécurité.** Allowlist stricte d'hôtes HTTPS (celle qu'Antra sait réellement
+résoudre ; `youtube.com` sans `music` en est absent car non géré). `shell: false`
+et URL passée en argument distinct : aucune valeur utilisateur ne traverse un
+shell. Amazon Music est listé par TLD explicite et non par motif générique.
+Annulation par `taskkill /PID <pid> /T /F` sur l'arbre de processus, sans jamais
+détruire un fichier audio complet. Routes authentifiées et cloisonnées par
+compte : un job inconnu et un job d'un autre compte répondent tous deux 404.
+
+**Limite :** le moteur n'a pas été validé sur un téléchargement réel depuis le
+backend au moment de l'écriture. La chaîne complète est couverte hors réseau
+par des doubles (faux processus, faux moteur, fixtures FLAC) ; un essai réel
+unique reste nécessaire avant qualification production.
+
+### TD-Antra-Search-2026-08-01 — Recherche texte résolue en URL candidates
+
+**Décision :** l'utilisateur recherche « Guala Lifestyles » ; HomeSpotify résout
+ce texte en URL avant d'appeler Antra, qui ne sait pas rechercher. Aucun
+provider externe n'est ajouté : la résolution réutilise `DiscoveryCatalogService`
+(Deezer et iTunes sans clé, Spotify avec les credentials déjà configurés,
+MusicBrainz pour les identifiants canoniques).
+
+**Trois abstractions distinctes**, parce que trois questions distinctes :
+`TrackSearchProvider` (où chercher), `TrackCandidateResolver` (quelle PISTE), et
+`DownloadCandidateOrchestrator` (quelle URL essayer, et faut-il enchaîner). Se
+tromper de piste produit un import faux et durable ; se tromper d'URL ne coûte
+qu'une tentative — ces deux risques ne se traitent pas au même endroit.
+
+**Scoring :** ISRC identique = 100 ; un ISRC connu et différent = 0, ce qui
+disqualifie plutôt que de dégrader. En texte libre, des tokens sont exigés dans
+le titre ET dans l'artiste : c'est ce qui écarte les homonymes ne partageant
+qu'un mot. Durée, album et préférence studio (remix/live/instrumental pénalisés
+sauf demande explicite) affinent ensuite. Sous le seuil, ou à égalité entre deux
+pistes distinctes, **aucun téléchargement n'est lancé** : la liste part vers
+Flutter pour un choix manuel.
+
+**`sourceRank` fondé sur le code d'Antra**, pas sur une intuition : une URL
+Spotify n'applique aucun `source_intent` et laisse la chaîne de résolution
+complète ; Qobuz et Apple appliquent `prefer_hires` ; Tidal, Deezer et Amazon
+appliquent `exclusive` et échouent dès que leur unique adaptateur est
+indisponible. L'ordre d'essai suit donc spotify > qobuz > apple > tidal >
+deezer > amazon.
+
+**Repli :** un dossier de staging par tentative, jamais deux fois la même URL,
+délai global respecté, annulation vérifiée entre chaque tentative. Une
+annulation utilisateur n'enchaîne JAMAIS sur le candidat suivant ; un échec du
+pipeline local non plus, sous peine de doublon. `download_jobs` conserve la
+requête, les candidats, l'ordre des tentatives et le code d'échec de chacune,
+sans aucun credential.
+
+**Validé en réel (2026-08-01)** sur « Guala Lifestyles » : 12 résultats
+catalogue, homonymes (TripleGo — Lifestyle, Beastie Boys — All Lifestyles)
+écartés, piste retenue avec ISRC QZTBF2599924 et confiance 90, trois candidats
+ordonnés. Repli réellement exercé : Spotify puis iTunes rejetés, Deezer
+importé. Un second lancement a été dédupliqué (`REUSED`, même `trackId`, aucune
+piste en double).
+
+**Limite constatée :** deux sources ont livré du FLAC **32 bits**, refusé par la
+politique d'ingestion du projet (16/24 bits — cf. `AUDIO_SOURCING.md`). Le repli
+a compensé, mais ces fichiers lossless plus profonds sont perdus au profit d'un
+16/44,1. Élargir `ALLOWED_FLAC_BIT_DEPTHS` est une décision d'ingestion qui
+appartient au propriétaire : elle n'a pas été prise ici.
+
+## Décisions du 2026-08-01 (soir)
+
+TD-Music-Requests-Removed (définitive, décision du propriétaire) : le système
+de **demandes musicales** est supprimé du produit. Aucun bouton ne crée de
+demande, aucun utilisateur n'attend de validation, aucune demande n'est envoyée
+au OWNER ni à un ADMIN.
+
+Supprimés : `services/api/src/routes/music-requests.ts`,
+`services/api/src/discovery/music-request-service.ts`, la route
+`GET /api/admin/music-requests/:id/spotify-link` (qui **révoque
+TD-Spotify-Request-Link**), la route `POST /api/admin/imports/:id/assign`, le
+rapprochement fichier ↔ demande de `UserImportService` (et avec lui le statut
+`WAITING_FOR_OWNER_MATCH` d'origine « demande » — celui de la déduplication
+ambiguë est conservé), les lectures de `music_requests` du moteur de
+recommandation, les actions d'audit `music_request.*` et l'action
+d'autorisation `music_request.review`, renommée `admin.review`.
+
+Côté Flutter : écrans `music_requests_screen`, `admin_music_requests_screen`,
+`request_from_catalog_sheet`, `catalog_artist_screen`, `catalog_album_screen`,
+les features `acquisition/**` et `remote_download/{application,presentation}`,
+ainsi que les routes `/requests`, `/admin/music-requests`,
+`/catalog-search/artists/…`, `/catalog-search/albums/…`, `/import-musique`,
+`/telecharger-un-lien` et `/file-installation`.
+
+**Conservé sans changement** : `download_jobs`, `DownloadService`,
+`DownloadCandidateOrchestrator`, `AntraDownloadProvider`, le SSE
+`/api/downloads/:id/events`, l'historique des tentatives, la déduplication et
+l'import par utilisateur. La file technique existe toujours ; elle n'a
+simplement plus de menu dédié.
+
+**Les tables `music_requests` / `music_request_items` restent dans le schéma**
+et ne sont plus jamais écrites : `user_imports` porte encore deux clés
+étrangères vers elles, et les supprimer imposerait une migration destructive
+sans bénéfice fonctionnel. À vérifier : les retirer lors d'une prochaine
+migration de nettoyage.
+
+TD-Single-Remote-Search (définitive) : il n'existe qu'**un seul** écran de
+recherche distante, `/catalog-search`, et il porte l'intégralité de
+l'installation musicale.
+
+- Un champ unique, aucun onglet : la recherche ne renvoie que des **pistes**
+  (`type=track` figé côté client), parce qu'un artiste ou un album n'offre
+  aucune action installable.
+- Chaque carte affiche pochette, titre, artiste, album, durée, catalogues
+  ayant identifié le morceau, un bouton d'aperçu et un bouton Installer.
+- L'aperçu lit la preview du résultat catalogue (jamais un fichier local), avec
+  lecture/pause sur le même bouton, arrêt de l'aperçu précédent, mention
+  explicite quand aucune preview n'existe, et **aucun job créé**.
+- Installer appelle directement `POST /api/downloads/search` avec l'identité
+  complète du résultat (`query`, `title`, `artist`, `album`, `isrc`,
+  `durationSeconds`). L'application ne fournit **jamais** d'URL.
+- Le suivi vit dans la carte, alimenté par le SSE existant : téléchargement →
+  repli → import → coche verte, ou icône Réessayer. Pendant un job actif le
+  bouton est `onPressed: null` : le double-clic est structurellement impossible.
+- Le job survit à la fermeture de l'écran ; au retour, `GET /api/downloads` le
+  rattache au résultat par identité normalisée `titre|artiste`.
+
+TD-Pinned-Track-Selection (définitive) : `POST /api/downloads/search` accepte
+désormais `album`, `isrc` (format ISRC strict, sinon 400) et `durationSeconds`
+(1..7200, sinon 400). Quand l'appelant fournit un **ISRC** ou le couple
+**titre + artiste**, la sélection est *épinglée* : le résolveur ne peut plus
+répondre `ambiguous`, la meilleure correspondance est téléchargée. Redemander
+un choix à ce stade réintroduirait exactement la validation que
+TD-Music-Requests-Removed supprime. Le texte libre seul conserve le
+comportement historique (`ambiguous` rendu à l'appelant).
+
+`publicDownloadJob` expose un booléen `reused`, dérivé de la nouvelle étape
+`stage = 'reused'` posée quand le pipeline local répond `REUSED`. C'est un
+**succès**, présenté comme « Ce titre est déjà présent dans votre
+bibliothèque. » — jamais comme un échec. Aucun champ nouveau n'expose de
+chemin, de PID ni de secret.

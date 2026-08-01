@@ -197,13 +197,14 @@ void main() {
     expect(find.text('7'), findsOneWidget);
   });
 
-  testWidgets('OWNER voit les demandes et imports, ADMIN et USER non', (
-    tester,
-  ) async {
+  testWidgets('OWNER voit les imports ; ADMIN et USER non ; plus aucune '
+      'entrée de demande musicale', (tester) async {
     await pumpSettings(tester, checker: _FakeChecker(), role: 'OWNER');
     await tester.scrollUntilVisible(find.text('Administration'), 200);
-    expect(find.text('Demandes musicales'), findsOneWidget);
     expect(find.text('Imports utilisateurs'), findsOneWidget);
+    // Le système de demandes musicales est supprimé : aucun rôle n'y accède.
+    expect(find.text('Demandes musicales'), findsNothing);
+    expect(find.text('Mes demandes'), findsNothing);
 
     for (final role in ['ADMIN', 'USER']) {
       await pumpSettings(tester, checker: _FakeChecker(), role: role);

@@ -94,8 +94,19 @@ void main() {
     expect(find.text('Camille'), findsOneWidget);
     expect(find.text('Accès rapides'), findsOneWidget);
     expect(find.text('Ajouts récents'), findsOneWidget);
-    expect(find.text('Favoris'), findsOneWidget);
-    expect(find.text('Playlists'), findsOneWidget);
-    expect(find.text('Freakin’ Out'), findsOneWidget);
+    // « Favoris » et « Playlists » apparaissent maintenant deux fois : dans les
+    // accès rapides ET comme titres de carrousel.
+    expect(find.text('Favoris'), findsWidgets);
+    expect(find.text('Playlists'), findsWidgets);
+    // Un même titre peut légitimement figurer dans plusieurs sections
+    // (catalogue récent, récemment ajoutés, favoris…).
+    expect(find.text('Freakin’ Out'), findsWidgets);
+
+    // Sections de la refonte, alimentées par la bibliothèque locale.
+    expect(find.byKey(const ValueKey('home-shuffle-library')), findsOneWidget);
+    expect(find.byKey(const ValueKey('home-recently-added')), findsOneWidget);
+    expect(find.byKey(const ValueKey('home-recommendations')), findsOneWidget);
+    // Rien à installer : la section reste absente, pas vide.
+    expect(find.byKey(const ValueKey('home-installations')), findsNothing);
   });
 }

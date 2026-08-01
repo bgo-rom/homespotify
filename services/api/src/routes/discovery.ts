@@ -11,8 +11,6 @@ import {
   userRecommendationQueue,
   userTracks,
   users,
-  musicRequests,
-  musicRequestItems,
 } from '../db/schema.js';
 import {
   getQueueStatus,
@@ -32,7 +30,6 @@ import {
   RESERVE_TARGET,
   type QueueRefreshDeps,
 } from '../discovery/recommendation-engine.js';
-import { reconcileMusicRequestStatus } from '../discovery/music-request-service.js';
 import { revokeTrack } from '../library/user-library-service.js';
 
 function badRequest(reply: FastifyReply, message: string): FastifyReply {
@@ -222,35 +219,6 @@ export function registerDiscoveryRoutes(
         metadata: { trackId },
       });
 
-      // Cohérence demandes : TRACK et items ALBUM/PLAYLIST de cet utilisateur
-      // pointant cette piste sont réconciliés depuis la visibilité user_tracks.
-      const linkedRequestIds = new Set(handle.db
-        .select({ id: musicRequests.id })
-        .from(musicRequests)
-        .where(
-          and(
-            eq(musicRequests.requestedByUserId, userId),
-            eq(musicRequests.resultingTrackId, trackId),
-          ),
-        )
-        .all()
-        .map((row) => row.id));
-      const linkedItems = handle.db
-        .select({ id: musicRequestItems.musicRequestId })
-        .from(musicRequestItems)
-        .innerJoin(musicRequests, eq(musicRequests.id, musicRequestItems.musicRequestId))
-        .where(
-          and(
-            eq(musicRequests.requestedByUserId, userId),
-            eq(musicRequestItems.resultingTrackId, trackId),
-          ),
-        )
-        .all();
-      for (const row of linkedItems) linkedRequestIds.add(row.id);
-      for (const requestId of linkedRequestIds) {
-        reconcileMusicRequestStatus(handle, requestId);
-      }
-
       // Le retrait pénalise le voisinage : la file doit être régénérée.
       triggerRefresh(userId);
 
@@ -262,7 +230,7 @@ export function registerDiscoveryRoutes(
 
   app.get(
     '/api/admin/recommendations/health',
-    { preHandler: guards.requireAdmin('music_request.review') },
+    { preHandler: guards.requireAdmin('admin.review') },
     async () => {
       const providerError = readProviderErrorStatus(handle);
       const candidateStats = handle.db
@@ -309,7 +277,7 @@ export function registerDiscoveryRoutes(
 
   app.get(
     '/api/admin/recommendations/metrics',
-    { preHandler: guards.requireAdmin('music_request.review') },
+    { preHandler: guards.requireAdmin('admin.review') },
     async () => {
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const actionRows = handle.db
@@ -339,7 +307,7 @@ export function registerDiscoveryRoutes(
   // d'édition manuelle du catalogue ici.
   app.get<{ Params: { userId: string } }>(
     '/api/admin/recommendations/profile/:userId',
-    { preHandler: guards.requireAdmin('music_request.review') },
+    { preHandler: guards.requireAdmin('admin.review') },
     async (request, reply) => {
       const userId = parsePositiveInt(request.params.userId);
       if (userId === null) return badRequest(reply, 'userId invalide.');
@@ -388,7 +356,7 @@ export function registerDiscoveryRoutes(
   // du temps de préparation restant. LECTURE SEULE.
   app.get<{ Params: { userId: string } }>(
     '/api/admin/recommendations/media-health/:userId',
-    { preHandler: guards.requireAdmin('music_request.review') },
+    { preHandler: guards.requireAdmin('admin.review') },
     async (request, reply) => {
       const userId = parsePositiveInt(request.params.userId);
       if (userId === null) return badRequest(reply, 'userId invalide.');
@@ -475,7 +443,7 @@ export function registerDiscoveryRoutes(
 
   app.post<{ Params: { userId: string } }>(
     '/api/admin/recommendations/refresh-user/:userId',
-    { preHandler: guards.requireAdmin('music_request.review') },
+    { preHandler: guards.requireAdmin('admin.review') },
     async (request, reply) => {
       const userId = parsePositiveInt(request.params.userId);
       if (userId === null) return badRequest(reply, 'userId invalide.');
@@ -493,7 +461,7 @@ export function registerDiscoveryRoutes(
   // Maintenance manuelle : régénère la file de tous les comptes actifs.
   app.post(
     '/api/admin/recommendations/maintenance',
-    { preHandler: guards.requireAdmin('music_request.review') },
+    { preHandler: guards.requireAdmin('admin.review') },
     async (request, reply) => {
       const activeUsers = handle.db
         .select({ id: users.id })

@@ -24,42 +24,6 @@ Document de référence pour toute fonctionnalité d'import. Règle d'or : **la 
 - **Lossy → lossless est impossible.** Convertir un lossy en WAV ou FLAC ne recrée aucune information ; cela ne fait que stocker un signal déjà dégradé dans un conteneur plus lourd. La seule conversion lossy autorisée est une dérivée Ogg/Opus hors connexion, créée depuis la source canonique lossless sans la remplacer ; elle est toujours affichée comme lossy avec son débit mesuré.
 - Qualité CD = PCM 16 bit / 44,1 kHz. Le Hi-Res (24 bit / 96+ kHz) est un bonus, pas un objectif.
 
-## Voie gratuite autorisée
-
-Sources légitimes pouvant fournir du vrai lossless ou du lossy assumé :
-
-1. **Fichiers déjà possédés** (achats passés, rips existants).
-2. **CD rippés** (CD possédés) : rip sécurisé → WAV PCM ou FLAC conforme = vraie qualité CD vérifiable.
-3. **Artistes/labels distribuant du WAV ou FLAC gratuit** (sites officiels, promos).
-4. **Bandcamp gratuit / name-your-price** : téléchargement WAV ou FLAC officiel si disponible, souvent à prix libre.
-5. **Musique libre** (Creative Commons) : Free Music Archive, Jamendo, ccMixter.
-6. **Archives autorisées** : Internet Archive (collections sous licence, ex. concerts autorisés), à convertir en WAV conforme avant import si le format fourni diffère.
-
-## Voie payante low-cost
-
-Par coût croissant, pour les titres introuvables gratuitement :
-
-1. **CD d'occasion à ripper** : souvent 1–5 €/album, vraie qualité CD, on possède le support.
-2. **Bandcamp payant** : WAV ou FLAC sans DRM si disponible, majorité du prix à l'artiste.
-3. **Qobuz Download (boutique)** : achat définitif sans DRM, à importer tel quel si WAV/FLAC conforme.
-4. Autres boutiques sans DRM : 7digital, HDtracks (catalogues et formats à vérifier).
-
-Critère d'achat : fichier **sans DRM**, téléchargeable, format annoncé et vérifiable après analyse ; l'import final dans HomeSpotify conserve le WAV PCM ou FLAC lossless accepté sans le modifier.
-
-## Limites des abonnements streaming
-
-- Spotify, Deezer, Apple Music, YouTube Music, Tidal, Qobuz (streaming) livrent des flux **chiffrés/DRM** liés à l'abonnement.
-- On n'y « possède » rien : la musique disparaît avec l'abonnement.
-- Leur mode hors ligne est interne à leur app, inutilisable par HomeSpotify.
-- Un abonnement lossless (Qobuz/Tidal) reste utile pour *écouter/découvrir*, pas pour *constituer* la bibliothèque.
-
-## Pourquoi ne pas contourner les DRM
-
-- **Légal** : le contournement de mesures techniques de protection est illégal dans la plupart des juridictions (dont l'UE), indépendamment de l'usage privé.
-- **Éthique** : les artistes ne sont pas rémunérés pour une copie extraite.
-- **Technique** : les flux extraits sont de toute façon lossy dans la plupart des cas, et les outils de contournement cassent régulièrement.
-- Position projet : **aucune fonctionnalité, doc ou dépendance liée au contournement DRM.**
-
 ## Workflow recommandé
 
 ```
@@ -110,5 +74,4 @@ Import (toutes voies)
 - [ ] Outil exact de détection de fake lossless : fiabilité de « Lossless Audio Checker », alternatives maintenues, ou implémentation maison via analyse spectrale ffmpeg.
 - [ ] Débits Opus/AAC réellement servis par YouTube en 2026 (les valeurs ~130–160 kbps datent des années précédentes).
 - [ ] Disponibilité et catalogue Qobuz Download / 7digital selon le pays de l'utilisateur.
-- [ ] Statut légal précis de la copie privée de CD possédés dans la juridiction de l'utilisateur (France : copie privée admise pour usage personnel, à confirmer pour le rip).
 - [ ] API MusicBrainz : limites de débit actuelles et politique d'usage pour un serveur personnel.

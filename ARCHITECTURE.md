@@ -25,7 +25,7 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 ## Base de données
 
 - **SQLite** (fichier unique, mode WAL), accès via Drizzle ORM.
-- Tables principales : `artists`, `albums`, `tracks`, `track_quality`, `playlists`, `playlist_tracks`, `users`, `user_tracks`, `music_requests`, `music_request_items`, `user_import_directories`, `import_jobs`, `devices`, `cache_state` (pistes hors ligne par appareil), `scan_log`.
+- Tables principales : `artists`, `albums`, `tracks`, `track_quality`, `playlists`, `playlist_tracks`, `users`, `user_tracks`, `download_jobs`, `user_import_directories`, `import_jobs`, `devices`, `cache_state` (pistes hors ligne par appareil), `scan_log`. Les tables `music_requests` / `music_request_items` subsistent dans le schéma mais ne sont plus jamais écrites (cf. `TD-Music-Requests-Removed`).
 - `tracks` stocke : chemin relatif, hash (BLAKE3 ou SHA-256 en flux), taille, durée, tags canoniques, IDs MusicBrainz.
 - `track_quality` stocke : codec, sample rate, bit depth, bitrate, canaux, statut (`lossless_verifie` / `lossless_probable` / `lossy` / `inconnue`), provenance, date d'analyse.
 
@@ -35,10 +35,34 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 - Correspondance dépôt ↔ runtime : les dossiers `storage/music`, `storage/imports`, `storage/covers`, `storage/cache` du projet servent de racines locales de dev et sont montés en volumes Docker sur `/data/music`, `/data/imports`, `/data/artwork`, `/data/cache`. `storage/cache/offline-opus` ne contient que des dérivées régénérables, jamais une source canonique. Leur contenu est ignoré par git (`.gitkeep` seulement).
 - Le serveur **ne modifie jamais** un fichier audio sans action explicite ; l'import copie puis normalise le nom.
 - Zone de staging `HOMESPOTIFY_IMPORT_ROOT` (`/data/imports` en Docker) : un dossier immuable par compte `<userId>_<username>`, avec `inbox`, `processed` et `rejected`. Au boot, seuls les dossiers manquants sont créés ; aucun fichier ni chemin `tracks.path` existant n'est déplacé.
-- Aucune acquisition distante : la recherche catalogue Deezer + iTunes +
-  MusicBrainz/Cover Art Archive ne manipule que métadonnées, images et extraits
-  officiels éphémères, puis crée des `music_requests`. L'ajout audio est
-  exclusivement manuel via l'inbox locale surveillée et l'association OWNER.
+- La recherche catalogue Deezer + iTunes + MusicBrainz/Cover Art Archive ne
+  manipule que métadonnées, images et extraits officiels éphémères. Choisir un
+  résultat lance directement un `download_job` : il n'existe plus ni demande,
+  ni validation humaine (`TD-Single-Remote-Search`).
+- Deux chemins d'ajout audio, un seul importeur. (1) Manuel : dépôt d'un fichier
+  dans l'inbox locale surveillée, association OWNER facultative. (2) Acquisition
+  distante par le runner Lucida (`TD-Remote-Acquisition-Lucida`) : le script
+  Python écrit dans l'inbox du compte, puis `UserImportService` reprend la main.
+  Le fichier déposé subit exactement le même pipeline dans les deux cas ; le
+  backend ne relaie aucune URL distante et ne sert jamais de proxy.
+  Lorsqu'un challenge exige une intervention humaine, le service headless
+  persiste `MANUAL_VERIFICATION_REQUIRED`; un helper utilisateur séparé peut
+  garder Chromium visible et observer passivement la fin de la vérification.
+  Cet état ne porte ni `retryAt`, ni `openedAt`, ni probe `HALF_OPEN`; les
+  autres jobs restent en file sans spawn headless. Aucun cookie ou profil
+  navigateur n'est transféré au service.
+  L'état global manuel référence obligatoirement un job actif ayant le même
+  état et le stage `waiting_user_verification`. Cette relation est écrite dans
+  la même transaction SQLite que la transition du job. Au démarrage et à la
+  lecture du statut public, toute référence absente, terminale ou incohérente
+  ferme le fournisseur sans réactiver ni modifier les anciens jobs.
+  Après un échec Lucida explicitement éligible, un second chemin peut placer le
+  job en `WAITING_MANUAL_DOWNLOAD`. Le service n'ouvre rien : le OWNER lance
+  `run_monochrome_fallback.ps1` dans sa session graphique. Le provider
+  Monochrome visible ne fait que rechercher, rapprocher strictement et
+  surligner ; l'action Download reste humaine. Un holder SQLite global borne la
+  fenêtre unique. Le fichier apparu après le snapshot est vérifié par ffprobe,
+  déplacé vers le staging du job, puis remis au même `UserImportService`.
 - Watcher d'import : WAV/FLAC seulement, taille+mtime stables, lecture des métadonnées sans réécriture, SHA-256 par flux, déduplication hash→ISRC→titre/artiste/durée. L'association automatique à une demande est confinée au même `userId` et exige un résultat unique à score élevé ; sinon le job attend une décision OWNER. L'accès bibliothèque créé est exclusivement `user_tracks(userId, trackId)` pour le propriétaire du dossier.
 - Pochettes et miniatures dans `/data/artwork`, nommées par ID d'album.
 - La base ne contient jamais d'audio : chemins + hashes uniquement.
@@ -168,10 +192,14 @@ Utilisateur → Upload/dépôt fichier → Staging → Analyse (ffprobe + spectr
 → Statut qualité + doublon check → Normalisation nom → /data/music
 → Métadonnées (tags + MusicBrainz) → Bibliothèque (SQLite) → Visible dans l'app
 
-DEMANDE
-App → Recherche catalogue Deezer/iTunes/MusicBrainz → Sélection d'un résultat
-→ `music_requests` (anti-doublon) → Dépôt manuel OWNER dans l'inbox
-→ Watcher local (hash + déduplication + import) → Réconciliation
+INSTALLATION (unique parcours)
+App → Recherche catalogue Deezer/iTunes/MusicBrainz → Sélection d'une PISTE
+→ `POST /api/downloads/search` (identité complète : titre, artiste, album,
+  ISRC, durée — jamais d'URL)
+→ Résolution serveur des URL candidates, ordonnées par `sourceRank`
+→ Antra (`ANTRA_SOURCE=auto`), repli automatique sur la source suivante
+→ Inbox du compte authentifié → `UserImportService` (hash + déduplication)
+→ Bibliothèque du compte, suivi temps réel par SSE `/api/downloads/:id/events`
 
 ÉCOUTE
 App mobile → Auth (JWT) → Parcourt bibliothèque (API paginée)

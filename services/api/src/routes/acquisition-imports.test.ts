@@ -35,6 +35,7 @@ import {
 import type {
   LucidaSearchRunner,
 } from './acquisition-imports.js';
+import { ProviderHealthRepository } from '../import/provider-health-repository.js';
 
 class BlockingDownloadRunner implements AcquisitionRunner {
   readonly calls: LucidaDownloadRunRequest[] = [];
@@ -138,6 +139,15 @@ beforeEach(async () => {
       scriptPath,
       pythonPath: 'python-test',
       processTimeoutMs: 300_000,
+      maxConcurrentDownloads: 3,
+      challengeCooldownSeconds: 1_800,
+      rateLimitDefaultCooldownSeconds: 900,
+      unavailableCooldownSeconds: 600,
+      maxCooldownSeconds: 21_600,
+      providerFailureWindowSeconds: 600,
+      providerFailureThreshold: 2,
+      interactiveVerificationEnabled: true,
+      interactiveVerificationTimeoutSeconds: 120,
     },
   };
 
@@ -560,5 +570,210 @@ describe('routes d’acquisition authentifiées', () => {
       .where(eq(acquisitionJobs.id, id))
       .get();
     expect(persisted?.status).toBe('FAILED');
+  });
+
+  it('protège provider-status par authentification et expose un contrat sûr', async () => {
+    const anonymous = await app.inject({
+      method: 'GET',
+      url: '/api/imports/provider-status',
+    });
+    expect(anonymous.statusCode).toBe(401);
+
+    new ProviderHealthRepository(app.dbHandle, {
+      challengeCooldownSeconds: 1_800,
+      rateLimitDefaultCooldownSeconds: 900,
+      unavailableCooldownSeconds: 600,
+      maxCooldownSeconds: 21_600,
+      providerFailureWindowSeconds: 600,
+      providerFailureThreshold: 2,
+    }).recordFailure('PROVIDER_CHALLENGE');
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/imports/provider-status',
+      headers: auth(listenerToken),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      provider: 'Lucida',
+      state: 'OPEN',
+      available: false,
+      reasonCode: 'PROVIDER_CHALLENGE',
+      message: 'Le service est temporairement en pause.',
+      manualRetryAllowed: false,
+    });
+    expect(response.body).not.toMatch(
+      /stderr|cookie|cf-mitigated|https?:\/\/|[A-Z]:\\/i,
+    );
+
+    app.dbHandle.sqlite.pragma('ignore_check_constraints = ON');
+    app.dbHandle.sqlite
+      .prepare(
+        `UPDATE provider_health
+         SET state = 'MANUAL_VERIFICATION_REQUIRED',
+             reason_code = 'PROVIDER_CHALLENGE',
+             retry_at = NULL,
+             manual_verification_job_id = NULL,
+             manual_verification_holder_job_id = NULL
+         WHERE provider = 'LUCIDA'`,
+      )
+      .run();
+    app.dbHandle.sqlite.pragma('ignore_check_constraints = OFF');
+    const repaired = await app.inject({
+      method: 'GET',
+      url: '/api/imports/provider-status',
+      headers: auth(listenerToken),
+    });
+    expect(repaired.json()).toMatchObject({
+      state: 'CLOSED',
+      available: true,
+      reasonCode: null,
+      manualVerificationRequired: false,
+      manualVerificationJobId: null,
+    });
+  });
+
+  it('crée un job PAUSED_PROVIDER sans spawn quand le circuit est OPEN', async () => {
+    new ProviderHealthRepository(app.dbHandle, {
+      challengeCooldownSeconds: 1_800,
+      rateLimitDefaultCooldownSeconds: 900,
+      unavailableCooldownSeconds: 600,
+      maxCooldownSeconds: 21_600,
+      providerFailureWindowSeconds: 600,
+      providerFailureThreshold: 2,
+    }).recordFailure('PROVIDER_CHALLENGE');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/imports/jobs',
+      headers: auth(listenerToken),
+      payload: {
+        query: 'Luther Creeper',
+        resultIndex: 0,
+        service: 'Qobuz',
+      },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().item.status).toBe('PAUSED_PROVIDER');
+    expect(downloadRunner.calls).toHaveLength(0);
+  });
+
+  it('contrôle le contexte et le résultat du helper sans donnée sensible', async () => {
+    const now = new Date().toISOString();
+    const jobId = randomUUID();
+    app.dbHandle.db
+      .insert(acquisitionJobs)
+      .values({
+        id: jobId,
+        userId: listenerId,
+        provider: 'QOBUZ',
+        query: 'Vérification helper',
+        dedupeKey: `QOBUZ:0:helper-${randomUUID()}`,
+        resultIndex: 0,
+        status: 'MANUAL_VERIFICATION_REQUIRED',
+        stage: 'waiting_user_verification',
+        progress: 25,
+        maxAttempts: 3,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    new ProviderHealthRepository(app.dbHandle, {
+      challengeCooldownSeconds: 1_800,
+      rateLimitDefaultCooldownSeconds: 900,
+      unavailableCooldownSeconds: 600,
+      maxCooldownSeconds: 21_600,
+      providerFailureWindowSeconds: 600,
+      providerFailureThreshold: 2,
+    }).requireManualVerification(jobId);
+
+    const manualStatus = await app.inject({
+      method: 'GET',
+      url: '/api/imports/provider-status',
+      headers: auth(listenerToken),
+    });
+    expect(manualStatus.json()).toMatchObject({
+      state: 'MANUAL_VERIFICATION_REQUIRED',
+      available: false,
+      reasonCode: 'PROVIDER_CHALLENGE',
+      retryAt: null,
+      manualRetryAllowed: true,
+      manualVerificationRequired: true,
+      manualVerificationJobId: jobId,
+      message: 'Une vérification manuelle est nécessaire sur le serveur.',
+    });
+
+    const denied = await app.inject({
+      method: 'GET',
+      url: `/api/imports/jobs/${jobId}/manual-verification`,
+      headers: auth(ownerToken),
+    });
+    expect(denied.statusCode).toBe(404);
+
+    const context = await app.inject({
+      method: 'GET',
+      url: `/api/imports/jobs/${jobId}/manual-verification`,
+      headers: auth(listenerToken),
+    });
+    expect(context.statusCode).toBe(200);
+    expect(context.json()).toEqual({
+      jobId,
+      query: 'Vérification helper',
+      resultIndex: 0,
+      verificationTimeoutSeconds: 120,
+    });
+    expect(context.body).not.toMatch(
+      /stderr|cookie|token|cf_clearance|[A-Z]:\\/i,
+    );
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: `/api/imports/jobs/${jobId}/manual-verification-result`,
+      headers: auth(listenerToken),
+      payload: { result: 'unknown', cookie: 'forbidden' },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const cancelled = await app.inject({
+      method: 'POST',
+      url: `/api/imports/jobs/${jobId}/manual-verification-result`,
+      headers: auth(listenerToken),
+      payload: { result: 'cancelled' },
+    });
+    expect(cancelled.statusCode).toBe(202);
+    expect(cancelled.json().item.status).toBe('CANCELLED');
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/api/imports/jobs/${jobId}/manual-verification-result`,
+      headers: auth(listenerToken),
+      payload: { result: 'cancelled' },
+    });
+    expect(replay.statusCode).toBe(409);
+
+    const failedJobId = randomUUID();
+    app.dbHandle.db
+      .insert(acquisitionJobs)
+      .values({
+        id: failedJobId,
+        userId: listenerId,
+        provider: 'QOBUZ',
+        query: 'Ancien échec',
+        dedupeKey: `QOBUZ:0:failed-${randomUUID()}`,
+        resultIndex: 0,
+        status: 'FAILED',
+        stage: 'failed',
+        errorCode: 'SEARCH_FAILED',
+        maxAttempts: 3,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    const failedContext = await app.inject({
+      method: 'GET',
+      url: `/api/imports/jobs/${failedJobId}/manual-verification`,
+      headers: auth(listenerToken),
+    });
+    expect(failedContext.statusCode).toBe(409);
   });
 });

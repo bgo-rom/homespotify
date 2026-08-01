@@ -9,7 +9,6 @@ import 'package:homespotify_mobile/src/features/catalog_search/domain/catalog_mo
 CatalogResult result(String key, {String? title, String? isrc}) {
   return CatalogResult(
     canonicalKey: key,
-    entityType: CatalogEntityType.track,
     title: title ?? 'Titre $key',
     artistNames: const ['Artiste'],
     isrc: isrc,
@@ -17,7 +16,7 @@ CatalogResult result(String key, {String? title, String? isrc}) {
 }
 
 class FakeCatalogRepository implements CatalogSearchRepository {
-  final List<({String query, CatalogEntityType type, String? cursor})> calls =
+  final List<({String query, String? cursor})> calls =
       [];
   final Map<String, CatalogSearchPage> responses = {};
   CatalogSearchException? failWith;
@@ -26,11 +25,10 @@ class FakeCatalogRepository implements CatalogSearchRepository {
   @override
   Future<CatalogSearchPage> search({
     required String query,
-    required CatalogEntityType type,
     String? cursor,
     int limit = 20,
   }) async {
-    calls.add((query: query, type: type, cursor: cursor));
+    calls.add((query: query, cursor: cursor));
     final blocking = pending;
     if (blocking != null) {
       pending = null;
@@ -38,23 +36,9 @@ class FakeCatalogRepository implements CatalogSearchRepository {
     }
     final error = failWith;
     if (error != null) throw error;
-    return responses['${type.wireName}:$query:${cursor ?? ''}'] ??
+    return responses['$query:${cursor ?? ''}'] ??
         const CatalogSearchPage(items: []);
   }
-
-  @override
-  Future<CatalogArtistDetail> fetchArtist(CatalogEntityRef reference) =>
-      throw UnimplementedError();
-
-  @override
-  Future<CatalogAlbumPage> fetchArtistAlbums(
-    CatalogEntityRef reference, {
-    String? cursor,
-  }) => throw UnimplementedError();
-
-  @override
-  Future<CatalogAlbumDetail> fetchAlbum(CatalogEntityRef reference) =>
-      throw UnimplementedError();
 
   @override
   Future<List<ProviderStatus>> fetchProviders() async => const [];
@@ -85,7 +69,7 @@ void main() {
   test('debounce : une seule requête après une saisie rapide', () async {
     final (container, repository) = makeContainer();
     final controller = container.read(catalogSearchProvider.notifier);
-    repository.responses['track:daft punk:'] = CatalogSearchPage(
+    repository.responses['daft punk:'] = CatalogSearchPage(
       items: [result('k1')],
     );
     controller.onQueryChanged('da');
@@ -118,7 +102,7 @@ void main() {
     controller.onQueryChanged('ancienne');
     await waitDebounce();
     // Seconde recherche : réponse immédiate.
-    repository.responses['track:nouvelle:'] = CatalogSearchPage(
+    repository.responses['nouvelle:'] = CatalogSearchPage(
       items: [result('nouveau')],
     );
     controller.onQueryChanged('nouvelle');
@@ -137,17 +121,18 @@ void main() {
     container.dispose();
   });
 
-  test('changement d’onglet relance immédiatement avec le bon type', () async {
+  test('la recherche ne connaît qu’un seul type : la piste', () async {
     final (container, repository) = makeContainer();
     final controller = container.read(catalogSearchProvider.notifier);
-    repository.responses['track:muse:'] = CatalogSearchPage(
+    repository.responses['muse:'] = CatalogSearchPage(
       items: [result('t')],
     );
     controller.onQueryChanged('muse');
     await waitDebounce();
-    controller.onTypeChanged(CatalogEntityType.album);
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-    expect(repository.calls.last.type, CatalogEntityType.album);
+    // Une seule requête, sans notion d'onglet : le dépôt ne reçoit qu'un
+    // texte et un curseur.
+    expect(repository.calls.single.query, 'muse');
+    expect(repository.calls.single.cursor, isNull);
     container.dispose();
   });
 
@@ -161,7 +146,7 @@ void main() {
     expect(state.error, 'Serveur injoignable');
     expect(state.results, isEmpty);
     repository.failWith = null;
-    repository.responses['track:radiohead:'] = CatalogSearchPage(
+    repository.responses['radiohead:'] = CatalogSearchPage(
       items: [result('ok')],
     );
     await controller.retry();
@@ -174,7 +159,7 @@ void main() {
   test('résultats partiels : provider DEGRADED signalé sans erreur', () async {
     final (container, repository) = makeContainer();
     final controller = container.read(catalogSearchProvider.notifier);
-    repository.responses['track:muse:'] = CatalogSearchPage(
+    repository.responses['muse:'] = CatalogSearchPage(
       items: [result('t')],
       providers: const [
         ProviderStatus(id: 'spotify', status: 'OK'),
@@ -192,11 +177,11 @@ void main() {
   test('pagination : loadMore ajoute sans doublon de clé', () async {
     final (container, repository) = makeContainer();
     final controller = container.read(catalogSearchProvider.notifier);
-    repository.responses['track:muse:'] = CatalogSearchPage(
+    repository.responses['muse:'] = CatalogSearchPage(
       items: [result('a'), result('b')],
       nextCursor: 'c1',
     );
-    repository.responses['track:muse:c1'] = CatalogSearchPage(
+    repository.responses['muse:c1'] = CatalogSearchPage(
       items: [result('b'), result('c')],
     );
     controller.onQueryChanged('muse');

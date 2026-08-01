@@ -9,7 +9,6 @@ import { buildApp } from '../app.js';
 import type { AppConfig } from '../config.js';
 import {
   favorites,
-  musicRequests,
   playEvents,
   playlists,
   playlistTracks,
@@ -22,7 +21,6 @@ import {
   userTracks,
 } from '../db/schema.js';
 import { makeWav } from '../test/wav.js';
-import { reconcileMusicRequestStatus } from './music-request-service.js';
 import { listQueueForUser } from './recommendation-service.js';
 import type {
   MusicSimilarityProvider,
@@ -877,7 +875,7 @@ describe('feed continu (le paquet ne meurt jamais)', () => {
     await drainRefresh(alice.id);
   });
 
-  it('exclut : déjà possédée, DISLIKE, demande active, piste supprimée', async () => {
+  it('exclut : déjà possédée, DISLIKE, piste supprimée', async () => {
     const ownerToken = await bootstrapOwner();
     const alice = await createUser(ownerToken, 'alice');
     const trackId = await importTrack(alice.token, 'Possedee', 'Artiste P');
@@ -885,7 +883,6 @@ describe('feed continu (le paquet ne meurt jamais)', () => {
 
     const cOwned = insertCandidate({ title: 'Possedee', artist: 'Artiste P', previewUrl: 'https://x.example/1.m4a' });
     const cDisliked = insertCandidate({ title: 'Nulle', artist: 'Bof', previewUrl: 'https://x.example/2.m4a' });
-    const cRequested = insertCandidate({ title: 'Voulue', artist: 'Chouette', previewUrl: 'https://x.example/3.m4a' });
     const cRemoved = insertCandidate({ title: 'Retiree', artist: 'Artiste R', previewUrl: 'https://x.example/4.m4a' });
     const cVisible = insertCandidate({ title: 'Libre', artist: 'Neutre', previewUrl: 'https://x.example/5.m4a' });
 
@@ -895,13 +892,6 @@ describe('feed continu (le paquet ne meurt jamais)', () => {
       headers: auth(alice.token),
       payload: { action: 'DISLIKE' },
     });
-    const req = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: auth(alice.token),
-      payload: { candidateId: cRequested },
-    });
-    expect(req.statusCode).toBe(201);
     const del = await app.inject({
       method: 'DELETE',
       url: `/api/library/tracks/${removedId}`,
@@ -920,7 +910,6 @@ describe('feed continu (le paquet ne meurt jamais)', () => {
     expect(ids).toEqual([cVisible]);
     expect(ids).not.toContain(cOwned);
     expect(ids).not.toContain(cDisliked);
-    expect(ids).not.toContain(cRequested);
     expect(ids).not.toContain(cRemoved);
     expect(trackId).toBeGreaterThan(0);
     await drainRefresh(alice.id);
@@ -1393,238 +1382,6 @@ describe('diagnostics OWNER des recommandations', () => {
   });
 });
 
-describe('demandes de musique', () => {
-  it('création SENT, doublon actif refusé (409), déjà possédée refusée (409)', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    await importTrack(alice.token, 'Mienne', 'Moi');
-    const cid = await createCandidate(ownerToken, { title: 'Nouvelle', artist: 'Artiste' });
-    const cOwned = await createCandidate(ownerToken, { title: 'Mienne', artist: 'Moi' });
-
-    const created = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: auth(alice.token),
-      payload: { candidateId: cid },
-    });
-    expect(created.statusCode).toBe(201);
-    expect(created.json().status).toBe('SENT');
-
-    const duplicate = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: auth(alice.token),
-      payload: { candidateId: cid },
-    });
-    expect(duplicate.statusCode).toBe(409);
-    expect(duplicate.json().error).toBe('duplicate_active_request');
-
-    const owned = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: auth(alice.token),
-      payload: { candidateId: cOwned },
-    });
-    expect(owned.statusCode).toBe(409);
-    expect(owned.json().error).toBe('already_owned');
-  });
-
-  it('portée stricte : un utilisateur ne voit que SES demandes', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const bob = await createUser(ownerToken, 'bob');
-    const cid = await createCandidate(ownerToken, { title: 'Privée', artist: 'Artiste' });
-
-    const created = await app.inject({
-      method: 'POST',
-      url: '/api/music-requests',
-      headers: auth(alice.token),
-      payload: { candidateId: cid },
-    });
-    const requestId = created.json().id;
-
-    const listBob = await app.inject({
-      method: 'GET',
-      url: '/api/music-requests',
-      headers: auth(bob.token),
-    });
-    expect(listBob.json().items).toHaveLength(0);
-    const getBob = await app.inject({
-      method: 'GET',
-      url: `/api/music-requests/${requestId}`,
-      headers: auth(bob.token),
-    });
-    expect(getBob.statusCode).toBe(404);
-    const cancelBob = await app.inject({
-      method: 'POST',
-      url: `/api/music-requests/${requestId}/cancel`,
-      headers: auth(bob.token),
-    });
-    expect(cancelBob.statusCode).toBe(404);
-  });
-
-  it('annulation permise avant IMPORTING, refusée ensuite', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const c1 = await createCandidate(ownerToken, { title: 'Annulable', artist: 'A1' });
-    const c2 = await createCandidate(ownerToken, { title: 'Bloquée', artist: 'A2' });
-
-    const r1 = (
-      await app.inject({
-        method: 'POST',
-        url: '/api/music-requests',
-        headers: auth(alice.token),
-        payload: { candidateId: c1 },
-      })
-    ).json().id;
-    const cancelled = await app.inject({
-      method: 'POST',
-      url: `/api/music-requests/${r1}/cancel`,
-      headers: auth(alice.token),
-    });
-    expect(cancelled.statusCode).toBe(200);
-    expect(cancelled.json().status).toBe('CANCELLED');
-
-    const r2 = (
-      await app.inject({
-        method: 'POST',
-        url: '/api/music-requests',
-        headers: auth(alice.token),
-        payload: { candidateId: c2 },
-      })
-    ).json().id;
-    const toImporting = await app.inject({
-      method: 'PATCH',
-      url: `/api/admin/music-requests/${r2}`,
-      headers: auth(ownerToken),
-      payload: { status: 'IMPORTING' },
-    });
-    expect(toImporting.statusCode).toBe(200);
-    const refused = await app.inject({
-      method: 'POST',
-      url: `/api/music-requests/${r2}/cancel`,
-      headers: auth(alice.token),
-    });
-    expect(refused.statusCode).toBe(409);
-    expect(refused.json().error).toBe('cancel_forbidden');
-  });
-
-  it('COMPLETED interdit à la main ; posé par réconciliation après attribution réelle', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const cid = await createCandidate(ownerToken, { title: 'Esperee', artist: 'Artiste' });
-    const requestId = (
-      await app.inject({
-        method: 'POST',
-        url: '/api/music-requests',
-        headers: auth(alice.token),
-        payload: { candidateId: cid },
-      })
-    ).json().id;
-
-    // Override manuel vers COMPLETED : refusé.
-    const forced = await app.inject({
-      method: 'PATCH',
-      url: `/api/admin/music-requests/${requestId}`,
-      headers: auth(ownerToken),
-      payload: { status: 'COMPLETED' },
-    });
-    expect(forced.statusCode).toBe(409);
-
-    // Le OWNER importe la piste (dans SA bibliothèque) puis l'associe : la
-    // demande n'est PAS complétée tant qu'alice n'a pas l'accès.
-    const trackId = await importTrack(ownerToken, 'Esperee', 'Artiste');
-    const associated = await app.inject({
-      method: 'PATCH',
-      url: `/api/admin/music-requests/${requestId}`,
-      headers: auth(ownerToken),
-      payload: { status: 'IMPORTING', ownerNote: 'trouvée en CD' },
-    });
-    expect(associated.statusCode).toBe(200);
-    expect(associated.json().status).toBe('IMPORTING');
-
-    // Attribution de l'accès à alice puis réconciliation → COMPLETED.
-    const grant = await app.inject({
-      method: 'POST',
-      url: `/api/admin/users/${alice.id}/library/tracks`,
-      headers: auth(ownerToken),
-      payload: { trackId },
-    });
-    expect(grant.statusCode).toBe(201);
-    const assigned = await app.inject({
-      method: 'POST',
-      url: `/api/admin/music-requests/${requestId}/assign-track`,
-      headers: auth(ownerToken),
-      payload: { trackId },
-    });
-    expect(assigned.statusCode).toBe(200);
-    expect(assigned.json().status).toBe('COMPLETED');
-
-    const view = await app.inject({
-      method: 'GET',
-      url: `/api/music-requests/${requestId}`,
-      headers: auth(alice.token),
-    });
-    expect(view.json().status).toBe('COMPLETED');
-    expect(view.json().completedAt).not.toBeNull();
-    expect(view.json().ownerNote).toBe('trouvée en CD');
-  });
-
-  it('réconciliation au boot : COMPLETED sans accès visible est rétrogradée', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const cid = await createCandidate(ownerToken, { title: 'Fantome', artist: 'Artiste' });
-    const trackId = await importTrack(ownerToken, 'Fantome', 'Artiste');
-    const requestId = (
-      await app.inject({
-        method: 'POST',
-        url: '/api/music-requests',
-        headers: auth(alice.token),
-        payload: { candidateId: cid },
-      })
-    ).json().id;
-
-    // Corruption simulée : COMPLETED posé en base sans accès user_tracks.
-    app.dbHandle.db
-      .update(musicRequests)
-      .set({ status: 'COMPLETED', resultingTrackId: trackId, completedAt: new Date().toISOString() })
-      .where(eq(musicRequests.id, requestId))
-      .run();
-
-    const result = reconcileMusicRequestStatus(app.dbHandle, requestId);
-    expect(result.status).toBe('IMPORTING');
-    expect(result.changed).toBe(true);
-  });
-
-  it('accès admin refusé aux non-OWNER', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const list = await app.inject({
-      method: 'GET',
-      url: '/api/admin/music-requests',
-      headers: auth(alice.token),
-    });
-    expect(list.statusCode).toBe(403);
-  });
-
-  it('assign-track attribue la piste au demandeur et COMPLETED reste automatique', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const candidateId = await createCandidate(ownerToken, { title: 'Assignée', artist: 'Artiste' });
-    const requestId = (await app.inject({ method: 'POST', url: '/api/music-requests', headers: auth(alice.token), payload: { candidateId } })).json().id;
-    const trackId = await importTrack(ownerToken, 'Assignée', 'Artiste');
-    const assigned = await app.inject({
-      method: 'POST',
-      url: `/api/admin/music-requests/${requestId}/assign-track`,
-      headers: auth(ownerToken),
-      payload: { trackId },
-    });
-    expect(assigned.statusCode).toBe(200);
-    expect(assigned.json().status).toBe('COMPLETED');
-    expect(assigned.json().presentInRequesterLibrary).toBe(true);
-  });
-});
-
 describe('suppression douce de bibliothèque', () => {
   it('retire la relation personnelle, le favori, masque la piste et n’affecte pas les autres comptes', async () => {
     const ownerToken = await bootstrapOwner();
@@ -1734,43 +1491,6 @@ describe('suppression douce de bibliothèque', () => {
     expect(
       app.dbHandle.db.select().from(userTracks).where(eq(userTracks.trackId, trackId)).all(),
     ).toEqual([expect.objectContaining({ userId: alice.id, isVisible: false })]);
-  });
-
-  it('une demande COMPLETED est réconciliée après suppression volontaire de la piste', async () => {
-    const ownerToken = await bootstrapOwner();
-    const alice = await createUser(ownerToken, 'alice');
-    const cid = await createCandidate(ownerToken, { title: 'Regrettee', artist: 'Artiste' });
-    const requestId = (
-      await app.inject({
-        method: 'POST',
-        url: '/api/music-requests',
-        headers: auth(alice.token),
-        payload: { candidateId: cid },
-      })
-    ).json().id;
-    const trackId = await importTrack(ownerToken, 'Regrettee', 'Artiste');
-    const assigned = await app.inject({
-      method: 'POST',
-      url: `/api/admin/music-requests/${requestId}/assign-track`,
-      headers: auth(ownerToken),
-      payload: { trackId },
-    });
-    expect(assigned.statusCode).toBe(200);
-    expect(assigned.json().status).toBe('COMPLETED');
-
-    // Alice supprime la piste : la visibilité user_tracks disparaît, donc la
-    // complétion ne peut plus être présentée comme effective.
-    await app.inject({
-      method: 'DELETE',
-      url: `/api/library/tracks/${trackId}`,
-      headers: auth(alice.token),
-    });
-    const view = await app.inject({
-      method: 'GET',
-      url: `/api/music-requests/${requestId}`,
-      headers: auth(alice.token),
-    });
-    expect(view.json().status).toBe('IMPORTING');
   });
 
   it('suppression d’une piste inconnue ou sans accès → 404', async () => {

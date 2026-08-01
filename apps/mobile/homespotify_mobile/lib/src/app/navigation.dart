@@ -51,11 +51,10 @@ void openDiscover(BuildContext context) {
   router.go('/discover');
 }
 
-/// Ouvre la liste des demandes de musique du compte courant (anti-doublon).
-void openMusicRequests(BuildContext context) =>
-    _pushUnique(context, '/requests');
-
-/// Ouvre la recherche catalogue multi-fournisseurs (anti-doublon).
+/// Ouvre l'UNIQUE écran de recherche distante (anti-doublon).
+///
+/// C'est le seul parcours d'installation de musique : il n'existe plus ni
+/// écran de demande, ni écran d'import par URL, ni file séparée.
 void openCatalogSearch(BuildContext context) =>
     _pushUnique(context, '/catalog-search');
 

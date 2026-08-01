@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { lstat, realpath } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import {
   dirname,
+  extname,
   isAbsolute,
   relative,
   resolve,
+  sep,
 } from 'node:path';
 
 const MAX_QUERY_LENGTH = 200;
@@ -15,6 +18,50 @@ const MAX_NDJSON_LINE_BYTES = 64 * 1024;
 const DEFAULT_STDERR_LIMIT_BYTES = 32 * 1024;
 const DEFAULT_PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const FORCE_KILL_DELAY_MS = 5_000;
+const ACCEPTED_OUTPUT_EXTENSIONS = new Set(['.flac', '.wav']);
+
+/** Variables strictement nécessaires à Python, Playwright et au réseau. */
+const CHILD_ENV_ALLOWLIST = [
+  'PATH',
+  'Path',
+  'PATHEXT',
+  'SYSTEMROOT',
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'ComSpec',
+  'TEMP',
+  'TMP',
+  'HOME',
+  'USER',
+  'USERNAME',
+  'USERPROFILE',
+  'LOCALAPPDATA',
+  'APPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'PROGRAMW6432',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'VIRTUAL_ENV',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'all_proxy',
+  'PLAYWRIGHT_BROWSERS_PATH',
+] as const;
 
 export type LucidaRunMode = 'search' | 'download';
 
@@ -22,6 +69,7 @@ export interface LucidaStageEvent {
   type: 'stage';
   stage: string;
   message: string;
+  provider?: string;
 }
 
 export interface LucidaSearchResultEvent {
@@ -78,6 +126,9 @@ export interface LucidaErrorEvent {
   type: 'error';
   code: string;
   message: string;
+  provider?: string;
+  retryable?: boolean;
+  retryAfterSeconds?: number;
 }
 
 export type LucidaEvent =
@@ -140,6 +191,7 @@ export type LucidaProcessErrorCode =
   | 'PROCESS_FAILED'
   | 'MISSING_TERMINAL_EVENT'
   | 'OUTPUT_PATH_VIOLATION'
+  | 'OUTPUT_FILE_INVALID'
   | string;
 
 export class LucidaProcessError extends Error {
@@ -150,6 +202,9 @@ export class LucidaProcessError extends Error {
       exitCode?: number | null;
       signal?: NodeJS.Signals | null;
       stderr?: string;
+      provider?: string;
+      retryable?: boolean;
+      retryAfterSeconds?: number;
     } = {},
   ) {
     super(message);
@@ -228,6 +283,142 @@ function confinedFileRelativePath(root: string, candidate: string): string {
   return rel;
 }
 
+function buildChildEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+
+  for (const key of CHILD_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (value !== undefined) environment[key] = value;
+  }
+
+  environment.PYTHONIOENCODING = 'utf-8';
+  environment.PYTHONUTF8 = '1';
+  return environment;
+}
+
+async function validateDownloadedOutput(
+  outputDir: string,
+  candidate: string,
+): Promise<{
+  absoluteFilePath: string;
+  relativeFilePath: string;
+}> {
+  if (!isAbsolute(candidate)) {
+    throw new LucidaProcessError(
+      'OUTPUT_PATH_VIOLATION',
+      'Le script doit retourner un chemin de fichier absolu.',
+    );
+  }
+
+  const absoluteOutputDir = resolve(outputDir);
+  const absoluteCandidate = resolve(candidate);
+  const lexicalRelativePath = confinedFileRelativePath(
+    absoluteOutputDir,
+    absoluteCandidate,
+  );
+
+  if (
+    !ACCEPTED_OUTPUT_EXTENSIONS.has(
+      extname(absoluteCandidate).toLocaleLowerCase('en-US'),
+    )
+  ) {
+    throw new LucidaProcessError(
+      'OUTPUT_FILE_INVALID',
+      'Le fichier téléchargé doit être au format FLAC ou WAV.',
+    );
+  }
+
+  let outputDirectoryStat;
+  try {
+    outputDirectoryStat = await lstat(absoluteOutputDir);
+  } catch {
+    throw new LucidaProcessError(
+      'OUTPUT_FILE_INVALID',
+      'Le dossier de sortie est introuvable ou inaccessible.',
+    );
+  }
+
+  if (
+    !outputDirectoryStat.isDirectory() ||
+    outputDirectoryStat.isSymbolicLink()
+  ) {
+    throw new LucidaProcessError(
+      'OUTPUT_FILE_INVALID',
+      'Le dossier de sortie doit être un répertoire réel.',
+    );
+  }
+
+  const components = lexicalRelativePath
+    .split(sep)
+    .filter((component) => component.length > 0);
+  let currentPath = absoluteOutputDir;
+
+  for (let index = 0; index < components.length; index += 1) {
+    currentPath = resolve(currentPath, components[index]!);
+
+    let currentStat;
+    try {
+      currentStat = await lstat(currentPath);
+    } catch {
+      throw new LucidaProcessError(
+        'OUTPUT_FILE_INVALID',
+        'Le fichier téléchargé est introuvable ou inaccessible.',
+      );
+    }
+
+    if (currentStat.isSymbolicLink()) {
+      throw new LucidaProcessError(
+        'OUTPUT_FILE_INVALID',
+        'Les liens symboliques sont interdits dans le chemin téléchargé.',
+      );
+    }
+
+    const isFinalComponent = index === components.length - 1;
+    if (!isFinalComponent && !currentStat.isDirectory()) {
+      throw new LucidaProcessError(
+        'OUTPUT_FILE_INVALID',
+        'Le chemin téléchargé contient un composant non répertoire.',
+      );
+    }
+
+    if (
+      isFinalComponent &&
+      (!currentStat.isFile() || currentStat.size < 1)
+    ) {
+      throw new LucidaProcessError(
+        'OUTPUT_FILE_INVALID',
+        'Le résultat téléchargé doit être un fichier non vide.',
+      );
+    }
+  }
+
+  let realOutputDir: string;
+  let realCandidate: string;
+  try {
+    [realOutputDir, realCandidate] = await Promise.all([
+      realpath(absoluteOutputDir),
+      realpath(absoluteCandidate),
+    ]);
+  } catch {
+    throw new LucidaProcessError(
+      'OUTPUT_FILE_INVALID',
+      'Le fichier téléchargé ne peut pas être résolu.',
+    );
+  }
+
+  const relativeFilePath = confinedFileRelativePath(
+    realOutputDir,
+    realCandidate,
+  );
+
+  return {
+    absoluteFilePath: realCandidate,
+    relativeFilePath,
+  };
+}
+
 function validateEvent(value: unknown): LucidaEvent {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new LucidaProcessError(
@@ -245,6 +436,9 @@ function validateEvent(value: unknown): LucidaEvent {
         type,
         stage: nonEmptyString(event.stage, 'stage', 80),
         message: nonEmptyString(event.message, 'message'),
+        ...(event.provider === undefined
+          ? {}
+          : { provider: nonEmptyString(event.provider, 'provider', 100) }),
       };
 
     case 'search_result':
@@ -322,6 +516,32 @@ function validateEvent(value: unknown): LucidaEvent {
         type,
         code: nonEmptyString(event.code, 'code', 100),
         message: nonEmptyString(event.message, 'message'),
+        ...(event.provider === undefined
+          ? {}
+          : { provider: nonEmptyString(event.provider, 'provider', 100) }),
+        ...(event.retryable === undefined
+          ? {}
+          : {
+              retryable:
+                typeof event.retryable === 'boolean'
+                  ? event.retryable
+                  : (() => {
+                      throw new LucidaProcessError(
+                        'PROTOCOL_ERROR',
+                        'retryable doit être un booléen.',
+                      );
+                    })(),
+            }),
+        ...(event.retryAfterSeconds === undefined
+          ? {}
+          : {
+              retryAfterSeconds: integerInRange(
+                event.retryAfterSeconds,
+                'retryAfterSeconds',
+                60,
+                86_400,
+              ),
+            }),
       };
 
     default:
@@ -518,11 +738,7 @@ export class LucidaProcessRunner {
           shell: false,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            PYTHONIOENCODING: 'utf-8',
-            PYTHONUTF8: '1',
-          },
+          env: buildChildEnvironment(),
         },
       );
     } catch (error) {
@@ -773,6 +989,17 @@ export class LucidaProcessRunner {
                   exitCode: code,
                   signal,
                   stderr: stderrBuffer,
+                  ...(error?.provider === undefined
+                    ? {}
+                    : { provider: error.provider }),
+                  ...(error?.retryable === undefined
+                    ? {}
+                    : { retryable: error.retryable }),
+                  ...(error?.retryAfterSeconds === undefined
+                    ? {}
+                    : {
+                        retryAfterSeconds: error.retryAfterSeconds,
+                      }),
                 },
               ),
             ),
@@ -829,34 +1056,35 @@ export class LucidaProcessRunner {
           return;
         }
 
-        let relativeFilePath: string;
-        try {
-          relativeFilePath = confinedFileRelativePath(
-            outputDir,
-            successEvent.filepath,
-          );
-        } catch (error) {
-          finish(() =>
-            rejectPromise(
-              error instanceof LucidaProcessError
-                ? error
-                : new LucidaProcessError(
-                    'OUTPUT_PATH_VIOLATION',
-                    'Chemin de fichier téléchargé invalide.',
-                  ),
-            ),
-          );
-          return;
-        }
+        const success = successEvent;
+        const expectedOutputDir = outputDir;
 
-        finish(() =>
-          resolvePromise({
-            mode: 'download',
-            success: successEvent!,
-            absoluteFilePath: resolve(successEvent!.filepath),
-            relativeFilePath,
-          }),
-        );
+        void validateDownloadedOutput(
+          expectedOutputDir,
+          success.filepath,
+        )
+          .then(({ absoluteFilePath, relativeFilePath }) => {
+            finish(() =>
+              resolvePromise({
+                mode: 'download',
+                success,
+                absoluteFilePath,
+                relativeFilePath,
+              }),
+            );
+          })
+          .catch((error: unknown) => {
+            finish(() =>
+              rejectPromise(
+                error instanceof LucidaProcessError
+                  ? error
+                  : new LucidaProcessError(
+                      'OUTPUT_FILE_INVALID',
+                      'La validation du fichier téléchargé a échoué.',
+                    ),
+              ),
+            );
+          });
       });
     });
   }

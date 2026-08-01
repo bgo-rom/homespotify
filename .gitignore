@@ -26,12 +26,38 @@ credentials*
 **/*cookies*.json
 **/*token*.json
 
+# --- Moteur Antra (outil vendorisé) ---
+# Ceinture ET bretelles : `tools/antra/.gitignore` couvre déjà ces chemins,
+# mais la clé Premium ne doit pas dépendre d'un fichier du dépôt tiers.
+tools/antra/.env
+tools/antra/.venv/
+tools/antra/antra.log
+tools/antra/*.db
+tools/antra/**/__pycache__/
+
 # --- Logs ---
 logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+
+# Diagnostics expurgés du harnais VPS Phase 4.5 (locaux, non versionnés)
+.phase45-diagnostics/
+
+# --- Python : bytecode et caches générés (jamais versionnés) ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Sortie de debug régénérée par tools/spotify-auth-spoof/spotify_isrc_harvest.py
+# (écrite, jamais lue par le code)
+spclient_raw.json
+
+# Cache Chromium partagé de Playwright (volumineux, régénérable)
+storage/playwright-browsers/
 
 # --- Builds / caches ---
 dist/
@@ -71,6 +97,10 @@ storage/cache/*
 !storage/imports/.gitkeep
 !storage/covers/.gitkeep
 !storage/cache/.gitkeep
+# Index du Storage Agent : il contient les chemins relatifs de la bibliothèque
+# réelle (donnée personnelle). Régénérable par `storage-index:export`.
+storage/storage-agent/*
+!storage/storage-agent/.gitkeep
 *.flac
 *.mp3
 *.wav
@@ -111,3 +141,7 @@ romainvast.pub
 *.pem
 *.key
 **/.ssh/
+/storage/
+/tools/antra/
+/logs/
+/packages/homespotify_just_audio/android/.cxx/

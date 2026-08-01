@@ -78,7 +78,40 @@ describe('configuration Lucida', () => {
       scriptPath: resolve(scriptPath),
       pythonPath: 'python-test',
       processTimeoutMs: 420_000,
+      // Défaut : 3 téléchargements simultanés.
+      maxConcurrentDownloads: 3,
+      challengeCooldownSeconds: 1_800,
+      rateLimitDefaultCooldownSeconds: 900,
+      unavailableCooldownSeconds: 600,
+      maxCooldownSeconds: 21_600,
+      providerFailureWindowSeconds: 600,
+      providerFailureThreshold: 2,
+      interactiveVerificationEnabled: false,
+      interactiveVerificationTimeoutSeconds: 120,
     });
+  });
+
+  it('borne la concurrence des téléchargements entre 1 et 4', () => {
+    const root = temporaryRoot('homespotify-lucida-concurrency-');
+    const scriptPath = join(root, 'lucida_dl_final.py');
+    writeFileSync(scriptPath, '# test-only\n', 'utf-8');
+
+    const withValue = (value: string): number | undefined =>
+      loadConfig({
+        NODE_ENV: 'test',
+        LUCIDA_SCRIPT_PATH: scriptPath,
+        LUCIDA_MAX_CONCURRENT_DOWNLOADS: value,
+      }).lucida?.maxConcurrentDownloads;
+
+    expect(withValue('1')).toBe(1);
+    expect(withValue('4')).toBe(4);
+    // Hors bornes : la configuration doit échouer, jamais dégrader en silence.
+    expect(() => withValue('0')).toThrowError(
+      /LUCIDA_MAX_CONCURRENT_DOWNLOADS/,
+    );
+    expect(() => withValue('5')).toThrowError(
+      /LUCIDA_MAX_CONCURRENT_DOWNLOADS/,
+    );
   });
 
   it('refuse un script absent, une extension invalide ou un timeout hors limites', () => {
@@ -174,8 +207,15 @@ describe('branchement Lucida dans buildApp', () => {
       ...baseConfig(root, dbPath),
       lucida: {
         scriptPath,
-        pythonPath: 'python-test',
-        processTimeoutMs: 300_000,
+      pythonPath: 'python-test',
+      processTimeoutMs: 300_000,
+      maxConcurrentDownloads: 3,
+      challengeCooldownSeconds: 1_800,
+      rateLimitDefaultCooldownSeconds: 900,
+      unavailableCooldownSeconds: 600,
+      maxCooldownSeconds: 21_600,
+      providerFailureWindowSeconds: 600,
+      providerFailureThreshold: 2,
       },
     };
 

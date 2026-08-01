@@ -168,7 +168,6 @@ class _ImportDialog extends StatefulWidget {
 class _ImportDialogState extends State<_ImportDialog> {
   final _search = TextEditingController();
   List<AdminTrackSearchResult> _tracks = const [];
-  AdminImportRequestItem? _requestItem;
   AdminTrackSearchResult? _track;
   bool _busy = false;
 
@@ -253,23 +252,6 @@ class _ImportDialogState extends State<_ImportDialog> {
                 ),
               ],
               const Divider(color: Colors.white12, height: 28),
-              DropdownButtonFormField<AdminImportRequestItem>(
-                initialValue: _requestItem,
-                dropdownColor: adminCard,
-                items: [
-                  for (final item in widget.job.availableRequestItems)
-                    DropdownMenuItem(
-                      value: item,
-                      child: Text(
-                        '#${item.requestId} · ${item.position}. ${item.title}',
-                      ),
-                    ),
-                ],
-                onChanged: _busy
-                    ? null
-                    : (value) => setState(() => _requestItem = value),
-                decoration: const InputDecoration(labelText: 'Item de demande'),
-              ),
               TextField(
                 key: const Key('import-track-search'),
                 controller: _search,
@@ -321,18 +303,6 @@ class _ImportDialogState extends State<_ImportDialog> {
               ? null
               : () => _perform(() => widget.api.rejectImport(widget.job.id)),
           child: const Text('Déplacer vers rejected'),
-        ),
-        FilledButton(
-          onPressed: _busy || _requestItem == null || _track == null
-              ? null
-              : () => _perform(
-                  () => widget.api.assignImport(
-                    jobId: widget.job.id,
-                    itemId: _requestItem!.id,
-                    trackId: _track!.id,
-                  ),
-                ),
-          child: const Text('Associer'),
         ),
       ],
     );

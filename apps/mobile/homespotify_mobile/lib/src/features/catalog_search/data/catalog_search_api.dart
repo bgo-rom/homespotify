@@ -16,20 +16,18 @@ class CatalogSearchException implements Exception {
   String toString() => message;
 }
 
+/// Recherche distante : UNIQUEMENT des pistes.
+///
+/// Il n'existe plus qu'un seul parcours d'installation, et il porte sur un
+/// morceau précis : chercher un artiste, un album ou une playlist n'aurait
+/// aucune action à proposer.
 abstract interface class CatalogSearchRepository {
   Future<CatalogSearchPage> search({
     required String query,
-    required CatalogEntityType type,
     String? cursor,
     int limit,
   });
 
-  Future<CatalogArtistDetail> fetchArtist(CatalogEntityRef reference);
-  Future<CatalogAlbumPage> fetchArtistAlbums(
-    CatalogEntityRef reference, {
-    String? cursor,
-  });
-  Future<CatalogAlbumDetail> fetchAlbum(CatalogEntityRef reference);
   Future<List<ProviderStatus>> fetchProviders();
 }
 
@@ -44,7 +42,6 @@ class CatalogSearchApi implements CatalogSearchRepository {
   @override
   Future<CatalogSearchPage> search({
     required String query,
-    required CatalogEntityType type,
     String? cursor,
     int limit = 20,
   }) async {
@@ -53,47 +50,13 @@ class CatalogSearchApi implements CatalogSearchRepository {
         '/api/discovery/search',
         queryParameters: {
           'q': query,
-          'type': type.wireName,
+          'type': 'track',
           'limit': limit,
           'cursor': ?cursor,
         },
       ),
     );
     return CatalogSearchPage.fromJson(response.data ?? const {});
-  }
-
-  @override
-  Future<CatalogArtistDetail> fetchArtist(CatalogEntityRef reference) async {
-    final response = await _request(
-      () => _dio.get<Map<String, dynamic>>(
-        '/api/discovery/artists/${reference.provider}/${reference.externalId}',
-      ),
-    );
-    return CatalogArtistDetail.fromJson(response.data ?? const {});
-  }
-
-  @override
-  Future<CatalogAlbumPage> fetchArtistAlbums(
-    CatalogEntityRef reference, {
-    String? cursor,
-  }) async {
-    final response = await _request(
-      () => _dio.get<Map<String, dynamic>>(
-        '/api/discovery/artists/${reference.provider}/${reference.externalId}/albums',
-        queryParameters: {'cursor': ?cursor},
-      ),
-    );
-    return CatalogAlbumPage.fromJson(response.data ?? const {});
-  }
-
-  @override
-  Future<CatalogAlbumDetail> fetchAlbum(CatalogEntityRef reference) async {
-    final response = await _request(
-      () => _dio.get<Map<String, dynamic>>(
-        '/api/discovery/albums/${reference.provider}/${reference.externalId}',
-      ),
-    );
-    return CatalogAlbumDetail.fromJson(response.data ?? const {});
   }
 
   @override

@@ -4,21 +4,6 @@
 /// descripteurs de preview éphémères.
 library;
 
-enum CatalogEntityType {
-  track('track', 'Titres'),
-  artist('artist', 'Artistes'),
-  album('album', 'Albums'),
-  playlist('playlist', 'Playlists');
-
-  const CatalogEntityType(this.wireName, this.label);
-
-  final String wireName;
-  final String label;
-
-  static CatalogEntityType fromWire(String? raw) => CatalogEntityType.values
-      .firstWhere((value) => value.wireName == raw, orElse: () => track);
-}
-
 /// Statut de disponibilité par plateforme — JAMAIS un booléen : UNKNOWN
 /// n'est pas « indisponible ».
 enum PlatformAvailability {
@@ -44,16 +29,43 @@ enum PlatformAvailability {
   bool get isPositive => this == confirmed || this == linkFound;
 }
 
+/// Garde AU PLUS UN lien positif par plateforme.
+///
+/// Le backend peut renvoyer plusieurs liens pour un même fournisseur (par
+/// exemple un `CONFIRMED` et un `LINK_FOUND` issus de deux sources). Les écrans
+/// keyent leurs badges et puces par nom de plateforme : sans cette
+/// déduplication, deux widgets frères portent la même clé et Flutter fait
+/// tomber tout l'écran avec « Duplicate keys found ».
+///
+/// `CONFIRMED` l'emporte sur `LINK_FOUND` ; à statut égal, le premier lien reçu
+/// est conservé. [requireUrl] sert aux écrans qui n'affichent que des liens
+/// ouvrables.
+List<PlatformLink> dedupePositiveLinks(
+  List<PlatformLink> links, {
+  bool requireUrl = false,
+}) {
+  final best = <String, PlatformLink>{};
+  for (final link in links) {
+    if (!link.status.isPositive) continue;
+    if (requireUrl && link.url == null) continue;
+    final current = best[link.platform];
+    if (current == null ||
+        (current.status != PlatformAvailability.confirmed &&
+            link.status == PlatformAvailability.confirmed)) {
+      best[link.platform] = link;
+    }
+  }
+  return List<PlatformLink>.unmodifiable(best.values);
+}
+
 class CatalogEntityRef {
   const CatalogEntityRef({
     required this.provider,
-    required this.entityType,
     required this.externalId,
     this.externalUrl,
   });
 
   final String provider;
-  final CatalogEntityType entityType;
   final String externalId;
   final String? externalUrl;
 
@@ -63,11 +75,10 @@ class CatalogEntityRef {
   bool operator ==(Object other) =>
       other is CatalogEntityRef &&
       other.provider == provider &&
-      other.entityType == entityType &&
       other.externalId == externalId;
 
   @override
-  int get hashCode => Object.hash(provider, entityType, externalId);
+  int get hashCode => Object.hash(provider, externalId);
 
   static CatalogEntityRef? fromJson(Map<String, dynamic>? json) {
     if (json == null) return null;
@@ -78,7 +89,6 @@ class CatalogEntityRef {
     }
     return CatalogEntityRef(
       provider: provider,
-      entityType: CatalogEntityType.fromWire(json['entityType'] as String?),
       externalId: externalId,
       externalUrl: json['externalUrl'] as String?,
     );
@@ -135,7 +145,6 @@ class CatalogPreview {
 class CatalogResult {
   const CatalogResult({
     required this.canonicalKey,
-    required this.entityType,
     required this.title,
     required this.artistNames,
     this.album,
@@ -145,14 +154,12 @@ class CatalogResult {
     this.imageUrl,
     this.isrc,
     this.mbid,
-    this.trackCount,
     this.references = const [],
     this.links = const [],
     this.preview,
   });
 
   final String canonicalKey;
-  final CatalogEntityType entityType;
   final String title;
   final List<String> artistNames;
   final String? album;
@@ -162,20 +169,22 @@ class CatalogResult {
   final String? imageUrl;
   final String? isrc;
   final String? mbid;
-  final int? trackCount;
   final List<CatalogEntityRef> references;
   final List<PlatformLink> links;
   final CatalogPreview? preview;
 
   String get artistLabel => artistNames.join(', ');
 
-  /// Référence pour ouvrir une fiche (première disponible).
-  CatalogEntityRef? get primaryReference =>
-      references.isEmpty ? null : references.first;
-
-  /// Référence de l'artiste principal (fiche artiste), si connue.
-  List<PlatformLink> get positiveLinks =>
-      links.where((link) => link.status.isPositive).toList(growable: false);
+  /// Plateformes où une correspondance vérifiée existe, **une seule fois
+  /// chacune**.
+  ///
+  /// Le backend peut renvoyer plusieurs liens pour un même fournisseur (par
+  /// exemple un `CONFIRMED` et un `LINK_FOUND` issus de deux sources). Sans
+  /// cette déduplication, l'UI construisait deux badges portant la même clé,
+  /// ce qui fait tomber tout l'écran de recherche avec « Duplicate keys
+  /// found ». `CONFIRMED` l'emporte sur `LINK_FOUND` ; à statut égal, le
+  /// premier lien reçu est conservé.
+  List<PlatformLink> get positiveLinks => dedupePositiveLinks(links);
 
   static CatalogResult fromJson(Map<String, dynamic> json) {
     final artists = (json['artists'] as List<dynamic>? ?? const [])
@@ -190,7 +199,6 @@ class CatalogResult {
         .toList(growable: false);
     return CatalogResult(
       canonicalKey: json['canonicalKey'] as String? ?? '',
-      entityType: CatalogEntityType.fromWire(json['entityType'] as String?),
       title: json['title'] as String? ?? '',
       artistNames: artists,
       album: json['album'] as String?,
@@ -200,7 +208,6 @@ class CatalogResult {
       imageUrl: images.isEmpty ? null : images.first,
       isrc: json['isrc'] as String?,
       mbid: json['mbid'] as String?,
-      trackCount: (json['trackCount'] as num?)?.toInt(),
       references: (json['providerReferences'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(CatalogEntityRef.fromJson)
@@ -258,205 +265,5 @@ class CatalogSearchPage {
             .whereType<Map<String, dynamic>>()
             .map(ProviderStatus.fromJson)
             .toList(growable: false),
-      );
-}
-
-class CatalogAlbumTrack {
-  const CatalogAlbumTrack({
-    required this.position,
-    required this.title,
-    this.discNumber,
-    this.trackNumber,
-    this.artistNames = const [],
-    this.durationMs,
-    this.explicit,
-    this.isrc,
-    this.preview,
-  });
-
-  final int position;
-  final String title;
-  final int? discNumber;
-  final int? trackNumber;
-  final List<String> artistNames;
-  final int? durationMs;
-  final bool? explicit;
-  final String? isrc;
-  final CatalogPreview? preview;
-
-  static CatalogAlbumTrack fromJson(Map<String, dynamic> json) =>
-      CatalogAlbumTrack(
-        position: (json['position'] as num?)?.toInt() ?? 0,
-        title: json['title'] as String? ?? '',
-        discNumber: (json['discNumber'] as num?)?.toInt(),
-        trackNumber: (json['trackNumber'] as num?)?.toInt(),
-        artistNames: (json['artists'] as List<dynamic>? ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map((artist) => artist['name'] as String? ?? '')
-            .where((name) => name.isNotEmpty)
-            .toList(growable: false),
-        durationMs: (json['durationMs'] as num?)?.toInt(),
-        explicit: json['explicit'] as bool?,
-        isrc: json['isrc'] as String?,
-        preview: CatalogPreview.fromJson(
-          json['preview'] as Map<String, dynamic>?,
-        ),
-      );
-}
-
-class CatalogAlbumDetail {
-  const CatalogAlbumDetail({
-    required this.title,
-    required this.artistNames,
-    this.releaseDate,
-    this.albumType,
-    this.label,
-    this.imageUrl,
-    this.discCount,
-    this.trackCount,
-    this.tracks = const [],
-    this.links = const [],
-    this.reference,
-  });
-
-  final String title;
-  final List<String> artistNames;
-  final String? releaseDate;
-  final String? albumType;
-  final String? label;
-  final String? imageUrl;
-  final int? discCount;
-  final int? trackCount;
-  final List<CatalogAlbumTrack> tracks;
-  final List<PlatformLink> links;
-  final CatalogEntityRef? reference;
-
-  int get totalDurationMs =>
-      tracks.fold(0, (sum, track) => sum + (track.durationMs ?? 0));
-
-  static CatalogAlbumDetail fromJson(Map<String, dynamic> json) {
-    final images = (json['images'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map((image) => image['url'] as String? ?? '')
-        .where((url) => url.startsWith('https://'))
-        .toList(growable: false);
-    return CatalogAlbumDetail(
-      title: json['title'] as String? ?? '',
-      artistNames: (json['artists'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map((artist) => artist['name'] as String? ?? '')
-          .where((name) => name.isNotEmpty)
-          .toList(growable: false),
-      releaseDate: json['releaseDate'] as String?,
-      albumType: json['albumType'] as String?,
-      label: json['label'] as String?,
-      imageUrl: images.isEmpty ? null : images.first,
-      discCount: (json['discCount'] as num?)?.toInt(),
-      trackCount: (json['trackCount'] as num?)?.toInt(),
-      tracks: (json['tracks'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(CatalogAlbumTrack.fromJson)
-          .toList(growable: false),
-      links: (json['externalLinks'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(PlatformLink.fromJson)
-          .toList(growable: false),
-      reference: CatalogEntityRef.fromJson(
-        json['reference'] as Map<String, dynamic>?,
-      ),
-    );
-  }
-}
-
-class CatalogAlbumSummary {
-  const CatalogAlbumSummary({
-    required this.title,
-    this.albumType,
-    this.releaseDate,
-    this.trackCount,
-    this.imageUrl,
-    this.reference,
-  });
-
-  final String title;
-  final String? albumType;
-  final String? releaseDate;
-  final int? trackCount;
-  final String? imageUrl;
-  final CatalogEntityRef? reference;
-
-  static CatalogAlbumSummary fromJson(Map<String, dynamic> json) {
-    final images = (json['images'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map((image) => image['url'] as String? ?? '')
-        .where((url) => url.startsWith('https://'))
-        .toList(growable: false);
-    return CatalogAlbumSummary(
-      title: json['title'] as String? ?? '',
-      albumType: json['albumType'] as String?,
-      releaseDate: json['releaseDate'] as String?,
-      trackCount: (json['trackCount'] as num?)?.toInt(),
-      imageUrl: images.isEmpty ? null : images.first,
-      reference: CatalogEntityRef.fromJson(
-        json['reference'] as Map<String, dynamic>?,
-      ),
-    );
-  }
-}
-
-class CatalogArtistDetail {
-  const CatalogArtistDetail({
-    required this.name,
-    this.disambiguation,
-    this.imageUrl,
-    this.genres = const [],
-    this.links = const [],
-    this.reference,
-  });
-
-  final String name;
-  final String? disambiguation;
-  final String? imageUrl;
-  final List<String> genres;
-  final List<PlatformLink> links;
-  final CatalogEntityRef? reference;
-
-  static CatalogArtistDetail fromJson(Map<String, dynamic> json) {
-    final images = (json['images'] as List<dynamic>? ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map((image) => image['url'] as String? ?? '')
-        .where((url) => url.startsWith('https://'))
-        .toList(growable: false);
-    return CatalogArtistDetail(
-      name: json['name'] as String? ?? '',
-      disambiguation: json['disambiguation'] as String?,
-      imageUrl: images.isEmpty ? null : images.first,
-      genres: (json['genres'] as List<dynamic>? ?? const [])
-          .whereType<String>()
-          .toList(growable: false),
-      links: (json['externalLinks'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(PlatformLink.fromJson)
-          .toList(growable: false),
-      reference: CatalogEntityRef.fromJson(
-        json['reference'] as Map<String, dynamic>?,
-      ),
-    );
-  }
-}
-
-class CatalogAlbumPage {
-  const CatalogAlbumPage({required this.items, this.nextCursor});
-
-  final List<CatalogAlbumSummary> items;
-  final String? nextCursor;
-
-  static CatalogAlbumPage fromJson(Map<String, dynamic> json) =>
-      CatalogAlbumPage(
-        items: (json['items'] as List<dynamic>? ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(CatalogAlbumSummary.fromJson)
-            .toList(growable: false),
-        nextCursor: json['nextCursor'] as String?,
       );
 }

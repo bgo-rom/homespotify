@@ -445,6 +445,384 @@ export const importJobs = sqliteTable(
   ],
 );
 
+export const ACQUISITION_JOB_STATUSES = [
+  'QUEUED',
+  'SEARCHING',
+  'SELECTING',
+  'OPENING_RESULT',
+  'VERIFYING',
+  'DOWNLOADING',
+  'RETRYING',
+  'PAUSED_PROVIDER',
+  'MANUAL_VERIFICATION_REQUIRED',
+  'WAITING_MANUAL_DOWNLOAD',
+  'DOWNLOADED',
+  'IMPORTING',
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'INTERRUPTED',
+] as const;
+export type AcquisitionJobStatus = (typeof ACQUISITION_JOB_STATUSES)[number];
+
+export const ACQUISITION_PROVIDERS = ['QOBUZ'] as const;
+export type AcquisitionProvider = (typeof ACQUISITION_PROVIDERS)[number];
+
+/**
+ * Suit l'acquisition distante AVANT que le vrai fichier soit pris en charge
+ * par UserImportService. Cette table ne remplace jamais `import_jobs`.
+ */
+export const acquisitionJobs = sqliteTable(
+  'acquisition_jobs',
+  {
+    id: text('id').primaryKey(), // UUID généré côté service
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().default('QOBUZ'),
+    query: text('query').notNull(),
+    /** Clé normalisée stable utilisée uniquement pour bloquer les doublons actifs. */
+    dedupeKey: text('dedupe_key').notNull(),
+    resultIndex: integer('result_index'),
+    status: text('status').notNull().default('QUEUED'),
+    stage: text('stage'),
+    progress: integer('progress').notNull().default(0),
+    message: text('message'),
+    selectedTitle: text('selected_title'),
+    selectedArtist: text('selected_artist'),
+    selectedAlbum: text('selected_album'),
+    selectedDurationSeconds: integer('selected_duration_seconds'),
+    attempt: integer('attempt').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    /** Chemin relatif à l'inbox utilisateur, jamais un chemin absolu exposé. */
+    downloadedRelativePath: text('downloaded_relative_path'),
+    localImportJobId: integer('local_import_job_id').references(() => importJobs.id, {
+      onDelete: 'set null',
+    }),
+    trackId: integer('track_id').references(() => tracks.id, { onDelete: 'set null' }),
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    providerUsed: text('provider_used').notNull().default('LUCIDA'),
+    fallbackFrom: text('fallback_from'),
+    fallbackReasonCode: text('fallback_reason_code'),
+    cancelRequested: integer('cancel_requested', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    startedAt: text('started_at'),
+    completedAt: text('completed_at'),
+  },
+  (table) => [
+    index('acquisition_jobs_user_created_idx').on(table.userId, table.createdAt),
+    index('acquisition_jobs_status_idx').on(table.status),
+    index('acquisition_jobs_local_import_idx').on(table.localImportJobId),
+    uniqueIndex('acquisition_jobs_active_dedupe_unique')
+      .on(table.userId, table.dedupeKey)
+      .where(
+        sql`status IN (
+          'QUEUED',
+          'SEARCHING',
+          'SELECTING',
+          'OPENING_RESULT',
+          'VERIFYING',
+          'DOWNLOADING',
+          'RETRYING',
+          'PAUSED_PROVIDER',
+          'MANUAL_VERIFICATION_REQUIRED',
+          'WAITING_MANUAL_DOWNLOAD',
+          'DOWNLOADED',
+          'IMPORTING'
+        )`,
+      ),
+    check(
+      'acquisition_jobs_provider_check',
+      sql`${table.provider} IN ('QOBUZ')`,
+    ),
+    check(
+      'acquisition_jobs_status_check',
+      sql`${table.status} IN (
+        'QUEUED',
+        'SEARCHING',
+        'SELECTING',
+        'OPENING_RESULT',
+        'VERIFYING',
+        'DOWNLOADING',
+        'RETRYING',
+        'PAUSED_PROVIDER',
+        'MANUAL_VERIFICATION_REQUIRED',
+        'WAITING_MANUAL_DOWNLOAD',
+        'DOWNLOADED',
+        'IMPORTING',
+        'COMPLETED',
+        'FAILED',
+        'CANCELLED',
+        'INTERRUPTED'
+      )`,
+    ),
+    check(
+      'acquisition_jobs_progress_check',
+      sql`${table.progress} >= 0 AND ${table.progress} <= 100`,
+    ),
+    check(
+      'acquisition_jobs_result_index_check',
+      sql`${table.resultIndex} IS NULL OR ${table.resultIndex} >= 0`,
+    ),
+    check(
+      'acquisition_jobs_duration_check',
+      sql`${table.selectedDurationSeconds} IS NULL OR ${table.selectedDurationSeconds} >= 0`,
+    ),
+    check(
+      'acquisition_jobs_attempt_check',
+      sql`${table.attempt} >= 0`,
+    ),
+    check(
+      'acquisition_jobs_max_attempts_check',
+      sql`${table.maxAttempts} >= 1 AND ${table.maxAttempts} <= 10`,
+    ),
+  ],
+);
+
+/**
+ * États d'un téléchargement Antra. `interrupted` est réservé aux jobs laissés
+ * actifs par un processus serveur disparu : c'est le seul état terminal
+ * relançable avec `failed`.
+ */
+export const DOWNLOAD_JOB_STATUSES = [
+  'queued',
+  'resolving',
+  'downloading',
+  'processing',
+  'importing',
+  'completed',
+  'failed',
+  'cancelled',
+  'interrupted',
+] as const;
+export type DownloadJobStatus = (typeof DOWNLOAD_JOB_STATUSES)[number];
+
+export const DOWNLOAD_PROVIDERS = ['antra'] as const;
+export type DownloadProviderName = (typeof DOWNLOAD_PROVIDERS)[number];
+
+/**
+ * Téléchargements par URL pilotés par le moteur Antra.
+ *
+ * Même règle que `acquisition_jobs` : cette table suit le processus Python,
+ * puis pointe vers le vrai `import_jobs` créé par UserImportService. Elle ne
+ * duplique jamais l'indexation de la bibliothèque.
+ */
+export const downloadJobs = sqliteTable(
+  'download_jobs',
+  {
+    id: text('id').primaryKey(), // UUID généré côté service
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().default('antra'),
+    /** URL telle que soumise, déjà validée contre l'allowlist. */
+    requestedUrl: text('requested_url').notNull(),
+    /** Forme canonique servant aussi de clé anti-doublon actif. */
+    normalizedUrl: text('normalized_url').notNull(),
+    /** `url` = lien collé ; `search` = recherche texte résolue en candidats. */
+    requestKind: text('request_kind').notNull().default('url'),
+    /** Texte saisi par l'utilisateur ; NULL pour une URL directe. */
+    query: text('query'),
+    /** Candidats retenus (JSON assaini : ni credential, ni token, ni chemin). */
+    candidatesJson: text('candidates_json'),
+    /** Historique ordonné des tentatives et de leur code d'échec. */
+    attemptsJson: text('attempts_json'),
+    /** Catalogue d'origine de l'URL finalement utilisée. */
+    selectedProvider: text('selected_provider'),
+    /** URL du candidat finalement utilisé (normalisée, jamais un secret). */
+    selectedUrl: text('selected_url'),
+    status: text('status').notNull().default('queued'),
+    /** Étape technique libre (`resolving`, `downloading`, `local_import`, …). */
+    stage: text('stage'),
+    progress: integer('progress').notNull().default(0),
+    message: text('message'),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    /** Source réellement retenue par Antra (`qobuz`, `tidal`, …). */
+    source: text('source'),
+    /** Libellé de qualité rapporté par Antra (`FLAC 24-bit/96kHz`, …). */
+    quality: text('quality'),
+    /** Chemin relatif à la racine d'import — jamais un chemin absolu exposé. */
+    outputPath: text('output_path'),
+    localImportJobId: integer('local_import_job_id').references(() => importJobs.id, {
+      onDelete: 'set null',
+    }),
+    trackId: integer('track_id').references(() => tracks.id, { onDelete: 'set null' }),
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    /** PID du processus Python en cours ; remis à NULL dès la fin. */
+    processId: integer('process_id'),
+    attempt: integer('attempt').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    cancelRequested: integer('cancel_requested', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    startedAt: text('started_at'),
+    completedAt: text('completed_at'),
+  },
+  (table) => [
+    index('download_jobs_user_created_idx').on(table.userId, table.createdAt),
+    index('download_jobs_status_idx').on(table.status),
+    index('download_jobs_local_import_idx').on(table.localImportJobId),
+    // Deux téléchargements actifs de la même URL par le même compte n'ont
+    // aucun sens : la contrainte est STRUCTURELLE, pas seulement applicative.
+    uniqueIndex('download_jobs_active_url_unique')
+      .on(table.userId, table.normalizedUrl)
+      .where(
+        sql`status IN (
+          'queued',
+          'resolving',
+          'downloading',
+          'processing',
+          'importing'
+        )`,
+      ),
+    check('download_jobs_provider_check', sql`${table.provider} IN ('antra')`),
+    check(
+      'download_jobs_status_check',
+      sql`${table.status} IN (
+        'queued',
+        'resolving',
+        'downloading',
+        'processing',
+        'importing',
+        'completed',
+        'failed',
+        'cancelled',
+        'interrupted'
+      )`,
+    ),
+    check(
+      'download_jobs_progress_check',
+      sql`${table.progress} >= 0 AND ${table.progress} <= 100`,
+    ),
+    check('download_jobs_attempt_check', sql`${table.attempt} >= 0`),
+    check(
+      'download_jobs_max_attempts_check',
+      sql`${table.maxAttempts} >= 1 AND ${table.maxAttempts} <= 10`,
+    ),
+    check(
+      'download_jobs_process_id_check',
+      sql`${table.processId} IS NULL OR ${table.processId} > 0`,
+    ),
+    check(
+      'download_jobs_request_kind_check',
+      sql`${table.requestKind} IN ('url', 'search')`,
+    ),
+  ],
+);
+
+export const MONOCHROME_MANUAL_SESSION_STATUSES = [
+  'WAITING',
+  'RESERVED',
+  'RESULT_RECEIVED',
+] as const;
+export type MonochromeManualSessionStatus =
+  (typeof MONOCHROME_MANUAL_SESSION_STATUSES)[number];
+
+/**
+ * Holder global du helper visible. Une seule ligne non terminale peut exister ;
+ * le helper ne modifie jamais SQLite et passe exclusivement par les routes.
+ */
+export const monochromeManualSessions = sqliteTable(
+  'monochrome_manual_sessions',
+  {
+    jobId: text('job_id')
+      .primaryKey()
+      .references(() => acquisitionJobs.id, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('WAITING'),
+    reservedAt: text('reserved_at'),
+    startedAt: text('started_at'),
+    resultReceivedAt: text('result_received_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('monochrome_manual_single_active_unique')
+      .on(sql`1`)
+      .where(sql`status IN ('WAITING','RESERVED')`),
+    index('monochrome_manual_user_idx').on(table.userId),
+    check(
+      'monochrome_manual_status_check',
+      sql`${table.status} IN ('WAITING','RESERVED','RESULT_RECEIVED')`,
+    ),
+  ],
+);
+
+export const PROVIDER_HEALTH_STATES = [
+  'CLOSED',
+  'OPEN',
+  'HALF_OPEN',
+  'MANUAL_VERIFICATION_REQUIRED',
+] as const;
+export type ProviderHealthState = (typeof PROVIDER_HEALTH_STATES)[number];
+
+/**
+ * État global et persistant d'un fournisseur d'acquisition. Aucun diagnostic
+ * brut, secret, URL ou chemin local n'est stocké dans cette table.
+ */
+export const providerHealth = sqliteTable(
+  'provider_health',
+  {
+    provider: text('provider').primaryKey(),
+    state: text('state').notNull().default('CLOSED'),
+    reasonCode: text('reason_code'),
+    publicMessage: text('public_message'),
+    failureCount: integer('failure_count').notNull().default(0),
+    openedAt: text('opened_at'),
+    retryAt: text('retry_at'),
+    lastFailureAt: text('last_failure_at'),
+    lastSuccessAt: text('last_success_at'),
+    halfOpenProbeJobId: text('half_open_probe_job_id'),
+    manualVerificationJobId: text('manual_verification_job_id'),
+    manualVerificationHolderJobId: text('manual_verification_holder_job_id'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    index('provider_health_state_retry_idx').on(table.state, table.retryAt),
+    check(
+      'provider_health_state_check',
+      sql`${table.state} IN (
+        'CLOSED',
+        'OPEN',
+        'HALF_OPEN',
+        'MANUAL_VERIFICATION_REQUIRED'
+      )`,
+    ),
+    check(
+      'provider_health_failure_count_check',
+      sql`${table.failureCount} >= 0`,
+    ),
+    check(
+      'provider_health_half_open_probe_check',
+      sql`${table.state} IN (
+        'HALF_OPEN'
+      ) OR ${table.halfOpenProbeJobId} IS NULL`,
+    ),
+    check(
+      'provider_health_manual_verification_job_required_check',
+      sql`(
+          ${table.state} = 'MANUAL_VERIFICATION_REQUIRED'
+          AND ${table.manualVerificationJobId} IS NOT NULL
+        ) OR (
+          ${table.manualVerificationJobId} IS NULL
+          AND ${table.manualVerificationHolderJobId} IS NULL
+        )`,
+    ),
+  ],
+);
+
 // Pistes/candidats masqués par utilisateur : suppression douce (REMOVED) ou
 // rejet de swipe (DISLIKED). Bloque les futures recommandations. Exactement
 // une des deux cibles (trackId XOR candidateId) est renseignée.

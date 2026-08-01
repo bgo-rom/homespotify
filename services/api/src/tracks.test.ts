@@ -388,3 +388,96 @@ describe('GET /api/tracks/:id/cover (pochettes enrichies)', () => {
     expect(coverRes.rawPayload).toEqual(cover);
   });
 });
+
+// Phase 1.5 — parité des validateurs HTTP et comportement HEAD.
+// Ces tests VERROUILLENT le comportement existant (aucune fonctionnalité HTTP
+// n'est ajoutée) : ils servent de référence avant l'introduction du Storage
+// Agent distant, qui devra reproduire exactement ces réponses.
+describe('HEAD /api/tracks/:id/stream et validateurs de cache', () => {
+  let trackId: number;
+
+  beforeAll(async () => {
+    const res = await upload(makeWav({ title: 'Head Test', seconds: 0.3 }), 'h.wav', 'rip_cd');
+    trackId = res.json().id;
+  });
+
+  it('HEAD sans Bearer → 401, aucun corps', async () => {
+    const res = await app.inject({ method: 'HEAD', url: `/api/tracks/${trackId}/stream` });
+    expect(res.statusCode).toBe(401);
+    expect(res.rawPayload.length).toBe(0);
+  });
+
+  it('HEAD authentifié → 200 avec les mêmes en-têtes que GET, sans corps', async () => {
+    const head = await inject({ method: 'HEAD', url: `/api/tracks/${trackId}/stream` });
+    const get = await inject({ method: 'GET', url: `/api/tracks/${trackId}/stream` });
+
+    expect(head.statusCode).toBe(200);
+    expect(head.rawPayload.length).toBe(0);
+    expect(head.headers['content-length']).toBe(get.headers['content-length']);
+    expect(head.headers['etag']).toBe(get.headers['etag']);
+    expect(head.headers['last-modified']).toBe(get.headers['last-modified']);
+    expect(head.headers['accept-ranges']).toBe('bytes');
+    expect(head.headers['content-type']).toBe('audio/wav');
+  });
+
+  it('HEAD sur une piste inconnue → 404', async () => {
+    const res = await inject({ method: 'HEAD', url: '/api/tracks/424242/stream' });
+    expect(res.statusCode).toBe(404);
+    expect(res.rawPayload.length).toBe(0);
+  });
+
+  it('HEAD avec Range → 206 et content-range, comme GET', async () => {
+    const res = await inject({
+      method: 'HEAD',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['content-range']).toMatch(/^bytes 0-3\/\d+$/);
+    expect(Number(res.headers['content-length'])).toBe(4);
+    expect(res.rawPayload.length).toBe(0);
+  });
+
+  it('HEAD avec Range hors bornes → 416', async () => {
+    const res = await inject({
+      method: 'HEAD',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { range: 'bytes=999999999-' },
+    });
+    expect(res.statusCode).toBe(416);
+    expect(res.headers['content-range']).toMatch(/^bytes \*\/\d+$/);
+  });
+
+  it('ETag = SHA-256 de la piste, identique sur stream et download', async () => {
+    const stream = await inject({ method: 'GET', url: `/api/tracks/${trackId}/stream` });
+    const download = await inject({ method: 'GET', url: `/api/tracks/${trackId}/download` });
+    const list = await inject({ method: 'GET', url: '/api/tracks?limit=200' });
+    const item = list.json().items.find((t: { id: number }) => t.id === trackId);
+
+    expect(stream.headers['etag']).toBe(`"${item.etag}"`);
+    expect(download.headers['etag']).toBe(stream.headers['etag']);
+  });
+
+  it('If-None-Match n’est PAS honoré : 200 complet (comportement historique)', async () => {
+    const first = await inject({ method: 'GET', url: `/api/tracks/${trackId}/stream` });
+    const second = await inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { 'if-none-match': first.headers['etag'] as string },
+    });
+    // Aucune revalidation conditionnelle n'existe sur cette route, ni avant ni
+    // après l'abstraction de stockage. Verrouillé pour détecter toute dérive.
+    expect(second.statusCode).toBe(200);
+    expect(second.rawPayload.length).toBe(first.rawPayload.length);
+  });
+
+  it('If-Range n’est PAS honoré : 206 même avec un validateur périmé', async () => {
+    const res = await inject({
+      method: 'GET',
+      url: `/api/tracks/${trackId}/stream`,
+      headers: { range: 'bytes=0-3', 'if-range': '"validateur-perime"' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.rawPayload.length).toBe(4);
+  });
+});

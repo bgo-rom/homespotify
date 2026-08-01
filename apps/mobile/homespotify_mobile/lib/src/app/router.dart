@@ -8,14 +8,10 @@ import 'home_shell.dart';
 import 'route_observer.dart';
 import '../features/admin/presentation/admin_dashboard_screen.dart';
 import '../features/admin/presentation/admin_users_screen.dart';
-import '../features/admin/presentation/admin_music_requests_screen.dart';
 import '../features/admin/presentation/admin_imports_screen.dart';
 import '../features/admin/presentation/admin_recommendation_diagnostics_screen.dart';
-import '../features/catalog_search/presentation/catalog_album_screen.dart';
-import '../features/catalog_search/presentation/catalog_artist_screen.dart';
 import '../features/catalog_search/presentation/catalog_search_screen.dart';
 import '../features/discovery/presentation/discover_screen.dart';
-import '../features/discovery/presentation/music_requests_screen.dart';
 import '../features/library/domain/local_playlist.dart';
 import '../features/library/presentation/album_detail_screen.dart';
 import '../features/library/presentation/albums_screen.dart';
@@ -255,8 +251,9 @@ final GoRouter appRouter = GoRouter(
         );
       },
     ),
-    // Recherche catalogue multi-fournisseurs (découverte → demande, jamais de
-    // téléchargement). Les identifiants de fiche sont validés côté backend.
+    // UNIQUE écran de recherche distante : trouver un titre et l'installer.
+    // Le job de téléchargement vit côté serveur et survit à la fermeture de
+    // l'écran.
     GoRoute(
       path: '/catalog-search',
       name: 'catalog-search',
@@ -265,38 +262,6 @@ final GoRouter appRouter = GoRouter(
         child: const CatalogSearchScreen(),
       ),
     ),
-    GoRoute(
-      path: '/catalog-search/artists/:provider/:id',
-      name: 'catalog-artist',
-      pageBuilder: (context, state) => _darkTransitionPage(
-        key: state.pageKey,
-        child: CatalogArtistScreen(
-          provider: state.pathParameters['provider'] ?? '',
-          artistId: state.pathParameters['id'] ?? '',
-        ),
-      ),
-    ),
-    GoRoute(
-      path: '/catalog-search/albums/:provider/:id',
-      name: 'catalog-album',
-      pageBuilder: (context, state) => _darkTransitionPage(
-        key: state.pageKey,
-        child: CatalogAlbumScreen(
-          provider: state.pathParameters['provider'] ?? '',
-          albumId: state.pathParameters['id'] ?? '',
-        ),
-      ),
-    ),
-    GoRoute(
-      path: '/requests',
-      name: 'music-requests',
-      pageBuilder: (context, state) => _darkTransitionPage(
-        key: state.pageKey,
-        child: const MusicRequestsScreen(),
-      ),
-    ),
-    // Administration : visibles uniquement pour le OWNER (AdminGuard) ; le
-    // backend revérifie chaque appel — l'UI n'est jamais la seule barrière.
     GoRoute(
       path: '/admin',
       name: 'admin',
@@ -311,14 +276,6 @@ final GoRouter appRouter = GoRouter(
       pageBuilder: (context, state) => _darkTransitionPage(
         key: state.pageKey,
         child: const AdminUsersScreen(),
-      ),
-    ),
-    GoRoute(
-      path: '/admin/music-requests',
-      name: 'admin-music-requests',
-      pageBuilder: (context, state) => _darkTransitionPage(
-        key: state.pageKey,
-        child: const AdminMusicRequestsScreen(),
       ),
     ),
     GoRoute(

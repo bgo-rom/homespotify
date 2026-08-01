@@ -17,8 +17,8 @@ import '../data/auth_api.dart';
 import '../../catalog/data/catalog_api.dart';
 import '../../library/application/track_library_membership.dart';
 import '../../catalog_search/application/catalog_search_controller.dart';
+import '../../catalog_search/application/track_install_controller.dart';
 import '../../catalog_search/presentation/catalog_preview_controller.dart';
-import '../../catalog_search/presentation/request_from_catalog_sheet.dart';
 import '../../offline/application/offline_index.dart';
 import '../data/auth_session_manager.dart';
 import '../data/biometric_service.dart';
@@ -431,11 +431,11 @@ class AuthController extends Notifier<AuthState> {
     // Appartenance par piste : recalculée pour le nouveau compte (skibidi voit
     // « Supprimer », le OWNER « Ajouter » pour la même piste).
     ref.invalidate(trackMembershipProvider);
-    // Recherche et demandes catalogue : aucune recherche ni marqueur de
-    // demande du compte précédent ne survit à la rotation de session.
+    // Recherche distante : aucune recherche, aperçu ni installation suivie du
+    // compte précédent ne survit à la rotation de session.
     ref.invalidate(catalogSearchProvider);
     ref.invalidate(catalogPreviewProvider);
-    ref.invalidate(catalogRequestedKeysProvider);
+    ref.invalidate(trackInstallProvider);
     // Index hors ligne : reconstruit pour le compte courant (vide si aucun).
     // Les fichiers de l'ancien compte restent sur disque mais deviennent
     // immédiatement inaccessibles — aucun fallback vers un autre userId.

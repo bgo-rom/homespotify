@@ -2,13 +2,10 @@ import { watch, type Dirent, type FSWatcher } from 'node:fs';
 import { mkdir, readdir, rename, stat } from 'node:fs/promises';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DbHandle } from '../db/client.js';
 import {
-  ACTIVE_MUSIC_REQUEST_STATUSES,
   importJobs,
-  musicRequestItems,
-  musicRequests,
   tracks,
   userImportDirectories,
   users,
@@ -22,12 +19,9 @@ import {
   ImportError,
 } from './import-service.js';
 import { hashFile } from './import-service.js';
-import { reconcileMusicRequestStatus } from '../discovery/music-request-service.js';
 
 const ACCEPTED_EXTENSIONS = new Set(['.flac', '.wav']);
 const IGNORED_SUFFIXES = ['.tmp', '.part', '.download', '.crdownload'];
-const REQUEST_MATCH_THRESHOLD = 75;
-const REQUEST_MATCH_MARGIN = 15;
 
 export interface UserImportPaths {
   userId: number;
@@ -73,7 +67,6 @@ export class UserImportError extends Error {
       | 'invalid_path'
       | 'job_not_found'
       | 'track_not_found'
-      | 'request_item_not_found'
       | 'file_not_available',
     message: string,
   ) {
@@ -107,12 +100,6 @@ interface ParsedImportMetadata {
     width: number | null;
     height: number | null;
   } | null;
-}
-
-interface RequestMatch {
-  requestId: number;
-  itemId: number;
-  score: number;
 }
 
 function normalize(value: string | null | undefined): string {
@@ -509,21 +496,15 @@ export class UserImportService {
       }
 
       grantTrack(this.handle, { userId, trackId, source: 'MANUAL_IMPORT' });
-      const matches = this.findRequestMatches(userId, metadata);
-      const selected = this.selectUniqueRequestMatch(matches);
-      if (selected !== null) {
-        this.attachTrackToRequestItem(userId, selected.itemId, trackId, null);
-      }
-      const ambiguousRequest = selected === null && matches.length > 0;
+      // Aucun rapprochement avec une demande : l'installation est directe et
+      // la piste est rattachée au compte qui l'a déclenchée, point.
       const destination = await this.moveTo(directory.processed, safePath);
       this.updateJob(job.id, {
-        status: ambiguousRequest ? 'WAITING_FOR_OWNER_MATCH' : reused ? 'REUSED' : 'IMPORTED',
+        status: reused ? 'REUSED' : 'IMPORTED',
         sha256,
         metadataJson: metadataJson(metadata),
         trackId,
-        musicRequestId: selected?.requestId ?? null,
-        musicRequestItemId: selected?.itemId ?? null,
-        matchCandidatesJson: ambiguousRequest ? JSON.stringify(matches) : null,
+        matchCandidatesJson: null,
         relativePath: relative(resolve(this.options.importRoot), destination),
         processedAt: new Date().toISOString(),
       });
@@ -531,7 +512,7 @@ export class UserImportService {
         action: reused ? 'import.track_reused' : 'import.track_created',
         actorUserId: null,
         targetUserId: userId,
-        metadata: { jobId: job.id, trackId, requestId: selected?.requestId ?? 0 },
+        metadata: { jobId: job.id, trackId },
       });
       return job.id;
     } catch (error) {
@@ -626,87 +607,6 @@ export class UserImportService {
     return { kind: 'none', trackId: null };
   }
 
-  private findRequestMatches(userId: number, metadata: ParsedImportMetadata): RequestMatch[] {
-    const rows = this.handle.db
-      .select({
-        requestId: musicRequests.id,
-        itemId: musicRequestItems.id,
-        position: musicRequestItems.position,
-        title: musicRequestItems.title,
-        artist: musicRequestItems.artist,
-        album: musicRequestItems.album,
-        durationMs: musicRequestItems.durationMs,
-        isrc: musicRequestItems.isrc,
-      })
-      .from(musicRequestItems)
-      .innerJoin(musicRequests, eq(musicRequests.id, musicRequestItems.musicRequestId))
-      .where(
-        and(
-          eq(musicRequests.requestedByUserId, userId),
-          inArray(musicRequests.status, [...ACTIVE_MUSIC_REQUEST_STATUSES]),
-          inArray(musicRequestItems.status, ['PENDING', 'SEARCHING', 'FOUND', 'IMPORTING']),
-        ),
-      )
-      .all();
-    return rows
-      .map((row) => {
-        let score = 0;
-        if (metadata.isrc !== null && row.isrc !== null && metadata.isrc === row.isrc.toUpperCase()) score += 100;
-        if (normalize(metadata.title) === normalize(row.title)) score += 35;
-        if (normalize(metadata.artist) === normalize(row.artist)) score += 30;
-        if (normalize(metadata.album) === normalize(row.album)) score += 15;
-        if (
-          metadata.durationMs !== null &&
-          row.durationMs !== null &&
-          Math.abs(metadata.durationMs - row.durationMs) <= 5000
-        ) score += 10;
-        if (metadata.trackPosition !== null && metadata.trackPosition === row.position) score += 5;
-        return { requestId: row.requestId, itemId: row.itemId, score };
-      })
-      .filter((match) => match.score >= 35)
-      .sort((a, b) => b.score - a.score || a.itemId - b.itemId);
-  }
-
-  private selectUniqueRequestMatch(matches: RequestMatch[]): RequestMatch | null {
-    const first = matches[0];
-    if (!first || first.score < REQUEST_MATCH_THRESHOLD) return null;
-    const second = matches[1];
-    if (second && first.score - second.score < REQUEST_MATCH_MARGIN) return null;
-    return first;
-  }
-
-  private attachTrackToRequestItem(
-    userId: number,
-    itemId: number,
-    trackId: number,
-    ownerId: number | null,
-  ): void {
-    const item = this.handle.db
-      .select({ item: musicRequestItems, requesterId: musicRequests.requestedByUserId })
-      .from(musicRequestItems)
-      .innerJoin(musicRequests, eq(musicRequests.id, musicRequestItems.musicRequestId))
-      .where(eq(musicRequestItems.id, itemId))
-      .get();
-    if (!item || item.requesterId !== userId) {
-      throw new UserImportError('request_item_not_found', 'Item de demande inconnu pour cet utilisateur.');
-    }
-    const track = this.handle.db.select({ id: tracks.id }).from(tracks).where(eq(tracks.id, trackId)).get();
-    if (!track) throw new UserImportError('track_not_found', 'Piste inconnue.');
-    grantTrack(this.handle, {
-      userId,
-      trackId,
-      source: ownerId === null ? 'MANUAL_IMPORT' : 'ADMIN',
-      addedByUserId: ownerId,
-    });
-    const now = new Date().toISOString();
-    this.handle.db
-      .update(musicRequestItems)
-      .set({ resultingTrackId: trackId, status: 'IMPORTING', updatedAt: now })
-      .where(eq(musicRequestItems.id, itemId))
-      .run();
-    reconcileMusicRequestStatus(this.handle, item.item.musicRequestId);
-  }
-
   private async moveTo(destinationDir: string, source: string): Promise<string> {
     await mkdir(destinationDir, { recursive: true });
     const extension = extname(source);
@@ -754,25 +654,6 @@ export class UserImportService {
       .orderBy(desc(importJobs.id))
       .all()
       .map((row) => {
-        const availableRequestItems = this.handle.db
-          .select({
-            id: musicRequestItems.id,
-            requestId: musicRequests.id,
-            position: musicRequestItems.position,
-            title: musicRequestItems.title,
-            artist: musicRequestItems.artist,
-          })
-          .from(musicRequestItems)
-          .innerJoin(musicRequests, eq(musicRequests.id, musicRequestItems.musicRequestId))
-          .where(
-            and(
-              eq(musicRequests.requestedByUserId, row.job.userId),
-              inArray(musicRequests.status, [...ACTIVE_MUSIC_REQUEST_STATUSES]),
-              inArray(musicRequestItems.status, ['PENDING', 'SEARCHING', 'FOUND', 'IMPORTING']),
-            ),
-          )
-          .orderBy(desc(musicRequests.id), musicRequestItems.position)
-          .all();
         return {
           ...row.job,
           user: { id: row.job.userId, username: row.username, displayName: row.displayName },
@@ -780,7 +661,6 @@ export class UserImportService {
           track: row.job.trackId === null
             ? null
             : { id: row.job.trackId, title: row.trackTitle, artist: row.trackArtist },
-          availableRequestItems,
         };
       });
   }
@@ -818,28 +698,4 @@ export class UserImportService {
     });
   }
 
-  assignJob(jobId: number, itemId: number, trackId: number, ownerId: number): void {
-    const job = this.handle.db.select().from(importJobs).where(eq(importJobs.id, jobId)).get();
-    if (!job) throw new UserImportError('job_not_found', 'Import inconnu.');
-    this.attachTrackToRequestItem(job.userId, itemId, trackId, ownerId);
-    const item = this.handle.db
-      .select({ requestId: musicRequestItems.musicRequestId })
-      .from(musicRequestItems)
-      .where(eq(musicRequestItems.id, itemId))
-      .get();
-    this.updateJob(jobId, {
-      status: 'REUSED',
-      trackId,
-      musicRequestId: item?.requestId ?? null,
-      musicRequestItemId: itemId,
-      matchCandidatesJson: null,
-      processedAt: new Date().toISOString(),
-    });
-    recordAudit(this.handle, {
-      action: 'import.manually_matched',
-      actorUserId: ownerId,
-      targetUserId: job.userId,
-      metadata: { jobId, itemId, trackId },
-    });
-  }
 }

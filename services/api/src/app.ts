@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import fastifyJwt from '@fastify/jwt';
@@ -17,7 +18,6 @@ import { registerPlayerRoute } from './routes/player.js';
 import { registerSyncRoutes } from './routes/sync.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerDiscoveryRoutes } from './routes/discovery.js';
-import { registerMusicRequestRoutes } from './routes/music-requests.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerLibraryAdminRoutes } from './routes/library-admin.js';
 import { registerFavoritesRoutes } from './routes/favorites.js';
@@ -28,7 +28,6 @@ import {
   backfillOwnerLibrary,
   repairOwnerBackfillLeak,
 } from './library/user-library-service.js';
-import { reconcileAllMusicRequests } from './discovery/music-request-service.js';
 import {
   LastfmMusicSimilarityProvider,
   type MusicSimilarityProvider,
@@ -64,6 +63,7 @@ import {
 import { registerPlaybackSettingsRoutes } from './routes/playback-settings.js';
 import { UserImportService } from './import/user-import-service.js';
 import { AcquisitionJobRepository } from './import/acquisition-job-repository.js';
+import { ProviderHealthRepository } from './import/provider-health-repository.js';
 import {
   AcquisitionImportService,
   type AcquisitionRunner,
@@ -87,6 +87,21 @@ import {
   type TrackLoudnessAnalyzer,
 } from './audio/loudness-analysis.js';
 import { registerLoudnessAnalysisRoutes } from './routes/loudness-analysis.js';
+import type { AudioStorageProvider } from './storage/audio-storage.js';
+import { LocalFileStorageProvider } from './storage/local-file-storage.js';
+import {
+  createAudioStorageProvider,
+  DEFAULT_AUDIO_STORAGE_MODE,
+} from './storage/provider-factory.js';
+import { AntraDownloadProvider } from './download/antra-download-provider.js';
+import { DownloadJobRepository } from './download/download-job-repository.js';
+import { DownloadService } from './download/download-service.js';
+import type { DownloadProvider } from './download/download-provider.js';
+import {
+  DiscoveryTrackSearchProvider,
+  type TrackSearchProvider,
+} from './download/track-search.js';
+import { registerDownloadRoutes } from './routes/downloads.js';
 
 const pkg = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
@@ -100,6 +115,10 @@ declare module 'fastify' {
     config: AppConfig;
     /** Service des variantes hors ligne (tests : attendre `drain()`). */
     offlineVariants: OfflineVariantService;
+    /** Stockage de la bibliothèque (Phase 1 migration VPS : toujours local). */
+    audioStorage: AudioStorageProvider;
+    /** Stockage des dérivées hors ligne : reste local même après migration. */
+    offlineVariantStorage: AudioStorageProvider;
   }
 }
 
@@ -125,6 +144,10 @@ export interface BuildAppOptions {
   discoveryProviders?: RegisteredProvider[];
   /** Encodeur Opus injectable : les tests ne lancent jamais ffmpeg/ffprobe. */
   opusEncoderRunner?: OpusEncoderRunner;
+  /** Moteur de téléchargement injectable : les tests ne lancent jamais Antra. */
+  downloadProvider?: DownloadProvider;
+  /** Recherche de pistes injectable : les tests n'appellent aucun catalogue. */
+  trackSearchProvider?: TrackSearchProvider;
 }
 
 /**
@@ -267,9 +290,6 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
       'isolation réparée : accès OWNER issus du backfill retirés',
     );
   }
-  // Réconciliation au boot : COMPLETED n'est vrai que si la piste associée
-  // est réellement visible dans la bibliothèque du demandeur.
-  reconcileAllMusicRequests(dbHandle);
   // Nettoyage legacy : files des anciens modèles supprimées, candidats de
   // mauvaise qualité désactivés — l'historique utilisateur est préservé.
   invalidateLegacyArtifacts(dbHandle);
@@ -306,7 +326,22 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   });
   const importWatcherEnabled = options.importWatcher ?? config.nodeEnv !== 'test';
 
-  const defaultLucidaRunner = config.lucida
+  // --- Acquisition HISTORIQUE (Lucida / Monochrome) ------------------------
+  // Neutralisée par défaut depuis l'intégration d'Antra : aucun ancien
+  // fournisseur n'est plus lancé automatiquement. Les fichiers restent en
+  // place et `ACQUISITION_LEGACY_ENABLED=true` rétablit exactement l'ancien
+  // comportement.
+  // `acquisitionProviders` peut être absent des configs de test historiques :
+  // l'accès optionnel évite de casser un appelant existant.
+  const legacyAcquisitionEnabled =
+    config.acquisitionProviders?.legacyEnabled === true && config.lucida !== undefined;
+  if (config.lucida !== undefined && !legacyAcquisitionEnabled) {
+    app.log.info(
+      'acquisition historique Lucida/Monochrome désactivée (ACQUISITION_LEGACY_ENABLED=false)',
+    );
+  }
+
+  const defaultLucidaRunner = legacyAcquisitionEnabled && config.lucida
     ? new LucidaProcessRunner({
         scriptPath: config.lucida.scriptPath,
         pythonPath: config.lucida.pythonPath,
@@ -328,8 +363,42 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
           new AcquisitionJobRepository(dbHandle),
           acquisitionRunner,
           importService,
+          {
+            maxConcurrent: config.lucida.maxConcurrentDownloads,
+            interactiveVerificationEnabled:
+              config.lucida.interactiveVerificationEnabled,
+            interactiveVerificationTimeoutSeconds:
+              config.lucida.interactiveVerificationTimeoutSeconds,
+            interactiveStagingRoot: resolve(
+              config.importRoot,
+              '.interactive',
+            ),
+            monochromeStagingRoot: resolve(
+              config.importRoot,
+              '.monochrome',
+            ),
+            monochromeFallbackEnabled:
+              config.acquisitionProviders
+                ?.monochromeManualFallbackEnabled === true &&
+              config.acquisitionProviders.order.includes(
+                'MONOCHROME_MANUAL',
+              ),
+            monochromeManualTimeoutSeconds:
+              config.acquisitionProviders
+                ?.monochromeManualTimeoutSeconds ?? 600,
+            providerHealth: new ProviderHealthRepository(
+              dbHandle,
+              config.lucida,
+            ),
+          },
         )
       : null;
+
+  app.log.info(
+    `Interactive Lucida verification enabled: ${
+      config.lucida?.interactiveVerificationEnabled === true
+    }`,
+  );
 
   if (acquisitionService) {
     const interruptedJobs = acquisitionService.recoverInterruptedJobs();
@@ -339,6 +408,79 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
         'acquisition Lucida : jobs actifs marqués interrompus au démarrage',
       );
     }
+    if (acquisitionService.repairedOrphanedManualVerificationOnStartup()) {
+      app.log.warn(
+        'acquisition Lucida : état de vérification manuelle orphelin réparé',
+      );
+    }
+  }
+
+  // --- Recherche musicale pour le téléchargement ---------------------------
+  // Antra ne sait pas rechercher par texte : la résolution « Guala Lifestyles »
+  // → URL réutilise le catalogue de découverte déjà branché (Deezer, iTunes,
+  // Spotify, MusicBrainz). Aucun provider externe supplémentaire.
+  //
+  // Résolution PARESSEUSE : `discoveryService` est assemblé plus bas, après les
+  // providers média. La recherche n'a lieu qu'au moment d'une requête, donc la
+  // référence est toujours initialisée à l'appel.
+  let lazyTrackSearch: DiscoveryTrackSearchProvider | null = null;
+  const trackSearchProvider: TrackSearchProvider = {
+    name: 'discovery_catalog',
+    searchTracks: (input) => {
+      lazyTrackSearch ??= new DiscoveryTrackSearchProvider(discoveryService, {
+        enabled: (config.discovery ?? defaultDiscoveryConfig()).enabled,
+      });
+      return lazyTrackSearch.searchTracks(input);
+    },
+  };
+
+  // --- Moteur de téléchargement Antra (fournisseur PRINCIPAL) --------------
+  // Absent de la configuration = fonctionnalité indisponible, jamais une
+  // panne : le backend démarre et /api/downloads répond 503.
+  const downloadProvider: DownloadProvider | null =
+    options.downloadProvider ??
+    (config.antra
+      ? new AntraDownloadProvider(config.antra, {
+          logger: {
+            debug: (context, message) => app.log.debug(context, message),
+            warn: (context, message) => app.log.warn(context, message),
+          },
+        })
+      : null);
+
+  const downloadService =
+    config.antra && downloadProvider
+      ? new DownloadService(
+          dbHandle,
+          new DownloadJobRepository(dbHandle),
+          downloadProvider,
+          importService,
+          {
+            importRoot: config.importRoot,
+            maxConcurrent: config.antra.maxConcurrent,
+            jobTimeoutMs: config.antra.jobTimeoutMs,
+            allowedExtensions: config.antra.allowedExtensions,
+            searchProvider: options.trackSearchProvider ?? trackSearchProvider,
+            logger: {
+              info: (context, message) => app.log.info(context, message),
+              warn: (context, message) => app.log.warn(context, message),
+              error: (context, message) => app.log.error(context, message),
+              debug: (context, message) => app.log.debug(context, message),
+            },
+          },
+        )
+      : null;
+
+  if (downloadService) {
+    const interrupted = downloadService.recoverInterruptedJobs();
+    if (interrupted > 0) {
+      app.log.warn(
+        { interruptedJobs: interrupted },
+        'téléchargements Antra : jobs actifs marqués interrompus au démarrage',
+      );
+    }
+  } else {
+    app.log.info('moteur de téléchargement Antra non configuré (ANTRA_DIR absent)');
   }
 
   const backupScheduler = config.backup?.enabled
@@ -359,6 +501,27 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   app.decorate('config', config);
   app.decorate('dbHandle', dbHandle);
   app.decorate('offlineVariants', offlineVariantService);
+  // Mode validé au chargement de la configuration : une valeur inconnue a déjà
+  // fait échouer le démarrage, il n'y a pas de repli silencieux ici.
+  app.decorate(
+    'audioStorage',
+    createAudioStorageProvider(config.audioStorageMode ?? DEFAULT_AUDIO_STORAGE_MODE, {
+      musicDir: config.musicDir,
+      ...(config.audioRemote === undefined ? {} : { remote: config.audioRemote }),
+      ...(config.audioCache === undefined ? {} : { cache: config.audioCache }),
+      logger: {
+        info: (fields, message) => app.log.info(fields, message),
+        warn: (fields, message) => app.log.warn(fields, message),
+        error: (fields, message) => app.log.error(fields, message),
+      },
+    }),
+  );
+  // Les dérivées hors ligne sont régénérables et vivent sur la machine qui
+  // exécute l'API : elles ne transiteront jamais par le Storage Agent.
+  app.decorate(
+    'offlineVariantStorage',
+    new LocalFileStorageProvider(offlineConfig.derivedCacheDir),
+  );
 
   // Uploads WAV volumineux (~50 Mo/piste) : limite configurable, 200 Mo par défaut
   app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 1 } });
@@ -368,6 +531,7 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
 
   app.addHook('onClose', async () => {
     backupScheduler?.stop();
+    await downloadService?.stop();
     await acquisitionService?.stop();
     // Si le runner par défaut n’est utilisé que par la recherche, il n’est
     // pas détenu par AcquisitionImportService et doit aussi être arrêté ici.
@@ -377,6 +541,7 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     importService.stop();
     offlineVariantService.stop();
     await offlineVariantService.drain();
+    await app.audioStorage.close?.();
     dbHandle.sqlite.close();
   });
 
@@ -540,11 +705,12 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
       service: discoveryService,
       discoveryEnabled: discoveryConfig.enabled,
     });
-    registerMusicRequestRoutes(instance, guards);
     registerPlayEventRoutes(instance, guards);
     registerPlaybackSettingsRoutes(instance, guards, audioAnalysis);
     registerLoudnessAnalysisRoutes(instance, guards, loudnessAnalysis);
     registerImportRoutes(instance, guards, importService);
+    // Téléchargement par URL — fournisseur PRINCIPAL et par défaut.
+    registerDownloadRoutes(instance, guards, { service: downloadService });
     registerAcquisitionImportRoutes(instance, guards, {
       service: acquisitionService,
       searchRunner: lucidaSearchRunner,

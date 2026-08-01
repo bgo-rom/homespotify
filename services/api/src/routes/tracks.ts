@@ -1,6 +1,12 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import {
+  AudioStorageError,
+  trackStorageReference,
+  type AudioStorageProvider,
+  type TrackStorageReference,
+} from '../storage/audio-storage.js';
 import { performance } from 'node:perf_hooks';
 import { Transform } from 'node:stream';
 import type { FastifyReply, FastifyRequest, FastifyInstance } from 'fastify';
@@ -34,6 +40,57 @@ function streamLog(
   request.log[level]({ event, requestId: streamRequestId(request), ...fields }, event);
 }
 
+function storageErrorReply(
+  reply: FastifyReply,
+  error: unknown,
+): FastifyReply {
+  const code =
+    error instanceof AudioStorageError ? error.code : 'REMOTE_INTERNAL';
+  if (code === 'NOT_FOUND' || code === 'NOT_A_FILE') {
+    return reply.code(404).send({
+      statusCode: 404,
+      error: 'not_found',
+      message: 'Fichier audio introuvable',
+    });
+  }
+  if (
+    code === 'STORAGE_OFFLINE' ||
+    code === 'AGENT_UNAVAILABLE' ||
+    code === 'CONNECT_TIMEOUT' ||
+    code === 'HEADERS_TIMEOUT' ||
+    code === 'BODY_TIMEOUT' ||
+    code === 'INDEX_STALE' ||
+    code === 'INDEX_NOT_LOADED' ||
+    code === 'MUSIC_ROOT_UNAVAILABLE' ||
+    code === 'STORAGE_BUSY'
+  ) {
+    if (code === 'STORAGE_BUSY') reply.header('retry-after', '1');
+    return reply.code(503).send({
+      statusCode: 503,
+      error: 'service_unavailable',
+      message: 'Stockage audio temporairement indisponible',
+    });
+  }
+  if (
+    code === 'REMOTE_AUTH_FAILED' ||
+    code === 'REMOTE_INVALID_RESPONSE' ||
+    code === 'REMOTE_RANGE_INVALID' ||
+    code === 'REMOTE_STREAM_INTERRUPTED' ||
+    code === 'REMOTE_INTERNAL'
+  ) {
+    return reply.code(502).send({
+      statusCode: 502,
+      error: 'bad_gateway',
+      message: 'Réponse du stockage audio invalide',
+    });
+  }
+  return reply.code(500).send({
+    statusCode: 500,
+    error: 'internal_error',
+    message: 'Erreur interne du stockage audio',
+  });
+}
+
 /** Valeur Content-Disposition : fallback ASCII + filename* UTF-8 (RFC 5987) pour tags accentués. */
 function attachmentHeader(name: string): string {
   const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
@@ -50,12 +107,13 @@ function attachmentHeader(name: string): string {
 export async function serveTrackFile(
   request: FastifyRequest,
   reply: FastifyReply,
-  trackId: number,
-  absPath: string,
-  hash: string,
+  provider: AudioStorageProvider,
+  reference: TrackStorageReference,
   contentType: string,
   disposition?: string,
 ): Promise<FastifyReply> {
+  const trackId = reference.trackId;
+  const hash = reference.contentHash;
   const requestStartedAt = performance.now();
   const requestId = streamRequestId(request);
   reply.header('x-request-id', requestId);
@@ -70,24 +128,29 @@ export async function serveTrackFile(
   streamLog(request, 'STREAM_FILE_STAT_STARTED', { trackId });
   let info;
   try {
-    info = await stat(absPath);
+    info = await provider.stat(reference, { requestId });
   } catch (error) {
-    const code = error instanceof Error && 'code' in error ? String(error.code) : 'STAT_FAILED';
+    const code =
+      error instanceof AudioStorageError
+        ? error.code
+        : error instanceof Error && 'code' in error
+          ? String(error.code)
+          : 'STAT_FAILED';
     streamLog(request, 'STREAM_FILE_ERROR', { trackId, errorCode: code }, 'error');
-    return reply.code(404).send({ statusCode: 404, error: 'not_found', message: 'Fichier audio introuvable' });
+    return storageErrorReply(reply, error);
   }
   const statDurationMs = performance.now() - statStartedAt;
   streamLog(request, 'STREAM_FILE_STAT_COMPLETED', {
     trackId,
-    fileSize: info.size,
+    fileSize: info.sizeBytes,
     statDurationMs,
   });
-  const size = info.size;
+  const size = info.sizeBytes;
 
   reply
     .header('accept-ranges', 'bytes')
     .header('etag', `"${hash}"`)
-    .header('last-modified', info.mtime.toUTCString())
+    .header('last-modified', info.modifiedAt.toUTCString())
     .header('cache-control', 'private, max-age=3600')
     .type(contentType);
   if (disposition) reply.header('content-disposition', disposition);
@@ -114,12 +177,64 @@ export async function serveTrackFile(
     fileSize: size,
   });
 
+  // HEAD public : le stat distant suffit. Aucun GET ni Readable n'est ouvert.
+  // L'écriture directe préserve le Content-Length de la représentation, que
+  // Fastify remplacerait sinon par zéro sur une réponse sans corps.
+  if (request.method === 'HEAD') {
+    if (range === 'full') {
+      reply.code(200).header('content-length', size);
+    } else {
+      reply
+        .code(206)
+        .header('content-range', `bytes ${start}-${end}/${size}`)
+        .header('content-length', contentLength);
+    }
+    streamLog(request, 'STREAM_RESPONSE_HEADERS_SENT', {
+      trackId,
+      statusCode,
+      rangeStart: start,
+      rangeEnd: end,
+      contentLength,
+      fileSize: size,
+      statDurationMs,
+    });
+    streamLog(request, 'STREAM_COMPLETED', {
+      trackId,
+      statusCode,
+      contentLength,
+      bytesSent: 0,
+      totalDurationMs: performance.now() - requestStartedAt,
+      aborted: false,
+    });
+    const headHeaders: Record<string, string | string[]> = {};
+    for (const [name, value] of Object.entries(reply.getHeaders())) {
+      if (value === undefined) continue;
+      headHeaders[name] =
+        typeof value === 'number'
+          ? String(value)
+          : value;
+    }
+    reply.hijack();
+    reply.raw.writeHead(statusCode, headHeaders);
+    reply.raw.end();
+    return reply;
+  }
+
   const fileOpenStartedAt = performance.now();
   streamLog(request, 'STREAM_FILE_OPEN_STARTED', { trackId });
-  const source = createReadStream(absPath, {
-    ...(range === 'full' ? {} : { start, end }),
-    highWaterMark: STREAM_HIGH_WATER_MARK,
-  });
+  let source;
+  try {
+    source = await provider.createReadStream(
+      reference,
+      range === 'full' ? undefined : { start, end },
+      { requestId },
+    );
+  } catch (error) {
+    const code =
+      error instanceof AudioStorageError ? error.code : 'OPEN_FAILED';
+    streamLog(request, 'STREAM_FILE_ERROR', { trackId, errorCode: code }, 'error');
+    return storageErrorReply(reply, error);
+  }
   let bytesSent = 0;
   let firstChunkAt: number | null = null;
   let terminalEventLogged = false;
@@ -171,6 +286,7 @@ export async function serveTrackFile(
     });
   });
   request.raw.once('aborted', () => {
+    if (!source.destroyed) source.destroy();
     if (terminalEventLogged) return;
     terminalEventLogged = true;
     streamLog(request, 'STREAM_ABORTED', {
@@ -182,6 +298,7 @@ export async function serveTrackFile(
     }, 'warn');
   });
   reply.raw.once('close', () => {
+    if (!reply.raw.writableFinished && !source.destroyed) source.destroy();
     if (terminalEventLogged) return;
     terminalEventLogged = true;
     streamLog(request, 'STREAM_CLIENT_DISCONNECTED', {
@@ -371,9 +488,8 @@ export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): v
       return serveTrackFile(
         request,
         reply,
-        track.id,
-        join(app.config.musicDir, track.path),
-        track.hash,
+        app.audioStorage,
+        trackStorageReference(track),
         contentType,
       );
     },
@@ -394,9 +510,8 @@ export function registerTrackRoutes(app: FastifyInstance, guards: AuthGuards): v
       return serveTrackFile(
         request,
         reply,
-        track.id,
-        join(app.config.musicDir, track.path),
-        track.hash,
+        app.audioStorage,
+        trackStorageReference(track),
         contentType,
         attachmentHeader(filename),
       );

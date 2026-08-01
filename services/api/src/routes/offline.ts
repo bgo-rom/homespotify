@@ -6,6 +6,7 @@ import type { AuthGuards } from '../auth/guards.js';
 import { userCanAccessTrack } from '../library/user-library-service.js';
 import { isTrackPublished } from '../library/catalog-service.js';
 import { serveTrackFile } from './tracks.js';
+import { toPortableRelativePath } from '../storage/audio-storage.js';
 import {
   OFFLINE_PROFILE_SPECS,
   estimateOpusSizeBytes,
@@ -215,11 +216,25 @@ export function registerOfflineRoutes(
       if (variant === undefined || variant.status !== 'READY' || variant.sha256 === null) {
         return notFound(reply, 'Variante non disponible');
       }
-      const absPath = service.absolutePathFor(variant);
-      if (absPath === null) return notFound(reply, 'Variante non disponible');
-      const exists = await stat(absPath).then(() => true, () => false);
+      if (variant.path === null) return notFound(reply, 'Variante non disponible');
+      // Racine dédiée : les dérivées restent locales même après la migration
+      // VPS (fichiers régénérables, jamais servis par le Storage Agent).
+      const reference = {
+        trackId: track.id,
+        relativePath: toPortableRelativePath(variant.path),
+        contentHash: variant.sha256,
+      };
+      const exists = await app.offlineVariantStorage
+        .stat(reference)
+        .then(() => true, () => false);
       if (!exists) return notFound(reply, 'Variante non disponible');
-      return serveTrackFile(request, reply, track.id, absPath, variant.sha256, 'audio/ogg');
+      return serveTrackFile(
+        request,
+        reply,
+        app.offlineVariantStorage,
+        reference,
+        'audio/ogg',
+      );
     },
   );
 }

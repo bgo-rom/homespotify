@@ -14,6 +14,8 @@
     "scan": "tsx src/scripts/scan-cli.ts",
     "enrich:musicbrainz": "tsx src/scripts/enrich-musicbrainz-cli.ts",
     "validate:media": "tsx src/scripts/validate-media-cli.ts",
+    "verify:paths": "tsx src/scripts/verify-track-paths-cli.ts",
+    "storage-index:export": "tsx src/scripts/storage-index-export-cli.ts",
     "backup": "tsx src/scripts/backup-cli.ts",
     "restore": "tsx src/scripts/restore-cli.ts"
   },

@@ -15,6 +15,21 @@ export const ACTIVE_ACQUISITION_JOB_STATUSES = [
   'VERIFYING',
   'DOWNLOADING',
   'RETRYING',
+  'PAUSED_PROVIDER',
+  'MANUAL_VERIFICATION_REQUIRED',
+  'WAITING_MANUAL_DOWNLOAD',
+  'DOWNLOADED',
+  'IMPORTING',
+] as const satisfies readonly AcquisitionJobStatus[];
+
+const INTERRUPTIBLE_ACQUISITION_JOB_STATUSES = [
+  'QUEUED',
+  'SEARCHING',
+  'SELECTING',
+  'OPENING_RESULT',
+  'VERIFYING',
+  'DOWNLOADING',
+  'RETRYING',
   'DOWNLOADED',
   'IMPORTING',
 ] as const satisfies readonly AcquisitionJobStatus[];
@@ -49,6 +64,10 @@ export interface CreateAcquisitionJobInput {
   provider?: AcquisitionProvider;
   resultIndex?: number | null;
   maxAttempts?: number;
+  selectedTitle?: string | null;
+  selectedArtist?: string | null;
+  selectedAlbum?: string | null;
+  selectedDurationSeconds?: number | null;
 }
 
 export interface UpdateAcquisitionJobInput {
@@ -66,6 +85,9 @@ export interface UpdateAcquisitionJobInput {
   trackId?: number | null;
   errorCode?: string | null;
   errorMessage?: string | null;
+  providerUsed?: 'LUCIDA' | 'MONOCHROME_MANUAL';
+  fallbackFrom?: string | null;
+  fallbackReasonCode?: string | null;
 }
 
 const MAX_QUERY_LENGTH = 200;
@@ -199,6 +221,25 @@ export class AcquisitionJobRepository {
         `maxAttempts doit être compris entre 1 et ${MAX_ATTEMPTS}.`,
       );
     }
+    for (const [field, value] of [
+      ['selectedTitle', input.selectedTitle],
+      ['selectedArtist', input.selectedArtist],
+      ['selectedAlbum', input.selectedAlbum],
+    ] as const) {
+      validateOptionalText(field, value);
+    }
+    if (
+      input.selectedDurationSeconds !== undefined &&
+      input.selectedDurationSeconds !== null &&
+      (!Number.isInteger(input.selectedDurationSeconds) ||
+        input.selectedDurationSeconds < 1 ||
+        input.selectedDurationSeconds > 86_400)
+    ) {
+      throw new AcquisitionJobRepositoryError(
+        'invalid_input',
+        'selectedDurationSeconds invalide.',
+      );
+    }
 
     const now = new Date().toISOString();
     const dedupeKey = buildAcquisitionDedupeKey({
@@ -218,6 +259,10 @@ export class AcquisitionJobRepository {
           dedupeKey,
           resultIndex,
           maxAttempts,
+          selectedTitle: input.selectedTitle,
+          selectedArtist: input.selectedArtist,
+          selectedAlbum: input.selectedAlbum,
+          selectedDurationSeconds: input.selectedDurationSeconds,
           createdAt: now,
           updatedAt: now,
         })
@@ -440,12 +485,75 @@ export class AcquisitionJobRepository {
       .where(
         inArray(
           acquisitionJobs.status,
-          [...ACTIVE_ACQUISITION_JOB_STATUSES],
+          [...INTERRUPTIBLE_ACQUISITION_JOB_STATUSES],
         ),
       )
       .run();
 
     return result.changes;
+  }
+
+  pauseQueuedJobs(
+    reasonCode: string,
+    publicMessage: string,
+  ): number {
+    const now = new Date().toISOString();
+    const result = this.handle.db
+      .update(acquisitionJobs)
+      .set({
+        status: 'PAUSED_PROVIDER',
+        stage: 'provider_paused',
+        message: publicMessage.slice(0, MAX_TEXT_LENGTH),
+        errorCode: reasonCode.slice(0, 100),
+        errorMessage: publicMessage.slice(0, MAX_TEXT_LENGTH),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(acquisitionJobs.provider, 'QOBUZ'),
+          eq(acquisitionJobs.status, 'QUEUED'),
+        ),
+      )
+      .run();
+    return result.changes;
+  }
+
+  resumePausedJob(id: string, userId: number): AcquisitionJobRow {
+    const current = this.requireJobForUser(id, userId);
+    if (current.status !== 'PAUSED_PROVIDER') {
+      throw new AcquisitionJobRepositoryError(
+        'invalid_input',
+        'Seul un job suspendu par le fournisseur peut être repris.',
+      );
+    }
+    const row = this.handle.db
+      .update(acquisitionJobs)
+      .set({
+        status: 'QUEUED',
+        stage: 'queued',
+        message: 'Tentative manuelle en attente.',
+        errorCode: null,
+        errorMessage: null,
+        cancelRequested: false,
+        completedAt: null,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(acquisitionJobs.id, id),
+          eq(acquisitionJobs.userId, userId),
+          eq(acquisitionJobs.status, 'PAUSED_PROVIDER'),
+        ),
+      )
+      .returning()
+      .get();
+    if (!row) {
+      throw new AcquisitionJobRepositoryError(
+        'job_not_found',
+        'Job d’acquisition introuvable.',
+      );
+    }
+    return row;
   }
 
   private validateIdentity(id: string, userId: number): void {
@@ -530,8 +638,21 @@ export class AcquisitionJobRepository {
       ['selectedAlbum', input.selectedAlbum],
       ['errorCode', input.errorCode],
       ['errorMessage', input.errorMessage],
+      ['fallbackFrom', input.fallbackFrom],
+      ['fallbackReasonCode', input.fallbackReasonCode],
     ] as const) {
       validateOptionalText(field, value);
+    }
+
+    if (
+      input.providerUsed !== undefined &&
+      input.providerUsed !== 'LUCIDA' &&
+      input.providerUsed !== 'MONOCHROME_MANUAL'
+    ) {
+      throw new AcquisitionJobRepositoryError(
+        'invalid_input',
+        'providerUsed invalide.',
+      );
     }
 
     validateOptionalText(

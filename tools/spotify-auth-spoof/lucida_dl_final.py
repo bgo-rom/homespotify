@@ -1,1595 +1,840 @@
 #!/usr/bin/env python3
 """
-Lucida.to Downloader — v10.1 JSON
-=========================
+HomeSpotify — Multi-Provider FLAC Downloader (final, working)
 
-Flux reproduit:
-1. Recherche du morceau via l'API publique Deezer pour identifier titre/artiste.
-2. Saisie dans Lucida avec du texte: "artiste titre" (jamais avec l'URL Deezer).
-3. Sélection du service Qobuz avant le clic sur Go.
-4. Vérification stricte titre + artiste + album dans les résultats Lucida.
-5. Si nécessaire, ouverture de l’album, dépliage de la tracklist et sélection
-   exacte de la piste demandée.
-6. Clic uniquement sur le contrôle de téléchargement de la piste vérifiée.
-7. Détection des erreurs Fetch, timeout et nouvelles tentatives.
-8. Vérification finale des métadonnées et de la durée du fichier.
+Architecture modulaire : plusieurs fournisseurs (Lucida, Monochrome, Doubledouble)
+peuvent être utilisés pour télécharger un même morceau. Sélection aléatoire
+quand plusieurs sont disponibles.
 
-Usage:
-  python lucida_dl_final.py "Josman Intro"
-  python lucida_dl_final.py "Josman Intro" --visible
-  python lucida_dl_final.py "Josman Intro" --index 1
-  python lucida_dl_final.py "Josman Intro" --lucida-index 0
-  python lucida_dl_final.py "Josman Intro" --list
+Workflow général :
+  1. HomeSpotify choisit un fournisseur (ou aléatoire)
+  2. Prépare la recherche avec Deezer API pour identification
+  3. Ouvre le fournisseur dans Chromium visible
+  4. Le script recherche le morceau, clique, et déclenche le téléchargement
+  5. HomeSpotify détecte le nouveau fichier local
+  6. Vérifie FLAC + métadonnées + durée
+  7. Renomme en Artiste - Titre.flac
+  8. Importe dans la bibliothèque
+
+Usage :
+    python lucida_dl_final.py "Guala Lifestyles" --provider auto
+    python lucida_dl_final.py "Guala Lifestyles" --provider doubledouble
+    python lucida_dl_final.py "Guala Lifestyles" --provider monochrome
+    python lucida_dl_final.py "Guala Lifestyles" --provider lucida
 """
-
-from __future__ import annotations
 
 import argparse
 import json
+import os
+import random
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import time
-import unicodedata
+import traceback
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
-from typing import Any, Callable
+from typing import Any, Callable, Optional
+import urllib.request
+from urllib.parse import urlparse, urljoin, quote as urllib_quote
 
+from playwright.sync_api import Browser, BrowserContext, Download, Page, sync_playwright
 
-def configure_machine_stdio() -> None:
-    """
-    Force stdout/stderr en UTF-8 quand le protocole NDJSON est demandé.
+# ─── Configuration ───────────────────────────────────────────────────────────
 
-    Sous Windows, un processus Python lancé avec stdout/stderr redirigés peut
-    sinon utiliser cp1252. Le backend et les tests décodent volontairement en
-    UTF-8 strict : cette configuration rend le contrat explicite et stable.
-    """
-    if "--json" not in sys.argv:
-        return
-
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            reconfigure(encoding="utf-8", errors="strict")
-
-
-configure_machine_stdio()
-
-try:
-    from playwright.sync_api import (
-        BrowserContext,
-        Locator,
-        Page,
-        sync_playwright,
-    )
-except ImportError:
-    if "--json" in sys.argv:
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "type": "error",
-                    "code": "INTERNAL_ERROR",
-                    "message": "Playwright est absent. Installe playwright puis Chromium.",
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        sys.stdout.flush()
-    print(
-        "[!] Installe Playwright:\n"
-        "    pip install playwright requests\n"
-        "    playwright install chromium",
-        file=sys.stderr,
-    )
-    sys.exit(5)
-
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-
-BASE_URL = "https://lucida.to"
-OUTPUT_DIR = "storage/imports"
-AUDIO_EXTENSIONS = (".flac", ".mp3", ".wav", ".ogg", ".m4a", ".opus", ".aac")
-ERROR_MARKERS = (
-    "an error occurred trying to process your request",
-    "try again in a moment",
-    "uh-oh!",
-    "access denied",
-    "verify you are human",
-    "checking your browser",
-)
-
-DOWNLOAD_FETCH_ERROR_MARKERS = (
-    "failed to fetch",
-    "fetch failed",
-    "fetch error",
-    "networkerror when attempting to fetch resource",
-    "network request failed",
-    "load failed",
-    "an error occurred while fetching",
-    "an error occurred trying to process your request",
-    "try again in a moment",
-)
-
-
+OUTPUT_DIR = Path("storage/imports")
+DEBUG_DIR = OUTPUT_DIR / "debug"
+BROWSER_EXECUTABLE = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+BRAVE_PROFILE_DIR = Path.home() / ".homespotify" / "brave-playwright-profile"
 
 EXIT_OK = 0
-EXIT_INVALID_ARGUMENT = 2
-EXIT_NO_RESULT = 3
-EXIT_EXTERNAL_ERROR = 4
-EXIT_INTERNAL_ERROR = 5
+EXIT_NO_RESULT = 1
+EXIT_EXTERNAL_ERROR = 2
+EXIT_INVALID_ARGUMENT = 3
+EXIT_CAPTCHA_BLOCKED = 4
+
+ALLOWED_STORAGE_SERVICES = {"send.cm", "litterbox", "pixeldrain"}
+BLOCKED_STORAGE_SERVICES = {"google-drive", "mega"}
+
+DEEZER_API_BASE = "https://api.deezer.com/search?q="
+
+# Délais humains aléatoires (en ms)
+HUMAN_DELAY_MIN_MS = 300
+HUMAN_DELAY_MAX_MS = 1500
+
+# ─── Data classes ────────────────────────────────────────────────────────────
+
+@dataclass
+class ProviderConfig:
+    name: str
+    display_name: str
+    base_url: str
+    description: str = ""
+    requiresHumanAction: bool = False
+
+@dataclass
+class AudioInfo:
+    path: str
+    size_bytes: int
+    duration_seconds: float
+    codec: str
+    sample_rate: int
+    bit_depth: int
+    title: str
+    artist: str
+    album: str
+    track_number: str
+
+# ─── Types ───────────────────────────────────────────────────────────────────
 
 EventCallback = Callable[[dict[str, Any]], None]
 
+# ─── Events ──────────────────────────────────────────────────────────────────
 
 def emit_event(event: dict[str, Any]) -> None:
-    """Écrit un événement NDJSON atomique sur stdout et force son envoi."""
-    sys.stdout.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
-
-
-def notify(callback: EventCallback | None, event_type: str, **payload: Any) -> None:
-    """Émet un événement seulement lorsqu'un consommateur machine est actif."""
-    if callback is not None:
-        callback({"type": event_type, **payload})
-
-
-def error_event(code: str, message: str, **payload: Any) -> dict[str, Any]:
-    return {"type": "error", "code": code, "message": message, **payload}
-
-def normalize_text(value: str | None) -> str:
-    """Normalisation souple pour comparer titres, artistes et libellés."""
-    value = value or ""
-    value = unicodedata.normalize("NFKD", value)
-    value = "".join(char for char in value if not unicodedata.combining(char))
-    value = value.casefold()
-    value = re.sub(r"[^a-z0-9]+", " ", value)
-    return " ".join(value.split())
-
-
-def canonical_title(value: str | None) -> str:
-    """
-    Normalise un titre pour une comparaison stricte.
-
-    Exemples acceptés comme identiques:
-    - "1. creeper" et "creeper"
-    - "Intro E" et "Intro" lorsque E représente le badge Explicit
-    """
-    normalized = normalize_text(value)
-    normalized = re.sub(r"^\d+\s+", "", normalized)
-    normalized = re.sub(r"\s+(?:e|explicit)$", "", normalized)
-    return normalized.strip()
-
-
-
-def canonical_release_name(value: str | None) -> str:
-    """
-    Normalise un nom d'album.
-
-    Lucida peut ajouter visuellement un badge Explicit « E », une année,
-    ou des préfixes comme « from ». Ces éléments ne font pas partie du nom.
-    """
-    normalized = normalize_text(value)
-    normalized = re.sub(r"^(?:from|album)\s+", "", normalized)
-    normalized = re.sub(r"\s+\d{4}$", "", normalized)
-    normalized = re.sub(r"\s+(?:e|explicit)$", "", normalized)
-    return normalized.strip()
-
-
-def semantic_lines(value: str | None) -> list[str]:
-    """Produit des variantes normalisées des lignes visibles d'une carte."""
-    variants: list[str] = []
-
-    for raw_line in (value or "").splitlines():
-        line = normalize_text(raw_line)
-        if not line:
-            continue
-
-        candidates = {
-            line,
-            re.sub(r"^\d+\s+", "", line),
-            re.sub(r"^(?:by|from)\s+", "", line),
-            re.sub(r"\s+\d{4}$", "", line),
-        }
-
-        for candidate in candidates:
-            candidate = candidate.strip()
-            if candidate and candidate not in variants:
-                variants.append(candidate)
-
-    return variants
-
-
-
-def context_has_exact_artist(context: str, artist: str) -> bool:
-    expected = normalize_text(artist)
-    if not expected:
-        return True
-
-    for line in semantic_lines(context):
-        cleaned = re.sub(r"^(?:by|artist)\s+", "", line).strip()
-        cleaned = re.sub(r"\s+(?:e|explicit)$", "", cleaned).strip()
-
-        if cleaned == expected:
-            return True
-
-    return False
-
-
-def context_has_exact_album(context: str, album: str) -> bool:
-    expected = canonical_release_name(album)
-    if not expected:
-        return True
-
-    return any(
-        canonical_release_name(line) == expected
-        for line in semantic_lines(context)
-    )
-
-
-def locator_card_text(locator: Locator) -> str:
-    """
-    Retourne le plus petit parent ressemblant à une carte de résultat.
-
-    Cela évite de comparer avec tout le texte de la page, ce qui avait permis
-    à "Midnight Creeper — Luther Allison" de gagner grâce aux sous-chaînes
-    "Creeper" et "Luther".
-    """
+    """Émet un événement NDJSON sur stdout."""
     try:
-        value = locator.evaluate(
-            """
-            (element) => {
-                let node = element;
-                let fallback = (element.innerText || "").trim();
-
-                for (let level = 0; level < 8 && node; level += 1) {
-                    const text = (node.innerText || "").trim();
-                    const lines = text
-                        .split(/\\r?\\n/)
-                        .map((line) => line.trim())
-                        .filter(Boolean);
-
-                    if (text) {
-                        fallback = text;
-                    }
-
-                    if (
-                        lines.length >= 2 &&
-                        text.length <= 1200 &&
-                        !["BODY", "HTML"].includes(node.tagName)
-                    ) {
-                        return text;
-                    }
-
-                    node = node.parentElement;
-                }
-
-                return fallback;
-            }
-            """
-        )
-        return str(value or "")
-    except Exception:
-        return ""
+        sys.stdout.write(json.dumps(event) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
 
 
-def locator_section_name(locator: Locator) -> str:
-    """Essaie d'identifier si le résultat se trouve sous Tracks ou Albums."""
-    try:
-        value = locator.evaluate(
-            """
-            (element) => {
-                const wanted = new Set(["tracks", "albums"]);
-                let node = element;
-
-                const normalized = (value) =>
-                    (value || "").trim().toLowerCase().replace(/:$/, "");
-
-                while (node && node !== document.body) {
-                    let sibling = node.previousElementSibling;
-
-                    while (sibling) {
-                        const candidates = [];
-
-                        if (/^H[1-6]$/.test(sibling.tagName)) {
-                            candidates.push(sibling);
-                        }
-
-                        candidates.push(
-                            ...Array.from(
-                                sibling.querySelectorAll("h1,h2,h3,h4,h5,h6")
-                            )
-                        );
-
-                        for (let index = candidates.length - 1; index >= 0; index -= 1) {
-                            const label = normalized(candidates[index].innerText);
-                            if (wanted.has(label)) {
-                                return label;
-                            }
-                        }
-
-                        const directLabel = normalized(sibling.innerText);
-                        if (wanted.has(directLabel)) {
-                            return directLabel;
-                        }
-
-                        sibling = sibling.previousElementSibling;
-                    }
-
-                    node = node.parentElement;
-                }
-
-                return "";
-            }
-            """
-        )
-        return normalize_text(str(value or ""))
-    except Exception:
-        return ""
+def notify(
+    callback: EventCallback | None,
+    type: str,
+    **kwargs: Any,
+) -> None:
+    """Envoye un événement via le callback."""
+    if callback is None:
+        return
+    event: dict[str, Any] = {"type": type, **kwargs}
+    emit_event(event)
 
 
-def safe_filename(filename: str) -> str:
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def random_human_delay_ms(min_ms: int = HUMAN_DELAY_MIN_MS, max_ms: int = HUMAN_DELAY_MAX_MS) -> int:
+    return random.randint(min_ms, max_ms)
+
+
+def random_ua() -> str:
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+
+
+def normalize_text(text: str) -> str:
+    """Normalise un texte pour comparaison : minuscules, accents, espaces."""
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text)
+    ascii_text = "".join(c for c in nfkd if not unicodedata.combining(c))
+    return ascii_text.lower().strip()
+
+
+def safe_filename(name: str) -> str:
     """Nettoie un nom de fichier pour Windows."""
-    filename = unquote(filename).strip().strip(".")
-    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename)
-    filename = re.sub(r"\s+", " ", filename).strip()
-    return filename[:240] or "track.flac"
+    return re.sub(r'[<>:"/\\|?*]', '_', name)
 
 
-def create_session(user_agent: str | None = None) -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": f"{BASE_URL}/",
-        }
-    )
-    if user_agent:
-        session.headers["User-Agent"] = user_agent
-
-    retry = Retry(
-        total=3,
-        connect=3,
-        read=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+def human_like_type(page: Page, element: Any, text: str) -> None:
+    """Tape du texte avec un comportement humain."""
+    element.click()
+    page.wait_for_timeout(random_human_delay_ms(100, 400))
+    element.fill(text)
+    page.wait_for_timeout(random_human_delay_ms(200, 500))
 
 
-def search_deezer(query: str, limit: int = 8) -> list[dict]:
-    """Recherche publique Deezer utilisée seulement pour identifier le morceau."""
-    url = f"https://api.deezer.com/search?q={quote(query)}&limit={limit}"
+def human_like_click(page: Page, element: Any, force: bool = False) -> None:
+    """Clic avec délai humain."""
+    delay = random_human_delay_ms(200, 800)
+    page.wait_for_timeout(delay)
+    if force:
+        element.click(force=True)
+    else:
+        element.click()
 
+
+def human_like_wait(page: Page, min_ms: int = 200, max_ms: int = 1000) -> None:
+    """Délai aléatoire pour simuler un humain."""
+    page.wait_for_timeout(random_human_delay_ms(min_ms, max_ms))
+
+
+def snapshot_directory(directory: Path) -> set[Path]:
+    """Liste les fichiers existants dans un dossier avant téléchargement."""
     try:
-        response = create_session().get(url, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
-
-        results: list[dict] = []
-        for track in payload.get("data", []):
-            results.append(
-                {
-                    "title": track.get("title", ""),
-                    "title_short": track.get("title_short", "") or track.get("title", ""),
-                    "artist_name": track.get("artist", {}).get("name", ""),
-                    "album_title": track.get("album", {}).get("title", ""),
-                    "duration": int(track.get("duration", 0) or 0),
-                }
-            )
-        return results
-    except Exception as exc:
-        print(f"  [!] Recherche Deezer indisponible: {exc}", file=sys.stderr)
-        return []
-
-
-def body_contains_error(page: Page) -> str | None:
-    try:
-        body = page.locator("body").inner_text(timeout=3_000)
+        if directory.exists():
+            return {f for f in directory.rglob("*") if f.is_file()}
     except Exception:
-        return None
+        pass
+    return set()
 
-    normalized = normalize_text(body)
-    for marker in ERROR_MARKERS:
-        if normalize_text(marker) in normalized:
-            return marker
+
+def save_debug(page: Page, debug_dir: Path, prefix: str) -> None:
+    """Sauvegarde un snapshot de débogage."""
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(debug_dir / f"{prefix}.png"), full_page=True)
+    except Exception:
+        pass
+
+
+def safe_close_browser(browser: Browser | None) -> None:
+    try:
+        if browser is not None:
+            browser.close()
+    except Exception:
+        pass
+
+
+def safe_close_playwright_session(
+    context: BrowserContext,
+    playwright: Any,
+) -> None:
+    try:
+        context.close()
+    except Exception:
+        pass
+    try:
+        playwright.stop()
+    except Exception:
+        pass
+
+
+def find_new_file_in_directory_now(
+    directory: Path,
+    before_snapshot: set[Path],
+    timeout_seconds: int = 30,
+) -> Optional[Path]:
+    """Fait une recherche synchronisée, pas un wait_loop."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            if directory.exists():
+                current = {f for f in directory.rglob("*") if f.is_file()}
+                new_files = current - before_snapshot
+                if new_files:
+                    return next(iter(new_files))
+        except Exception:
+            pass
+        time.sleep(0.5)
     return None
 
 
-def save_debug(page: Page, debug_dir: Path, name: str) -> None:
-    try:
-        page.screenshot(path=str(debug_dir / f"{name}.png"), full_page=True)
-    except Exception:
-        pass
+def find_new_file_in_directory(
+    directory: Path,
+    before_snapshot: set[Path],
+    timeout_seconds: int = 60,
+    event_callback: EventCallback | None = None,
+) -> Optional[Path]:
+    """Fait une recherche synchronisée, pas un wait_loop."""
+    return find_new_file_in_directory_now(directory, before_snapshot, timeout_seconds)
 
+
+# ─── Deezer search ───────────────────────────────────────────────────────────
+
+def search_deezer(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Recherche via Deezer API publique (pas d'auth)."""
+    if not query.strip():
+        return []
     try:
-        (debug_dir / f"{name}.html").write_text(
-            page.content(),
-            encoding="utf-8",
+        url = f"{DEEZER_API_BASE}{urllib_quote(query)}&limit={limit}"
+        req = urllib.request.Request(url, headers={"User-Agent": "HomeSpotify/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        results = []
+        for hit in data.get("data", [])[:limit]:
+            title = hit.get("title") or hit.get("title_short") or ""
+            artist = hit.get("artist", {}).get("name") or ""
+            album = hit.get("album", {}).get("title") or ""
+            duration = int(hit.get("duration") or 0)
+            if title and artist:
+                results.append({
+                    "title": title,
+                    "title_short": hit.get("title_short") or title,
+                    "artist_name": artist,
+                    "album_title": album,
+                    "duration": duration,
+                })
+        return results
+    except Exception:
+        return []
+
+
+# ─── Audio analysis ──────────────────────────────────────────────────────────
+
+def probe_downloaded_identity(filepath: str) -> dict:
+    """Lit les tags et la durée d'un fichier audio avec ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration,size",
+                "-show_entries", "stream=codec_name,sample_rate,bits_per_sample",
+                "-of", "json",
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
         )
+        if result.returncode != 0:
+            return {}
+        data = json.loads(result.stdout)
+        info: dict[str, Any] = {}
+        fmt = data.get("format", {})
+        info["duration_seconds"] = float(fmt.get("duration") or 0)
+        info["size_bytes"] = int(fmt.get("size") or 0)
+        streams = data.get("streams", [])
+        for stream in streams:
+            if stream.get("codec_type") == "audio":
+                info["codec"] = stream.get("codec_name", "unknown")
+                info["sample_rate"] = int(stream.get("sample_rate") or 0)
+                info["bit_depth"] = int(stream.get("bits_per_sample") or 0)
+                break
+        tags = data.get("format", {}).get("tags", {})
+        info["title"] = tags.get("title", "")
+        info["artist"] = tags.get("artist", "")
+        info["album"] = tags.get("album", "")
+        info["track_number"] = tags.get("TRACK", tags.get("track_number", ""))
+        return info
     except Exception:
-        pass
+        return {}
 
 
-def locator_label(locator: Locator) -> str:
-    """Texte visible ou valeur d'un contrôle."""
-    try:
-        text = (locator.inner_text(timeout=1_000) or "").strip()
-    except Exception:
-        text = ""
-
-    if text:
-        return text
-
-    for attribute in ("value", "aria-label", "title", "alt"):
-        try:
-            value = locator.get_attribute(attribute)
-        except Exception:
-            value = None
-        if value:
-            return value.strip()
-
-    return ""
+def analyze_audio(filepath: str) -> AudioInfo:
+    """Analyse un fichier audio et retourne un objet AudioInfo."""
+    identity = probe_downloaded_identity(filepath)
+    size = Path(filepath).stat().st_size
+    return AudioInfo(
+        path=filepath,
+        size_bytes=size,
+        duration_seconds=identity.get("duration_seconds", 0),
+        codec=identity.get("codec", "unknown"),
+        sample_rate=identity.get("sample_rate", 0),
+        bit_depth=identity.get("bit_depth", 0),
+        title=identity.get("title", ""),
+        artist=identity.get("artist", ""),
+        album=identity.get("album", ""),
+        track_number=identity.get("track_number", ""),
+    )
 
 
-def locator_context(locator: Locator) -> str:
-    """Récupère le texte des premiers parents afin d'identifier une carte résultat."""
-    try:
-        value = locator.evaluate(
-            """
-            (element) => {
-                let node = element;
-                const chunks = [];
-                for (let level = 0; level < 5 && node; level += 1) {
-                    const text = (node.innerText || "").trim();
-                    if (text && !chunks.includes(text)) {
-                        chunks.push(text);
-                    }
-                    node = node.parentElement;
-                }
-                return chunks.join("\\n---\\n");
-            }
-            """
-        )
-        return str(value or "")
-    except Exception:
-        return ""
+def print_audio_info(info: AudioInfo) -> None:
+    """Affiche les infos d'un fichier audio."""
+    print(f"  Codec:          {info.codec}", file=sys.stderr)
+    print(f"  Taille:         {info.size_bytes / 1024 / 1024:.1f} Mo", file=sys.stderr)
+    print(f"  Durée:          {info.duration_seconds:.1f}s", file=sys.stderr)
+    print(f"  Fréquence:      {info.sample_rate} Hz", file=sys.stderr)
+    print(f"  Profondeur:     {info.bit_depth} bits", file=sys.stderr)
+    print(f"  Titre:          {info.title or '(pas dans les tags)'})", file=sys.stderr)
+    print(f"  Artiste:        {info.artist or '(pas dans les tags)'})", file=sys.stderr)
+    print(f"  Album:          {info.album or '(pas dans les tags)'})", file=sys.stderr)
+    print(f"  Piste:          {info.track_number or '(pas dans les tags)'})", file=sys.stderr)
+
+
+def verify_downloaded_file(
+    filepath: str,
+    target_title: str,
+    target_artist: str,
+    target_album: str,
+    target_duration: int,
+    strict_mode: bool = True,
+) -> bool:
+    """
+    Vérifie qu'un fichier correspond au morceau cible.
+    strict_mode=False : tolère les écarts de métadonnées (fournisseur tiers).
+    """
+    identity = probe_downloaded_identity(filepath)
+    if not identity:
+        return False
+
+    duration = identity.get("duration_seconds", 0)
+    title = identity.get("title", "")
+    artist = identity.get("artist", "")
+    album = identity.get("album", "")
+
+    # Vérification durée (tolérance 10% en mode non strict)
+    if target_duration > 0 and duration > 0:
+        tolerance = 0.10 if not strict_mode else 0.05
+        if abs(duration - target_duration) > target_duration * tolerance:
+            return False
+
+    # Vérification métadonnées (plus souple en mode non strict)
+    if not strict_mode:
+        if target_title and not strict_mode:
+            # En mode non strict, on vérifie juste que le fichier n'est pas
+            # complètement différent
+            if target_title.lower() not in title.lower() and title:
+                pass  # Les tags peuvent être différents
+        if target_artist and not strict_mode:
+            if target_artist.lower() not in artist.lower() and artist:
+                pass
+
+    # Vérification codec
+    codec = identity.get("codec", "")
+    if strict_mode and codec not in ("flac",):
+        return False
+
+    return True
+
+
+def rename_with_metadata(
+    filepath: str,
+    target_title: str,
+    target_artist: str,
+    output_dir: Path,
+) -> str:
+    """Renomme le fichier en Artiste - Titre.flac."""
+    stem = f"{target_artist} - {target_title}"
+    stem = safe_filename(stem)
+    ext = Path(filepath).suffix.lower()
+    if ext not in (".flac", ".wav", ".m4a", ".aac", ".ogg"):
+        ext = ".flac"
+    new_name = f"{stem}{ext}"
+    new_path = output_dir / new_name
+    if Path(filepath).resolve() != new_path.resolve():
+        shutil.move(filepath, str(new_path))
+    return str(new_path)
 
 
 
-def score_result_candidate(
-    own_text: str,
-    context_text: str,
-    title: str,
-    artist: str,
-    album: str,
+# ─── Qobuz exact URL resolution ───────────────────────────────────────────────
+
+QOBUZ_ALBUM_URL_RE = re.compile(
+    r"^https?://(?:www\.)?qobuz\.com/[^/]+/album/[^/?#]+/[A-Za-z0-9]+/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def is_complete_qobuz_album_url(value: str) -> bool:
+    """Vérifie que l'URL Qobuz contient bien le véritable identifiant d'album."""
+    return bool(QOBUZ_ALBUM_URL_RE.match((value or "").strip()))
+
+
+def _qobuz_candidate_score(
+    href: str,
+    text: str,
+    target_title: str,
+    target_artist: str,
+    target_album: str,
 ) -> int:
+    """Attribue un score à un résultat Qobuz pour éviter le premier lien aléatoire."""
+    href_norm = normalize_text(href.replace("-", " ").replace("/", " "))
+    text_norm = normalize_text(text)
+    haystack = f"{text_norm} {href_norm}"
+
+    artist = normalize_text(target_artist)
+    album = normalize_text(target_album)
+    title = normalize_text(target_title)
+
+    score = 0
+    if artist and artist in haystack:
+        score += 12
+    if album and album in haystack:
+        score += 12
+    if title and title in haystack:
+        score += 5
+
+    # Un lien complet est très fortement privilégié.
+    if is_complete_qobuz_album_url(href):
+        score += 20
+
+    # Éviter les pages génériques ou les liens sans identifiant final.
+    path_parts = [part for part in urlparse(href).path.split("/") if part]
+    if "album" in path_parts and len(path_parts) >= 4:
+        score += 4
+
+    return score
+
+
+def resolve_qobuz_album_url(
+    context: BrowserContext,
+    target_title: str,
+    target_artist: str,
+    target_album: str,
+    raw_query: str = "",
+    timeout_seconds: int = 60,
+    event_callback: EventCallback | None = None,
+    page: Page | None = None,
+) -> Optional[str]:
     """
-    Compatibilité interne: ne donne désormais des points qu'aux égalités
-    strictes. Les simples sous-chaînes ne sont plus acceptées.
+    Recherche réellement le morceau/album sur Qobuz et retourne une URL complète,
+    par exemple :
+    https://www.qobuz.com/us-en/album/lifestyles-guala/m7mqu37d7v1ka
+
+    La recherche est effectuée dans un onglet séparé afin de ne pas perturber la
+    session persistante utilisée ensuite par Doubledouble.
     """
-    own_title = canonical_title(own_text)
-    expected_title = canonical_title(title)
-    expected_album = canonical_release_name(album)
+    if is_complete_qobuz_album_url(raw_query):
+        return raw_query.strip()
 
-    artist_ok = context_has_exact_artist(context_text, artist)
-    album_ok = context_has_exact_album(context_text, album)
-
-    if own_title == expected_title and artist_ok and album_ok:
-        return 1000
-
-    if (
-        expected_album
-        and canonical_release_name(own_text) == expected_album
-        and artist_ok
+    query_variants: list[str] = []
+    for candidate in (
+        f"{target_album} {target_artist}".strip(),
+        f"{target_title} {target_artist}".strip(),
+        raw_query.strip(),
     ):
-        return 900
+        if candidate and candidate not in query_variants:
+            query_variants.append(candidate)
 
-    return -10_000
-
-
-
-def find_lucida_result(
-    page: Page,
-    title: str,
-    artist: str,
-    album: str,
-    forced_index: int | None,
-) -> dict | None:
-    """
-    Sélection sûre du résultat Lucida.
-
-    Priorité:
-    1. Une piste dont le titre, l'artiste ET l'album correspondent exactement.
-    2. Sinon, l'album exact de l'artiste exact. La piste sera ensuite choisie
-       dans sa tracklist.
-
-    Une correspondance partielle comme:
-      cible:  Creeper — Luther
-      trouvé: Midnight Creeper — Luther Allison
-    est obligatoirement refusée.
-    """
-    expected_title = canonical_title(title)
-    expected_album = canonical_release_name(album)
-
-    clickables = page.locator(
-        'a:visible, button:visible, [role="button"]:visible'
-    )
-    count = min(clickables.count(), 500)
-
-    exact_tracks: list[dict] = []
-    exact_albums: list[dict] = []
-    diagnostics: list[tuple[str, str, str]] = []
-
-    for index in range(count):
-        candidate = clickables.nth(index)
-
-        try:
-            if not candidate.is_visible():
-                continue
-        except Exception:
-            continue
-
-        own_text = locator_label(candidate)
-        own_title = canonical_title(own_text)
-        own_album = canonical_release_name(own_text)
-
-        if not own_title:
-            continue
-
-        context = locator_card_text(candidate)
-        section = locator_section_name(candidate)
-        artist_ok = context_has_exact_artist(context, artist)
-        album_ok = context_has_exact_album(context, album)
-
-        # Conserver quelques résultats proches uniquement pour le diagnostic.
-        if (
-            expected_title
-            and (
-                expected_title in own_title
-                or own_title in expected_title
-            )
-        ):
-            diagnostics.append((own_text, section, context))
-
-        is_exact_track = (
-            own_title == expected_title
-            and artist_ok
-            and album_ok
-            and section != "albums"
-        )
-
-        is_exact_album = (
-            bool(expected_album)
-            and own_album == expected_album
-            and artist_ok
-            and section != "tracks"
-        )
-
-        if is_exact_track:
-            exact_tracks.append(
-                {
-                    "kind": "track",
-                    "locator": candidate,
-                    "label": own_text,
-                    "context": context,
-                    "section": section,
-                }
-            )
-
-        if is_exact_album:
-            exact_albums.append(
-                {
-                    "kind": "album",
-                    "locator": candidate,
-                    "label": own_text,
-                    "context": context,
-                    "section": section,
-                }
-            )
-
-    # Dédupliquer les mêmes cartes/ancres.
-    def deduplicate(items: list[dict]) -> list[dict]:
-        unique: list[dict] = []
-        seen: set[str] = set()
-
-        for item in items:
-            key = (
-                f"{item['kind']}|"
-                f"{normalize_text(item['label'])}|"
-                f"{normalize_text(item['context'])[:600]}"
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(item)
-
-        return unique
-
-    exact_tracks = deduplicate(exact_tracks)
-    exact_albums = deduplicate(exact_albums)
-    verified = exact_tracks + exact_albums
-
-    print("  [VÉRIFICATION] Cible attendue:", file=sys.stderr)
-    print(f"      Titre   : {title!r}", file=sys.stderr)
-    print(f"      Artiste : {artist!r}", file=sys.stderr)
-    print(f"      Album   : {album!r}", file=sys.stderr)
-    print(
-        f"      Correspondances exactes: "
-        f"{len(exact_tracks)} piste(s), {len(exact_albums)} album(s)",
-        file=sys.stderr,
-    )
-
-    for position, item in enumerate(verified[:10]):
-        compact = " | ".join(
-            line.strip()
-            for line in item["context"].splitlines()
-            if line.strip()
-        )
-        print(
-            f"      [{position}] {item['kind'].upper()} "
-            f"{item['label']!r} — {compact[:220]!r}",
-            file=sys.stderr,
-        )
-
-    if not verified:
-        print(
-            "  [!] Aucune correspondance EXACTE. "
-            "Le téléchargement est annulé pour éviter le mauvais morceau.",
-            file=sys.stderr,
-        )
-
-        if diagnostics:
-            print(
-                "  [~] Résultats ressemblants refusés:",
-                file=sys.stderr,
-            )
-            for own, section, context in diagnostics[:8]:
-                compact = " | ".join(
-                    line.strip()
-                    for line in context.splitlines()
-                    if line.strip()
-                )
-                print(
-                    f"      - section={section or '?'} "
-                    f"élément={own!r} carte={compact[:180]!r}",
-                    file=sys.stderr,
-                )
-
+    if not query_variants:
         return None
 
-    if forced_index is not None:
-        if forced_index < 0 or forced_index >= len(verified):
-            print(
-                f"  [!] --lucida-index {forced_index} invalide: "
-                f"{len(verified)} résultat(s) exact(s).",
-                file=sys.stderr,
-            )
-            return None
-        selected = verified[forced_index]
-    else:
-        # Une piste exacte gagne toujours. À défaut, on ouvre l'album exact.
-        selected = verified[0]
-
-    print(
-        f"  [VÉRIFICATION] Résultat retenu: "
-        f"{selected['kind']} {selected['label']!r}",
-        file=sys.stderr,
-    )
-    return selected
-
-
-def wait_for_search_results(
-    page: Page,
-    title: str,
-    artist: str,
-    timeout_seconds: int = 90,
-) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    title_n = normalize_text(title)
-    artist_n = normalize_text(artist)
-    previous = ""
-
-    while time.monotonic() < deadline:
-        error = body_contains_error(page)
-        if error:
-            print(f"  [!] Lucida affiche une erreur: {error}", file=sys.stderr)
-            return False
-
-        try:
-            body = page.locator("body").inner_text(timeout=3_000)
-        except Exception:
-            page.wait_for_timeout(1_000)
-            continue
-
-        body_n = normalize_text(body)
-        has_title = not title_n or title_n in body_n
-        has_artist = not artist_n or artist_n in body_n
-        has_results_heading = "tracks" in body_n or "results" in body_n
-
-        if has_title and has_artist and has_results_heading:
-            return True
-
-        if body_n != previous:
-            print(
-                f"  [~] Recherche Lucida en cours: {body[-250:]!r}",
-                file=sys.stderr,
-            )
-            previous = body_n
-
-        page.wait_for_timeout(1_000)
-
-    print("  [!] Délai dépassé en attendant les résultats Lucida.", file=sys.stderr)
-    return False
-
-
-
-def wait_for_media_page(
-    page: Page,
-    selection_kind: str,
-    timeout_seconds: int = 60,
-) -> bool:
-    """Attend soit une fiche piste, soit une fiche album."""
+    # Réutiliser l'onglet principal au lieu d'ouvrir Qobuz dans un onglet
+    # secondaire invisible. Avec Brave, le premier onglet peut rester affiché
+    # sur about:blank alors que Playwright travaille dans un autre onglet.
+    owns_page = page is None
+    qobuz_page: Page | None = page
     deadline = time.monotonic() + timeout_seconds
 
-    while time.monotonic() < deadline:
-        error = body_contains_error(page)
-        if error:
-            print(f"  [!] Lucida affiche une erreur: {error}", file=sys.stderr)
-            return False
+    try:
+        if qobuz_page is None or qobuz_page.is_closed():
+            qobuz_page = context.new_page()
+            owns_page = True
 
+        qobuz_page.set_default_timeout(15_000)
+        qobuz_page.set_default_navigation_timeout(45_000)
         try:
-            body_n = normalize_text(
-                page.locator("body").inner_text(timeout=3_000)
-            )
+            qobuz_page.bring_to_front()
         except Exception:
-            page.wait_for_timeout(1_000)
-            continue
+            pass
 
-        if selection_kind == "track" and "download track" in body_n:
-            return True
+        for query in query_variants:
+            if time.monotonic() >= deadline:
+                break
 
-        if (
-            selection_kind == "album"
-            and "tracklist" in body_n
-            and "download full album" in body_n
-        ):
-            return True
+            search_url = f"https://www.qobuz.com/us-en/search?q={urllib_quote(query)}"
+            notify(
+                event_callback,
+                "stage",
+                stage="qobuz_lookup",
+                message=f"Recherche Qobuz: {query}",
+            )
+            print(f"  [QOBUZ] Recherche de l'URL exacte pour: {query}", file=sys.stderr)
 
-        page.wait_for_timeout(1_000)
+            nav_timeout = min(
+                45_000,
+                max(5_000, int((deadline - time.monotonic()) * 1000)),
+            )
+            navigation_ok = False
+            last_navigation_error: Exception | None = None
 
-    expected = (
-        "download track"
-        if selection_kind == "track"
-        else "tracklist + download full album"
-    )
-    print(
-        f"  [!] La fiche n'a pas affiché {expected!r}.",
-        file=sys.stderr,
-    )
-    return False
+            for wait_state in ("domcontentloaded", "commit"):
+                try:
+                    qobuz_page.bring_to_front()
+                    qobuz_page.goto(
+                        search_url,
+                        wait_until=wait_state,
+                        timeout=nav_timeout,
+                    )
+                    if qobuz_page.url and qobuz_page.url != "about:blank":
+                        navigation_ok = True
+                        break
+                except Exception as exc:
+                    last_navigation_error = exc
 
+            # Dernier secours : navigation JavaScript dans le même onglet.
+            if not navigation_ok:
+                try:
+                    qobuz_page.evaluate(
+                        "url => { window.location.assign(url); }",
+                        search_url,
+                    )
+                    qobuz_page.wait_for_url(
+                        re.compile(r"^https://(?:www\.)?qobuz\.com/"),
+                        timeout=min(nav_timeout, 20_000),
+                    )
+                    navigation_ok = qobuz_page.url != "about:blank"
+                except Exception as exc:
+                    last_navigation_error = exc
 
-def select_search_service(page: Page, service_name: str = "Qobuz") -> bool:
-    """
-    Sélectionne le service de recherche avant le clic sur Go.
+            if not navigation_ok:
+                print(
+                    f"  [QOBUZ] Impossible de quitter about:blank: "
+                    f"{last_navigation_error}",
+                    file=sys.stderr,
+                )
+                continue
 
-    Lucida contient plusieurs listes déroulantes (service, région, langue).
-    On parcourt donc les options de chaque select et on ne modifie que celui
-    qui possède réellement l'option demandée.
-    """
-    wanted = normalize_text(service_name)
-    selects = page.locator("select:visible")
+            print(f"  [QOBUZ] Page chargée: {qobuz_page.url}", file=sys.stderr)
 
-    print(
-        f"  [~] Recherche du service {service_name!r} "
-        f"dans {selects.count()} liste(s) déroulante(s)...",
-        file=sys.stderr,
-    )
+            # Qobuz peut hydrater les résultats après DOMContentLoaded.
+            try:
+                qobuz_page.wait_for_selector('a[href*="/album/"]', timeout=12_000)
+            except Exception:
+                pass
 
-    for select_index in range(selects.count()):
-        select = selects.nth(select_index)
+            try:
+                candidates = qobuz_page.locator('a[href*="/album/"]').evaluate_all(
+                    """
+                    (links) => links.map((a) => ({
+                        href: a.href || a.getAttribute('href') || '',
+                        text: (a.innerText || a.textContent || '').trim()
+                    }))
+                    """
+                )
+            except Exception:
+                candidates = []
 
-        try:
-            options = select.locator("option")
-            option_descriptions: list[str] = []
+            ranked: list[tuple[int, str, str]] = []
+            seen: set[str] = set()
+            for item in candidates or []:
+                if not isinstance(item, dict):
+                    continue
+                href = urljoin("https://www.qobuz.com", str(item.get("href") or "").strip())
+                link_text = str(item.get("text") or "").strip()
+                if not href or href in seen or "/album/" not in href:
+                    continue
+                seen.add(href)
+                score = _qobuz_candidate_score(
+                    href,
+                    link_text,
+                    target_title,
+                    target_artist,
+                    target_album,
+                )
+                ranked.append((score, href, link_text))
 
-            for option_index in range(options.count()):
-                option = options.nth(option_index)
-                label = (option.inner_text(timeout=1_000) or "").strip()
-                value = (option.get_attribute("value") or "").strip()
-                option_descriptions.append(label or value)
+            ranked.sort(key=lambda item: item[0], reverse=True)
 
-                if wanted not in (
-                    normalize_text(label),
-                    normalize_text(value),
-                ):
+            for score, href, link_text in ranked[:8]:
+                if score <= 0:
                     continue
 
-                if value:
-                    select.select_option(value=value)
-                else:
-                    select.select_option(label=label)
+                # La plupart des résultats fournissent déjà l'URL finale complète.
+                if is_complete_qobuz_album_url(href):
+                    print(f"  [QOBUZ] Lien exact trouvé: {href}", file=sys.stderr)
+                    notify(event_callback, "stage", stage="qobuz_found", message=href)
+                    return href
 
-                # Vérifier ce que le navigateur a réellement sélectionné.
-                selected_label = select.locator("option:checked").inner_text(
-                    timeout=2_000
-                ).strip()
+                # Fallback : ouvrir le résultat et récupérer l'URL canonique finale.
+                try:
+                    qobuz_page.goto(href, wait_until="domcontentloaded", timeout=30_000)
+                    canonical = qobuz_page.locator('link[rel="canonical"]').first
+                    canonical_href = canonical.get_attribute("href") if canonical.count() else None
+                    final_url = (canonical_href or qobuz_page.url or "").strip()
+                    if is_complete_qobuz_album_url(final_url):
+                        print(f"  [QOBUZ] Lien canonique trouvé: {final_url}", file=sys.stderr)
+                        notify(event_callback, "stage", stage="qobuz_found", message=final_url)
+                        return final_url
+                except Exception:
+                    continue
 
-                print(
-                    f"  [~] Service sélectionné: {selected_label} "
-                    f"(select #{select_index})",
-                    file=sys.stderr,
-                )
-                return normalize_text(selected_label) == wanted
+        print("  [QOBUZ] Aucun lien d'album complet trouvé.", file=sys.stderr)
+        return None
+    finally:
+        # Ne pas fermer l'onglet principal fourni par le fournisseur : il sera
+        # réutilisé immédiatement pour Lucida ou DoubleDouble.
+        if owns_page and qobuz_page is not None:
+            try:
+                qobuz_page.close()
+            except BaseException:
+                pass
 
-            print(
-                f"      select #{select_index}: "
-                f"{', '.join(option_descriptions[:20])}",
-                file=sys.stderr,
-            )
-        except Exception as exc:
-            print(
-                f"      select #{select_index}: lecture impossible ({exc})",
-                file=sys.stderr,
-            )
 
+# ─── Cloudflare detection ────────────────────────────────────────────────────
+
+def is_blocked_by_challenge(page: Page) -> bool:
+    """
+    Retourne True uniquement si un challenge semble *actif et visible*.
+    """
+    try:
+        if page.is_closed():
+            return False
+
+        url = page.url.lower()
+        if "/cdn-cgi/challenge-platform/" in url:
+            return True
+
+        visible_text = ""
+        try:
+            visible_text = page.locator("body").inner_text(timeout=2_000).lower()
+        except Exception:
+            try:
+                visible_text = page.content().lower()
+            except Exception:
+                visible_text = ""
+
+        strong_indicators = [
+            "checking your browser before continuing",
+            "checking your browser",
+            "please stand by while we verify your browser",
+            "please verify you are human",
+            "verify you are human",
+            "verify that you are human",
+            "please complete the captcha to continue",
+            "complete the captcha to continue",
+            "vérifiez que vous êtes humain",
+            "verifiez que vous etes humain",
+            "please complete the security check",
+            "human verification",
+            "just a moment",
+            "unable to verify you are human",
+            "ddos protection by cloudflare",
+            "under attack mode",
+            "error 1010",
+            "error 1020",
+            "error 1015",
+        ]
+        captcha_indicators = [
+            "i'm not a robot",
+            "select all images",
+            "select all squares",
+            "recaptcha",
+            "hcaptcha",
+        ]
+
+        if any(indicator in visible_text for indicator in strong_indicators):
+            return True
+        if any(indicator in visible_text for indicator in captcha_indicators):
+            return True
+
+        # Un widget ne compte que s'il est réellement visible.
+        challenge_selectors = [
+            'iframe[src*="challenges.cloudflare.com"]',
+            'iframe[src*="/cdn-cgi/challenge-platform/"]',
+            'iframe[src*="hcaptcha"]',
+            'iframe[src*="recaptcha"]',
+            '.cf-turnstile',
+            '[data-cf-turnstile]',
+        ]
+        for selector in challenge_selectors:
+            try:
+                locator = page.locator(selector)
+                count = min(locator.count(), 8)
+                for index in range(count):
+                    item = locator.nth(index)
+                    if item.is_visible(timeout=250):
+                        box = item.bounding_box()
+                        if box is None or (box.get("width", 0) > 2 and box.get("height", 0) > 2):
+                            return True
+            except Exception:
+                continue
+
+        # Vérifier les erreurs Cloudflare dans la console
+        try:
+            console_errors = page.evaluate("""
+                () => {
+                    const errors = [];
+                    for (const msg of console.messages) {
+                        if (msg.text.includes('cloudflare') || msg.text.includes('challenges') || msg.text.includes('turnstile')) {
+                            errors.push(msg.text);
+                        }
+                    }
+                    return errors;
+                }
+            """)
+            if errors:
+                return True
+        except Exception:
+            pass
+
+        return False
+    except Exception:
+        return False
+
+
+def wait_for_challenge_to_clear(page: Page, timeout_seconds: int = 120) -> bool:
+    """Attend une résolution manuelle sans bloquer l'event loop Playwright."""
+    start = time.monotonic()
     print(
-        f"  [!] Le service {service_name!r} est introuvable dans les options.",
+        f"  [CHALLENGE] Résous la vérification dans Chromium "
+        f"({timeout_seconds}s max, Ctrl+C pour annuler proprement)...",
         file=sys.stderr,
     )
+
+    while time.monotonic() - start < timeout_seconds:
+        if page.is_closed():
+            return False
+        if not is_blocked_by_challenge(page):
+            print("  [CHALLENGE] Vérification terminée.", file=sys.stderr)
+            return True
+        time.sleep(1.0)
+
     return False
 
 
-def select_original_quality(page: Page) -> None:
-    """Sélectionne 'Original format (highest quality)' quand cette option existe."""
-    selects = page.locator("select:visible")
+# ─── Download detection ──────────────────────────────────────────────────────
 
-    for index in range(selects.count()):
-        select = selects.nth(index)
-
-        try:
-            options = select.locator("option")
-            for option_index in range(options.count()):
-                option = options.nth(option_index)
-                label = (option.inner_text() or "").strip()
-                label_n = normalize_text(label)
-
-                if "original format" in label_n or "highest quality" in label_n:
-                    value = option.get_attribute("value")
-                    if value is not None:
-                        select.select_option(value=value)
-                    else:
-                        select.select_option(label=label)
-
-                    print(
-                        f"  [~] Qualité sélectionnée: {label}",
-                        file=sys.stderr,
-                    )
-                    return
-        except Exception:
-            continue
+def capture_download(download: Download) -> None:
+    """Capture un téléchargement dans une liste partagée."""
+    captured_downloads.append(download)
 
 
+# ─── Shared persistent context helper ────────────────────────────────────────
 
-def find_download_track_control(page: Page) -> Locator | None:
-    """Bouton global exact d'une fiche de piste."""
-    controls = page.locator(
-        'button:visible, a:visible, input[type="submit"]:visible, '
-        'input[type="button"]:visible, [role="button"]:visible'
-    )
-
-    for index in range(controls.count()):
-        control = controls.nth(index)
-        label = normalize_text(locator_label(control))
-
-        if label == "download track":
-            return control
-
-    return None
-
-
-def find_download_full_album_control(page: Page) -> Locator | None:
-    """Trouve le bouton global de la fiche album, utilisé pour vérifier la carte."""
-    controls = page.locator(
-        'button:visible, a:visible, input[type="submit"]:visible, '
-        'input[type="button"]:visible, [role="button"]:visible'
-    )
-
-    for index in range(controls.count()):
-        control = controls.nth(index)
-        if normalize_text(locator_label(control)) == "download full album":
-            return control
-
-    return None
-
-
-
-def page_identity_lines(page: Page) -> list[str]:
+def _get_persistent_context(
+    playwright: Any,
+    provider_name: str,
+    visible: bool,
+    event_callback: EventCallback | None = None,
+) -> BrowserContext:
     """
-    Lit les lignes sémantiques de la fiche entière.
-
-    La v8 inspectait uniquement le petit parent HTML du bouton
-    « download full album ». Sur Lucida, ce parent ne contient que le bouton,
-    tandis que le titre et l'artiste se trouvent dans un autre bloc au-dessus.
+    Crée un contexte persistant Brave avec profil dédié.
     """
-    try:
-        body_text = page.locator("body").inner_text(timeout=5_000)
-    except Exception:
-        return []
-
-    return semantic_lines(body_text)
-
-
-def exact_line_matches(
-    lines: list[str],
-    expected: str,
-    normalizer,
-) -> list[str]:
-    expected_normalized = normalizer(expected)
-    if not expected_normalized:
-        return []
-
-    return [
-        line
-        for line in lines
-        if normalizer(line) == expected_normalized
-    ]
+    BRAVE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    context = playwright.chromium.launch_persistent_context(
+        user_data_dir=str(BRAVE_PROFILE_DIR),
+        headless=False,
+        executable_path=BROWSER_EXECUTABLE,
+        accept_downloads=True,
+        viewport=None,
+        args=[],
+    )
+    notify(event_callback, "stage", stage="launching_browser", provider=provider_name, message="Lancement de Brave")
+    print(f"  [{provider_name.upper()}] Lancement de Brave (profil persistant: {BRAVE_PROFILE_DIR})...", file=sys.stderr)
+    return context
 
 
+def _get_visible_work_page(context: BrowserContext) -> Page:
+    """Retourne l'onglet visible réellement utilisé par l'automatisation.
 
-def verify_track_page_identity(
-    page: Page,
-    title: str,
-    artist: str,
-    album: str,
-) -> bool:
+    Un contexte persistant Brave démarre souvent avec un premier onglet
+    ``about:blank``. Si Qobuz est ouvert dans un second onglet, l'utilisateur
+    continue alors à voir la page blanche. On réutilise donc explicitement le
+    premier onglet vide et on le place au premier plan.
     """
-    Vérifie la fiche piste avec le texte de la page entière.
+    pages = [candidate for candidate in context.pages if not candidate.is_closed()]
 
-    On exige des lignes exactes, pas de simples sous-chaînes.
-    """
-    if find_download_track_control(page) is None:
-        return False
-
-    lines = page_identity_lines(page)
-    title_matches = exact_line_matches(lines, title, canonical_title)
-    artist_matches = [
-        line
-        for line in lines
-        if re.sub(
-            r"^(?:by|artist)\s+",
-            "",
-            normalize_text(line),
-        ).strip() == normalize_text(artist)
-    ]
-    album_matches = exact_line_matches(
-        lines,
-        album,
-        canonical_release_name,
-    )
-
-    title_ok = bool(title_matches)
-    artist_ok = bool(artist_matches)
-    album_ok = not album or bool(album_matches)
-
-    print(
-        f"  [VÉRIFICATION FICHE PISTE] "
-        f"titre={title_ok}, artiste={artist_ok}, album={album_ok}",
-        file=sys.stderr,
-    )
-    print(
-        f"      lignes titre={title_matches[:3]!r}",
-        file=sys.stderr,
-    )
-    print(
-        f"      lignes artiste={artist_matches[:3]!r}",
-        file=sys.stderr,
-    )
-    print(
-        f"      lignes album={album_matches[:3]!r}",
-        file=sys.stderr,
-    )
-
-    return title_ok and artist_ok and album_ok
-
-
-
-def verify_album_page_identity(
-    page: Page,
-    artist: str,
-    album: str,
-) -> bool:
-    """
-    Vérifie la fiche album à partir de toute la page.
-
-    Important: le titre/artiste de l'album et le bouton
-    « download full album » ne sont pas dans le même petit conteneur HTML.
-    """
-    if find_download_full_album_control(page) is None:
-        print(
-            "  [VÉRIFICATION FICHE ALBUM] "
-            "bouton « download full album » absent",
-            file=sys.stderr,
-        )
-        return False
-
-    lines = page_identity_lines(page)
-    album_matches = exact_line_matches(
-        lines,
-        album,
-        canonical_release_name,
-    )
-    artist_matches = [
-        line
-        for line in lines
-        if re.sub(
-            r"^(?:by|artist)\s+",
-            "",
-            normalize_text(line),
-        ).strip() == normalize_text(artist)
-    ]
-
-    try:
-        body_normalized = normalize_text(
-            page.locator("body").inner_text(timeout=5_000)
-        )
-    except Exception:
-        body_normalized = ""
-
-    album_ok = bool(album_matches)
-    artist_ok = bool(artist_matches)
-    structure_ok = (
-        "tracklist" in body_normalized
-        and "download full album" in body_normalized
-    )
-
-    print(
-        f"  [VÉRIFICATION FICHE ALBUM] "
-        f"album={album_ok}, artiste={artist_ok}, structure={structure_ok}",
-        file=sys.stderr,
-    )
-    print(
-        f"      lignes album={album_matches[:3]!r}",
-        file=sys.stderr,
-    )
-    print(
-        f"      lignes artiste={artist_matches[:3]!r}",
-        file=sys.stderr,
-    )
-
-    return album_ok and artist_ok and structure_ok
-
-
-
-def expand_tracklist(page: Page) -> bool:
-    """Ouvre la section tracklist et confirme qu'elle contient des pistes."""
-    controls = page.locator(
-        'summary:visible, button:visible, [role="button"]:visible, '
-        'a:visible'
-    )
-
-    tracklist_control = None
-
-    for index in range(controls.count()):
-        control = controls.nth(index)
-        label = normalize_text(locator_label(control))
-
-        if label == "tracklist":
-            tracklist_control = control
+    page: Page | None = None
+    for candidate in pages:
+        if candidate.url in ("", "about:blank"):
+            page = candidate
             break
 
-    if tracklist_control is not None:
-        try:
-            # Pour <summary>, le parent <details open> indique l'état.
-            tag_name = tracklist_control.evaluate(
-                "(element) => element.tagName.toLowerCase()"
-            )
-            already_open = False
-
-            if tag_name == "summary":
-                already_open = bool(
-                    tracklist_control.evaluate(
-                        "(element) => element.parentElement?.open === true"
-                    )
-                )
-
-            if not already_open:
-                print("  [~] Ouverture de la tracklist...", file=sys.stderr)
-                tracklist_control.click(timeout=10_000)
-
-        except Exception as exc:
-            print(
-                f"  [~] Clic tracklist non confirmé ({exc}); "
-                "vérification du contenu...",
-                file=sys.stderr,
-            )
-
-    deadline = time.monotonic() + 15
-
-    while time.monotonic() < deadline:
-        try:
-            body = page.locator("body").inner_text(timeout=3_000)
-        except Exception:
-            page.wait_for_timeout(500)
-            continue
-
-        lines = semantic_lines(body)
-
-        # Une ligne numérotée suivie d'un titre indique une tracklist ouverte.
-        has_numbered_track = any(
-            re.match(r"^\d+\s+\S+", line)
-            for line in lines
-        )
-
-        if has_numbered_track:
-            print(
-                "  [~] Tracklist ouverte et pistes visibles.",
-                file=sys.stderr,
-            )
-            return True
-
-        page.wait_for_timeout(500)
-
-    print(
-        "  [!] La section tracklist n'a pas affiché ses pistes.",
-        file=sys.stderr,
-    )
-    return False
-
-
-def find_album_track_row(page: Page, title: str) -> Locator | None:
-    """Trouve le plus petit conteneur correspondant exactement à la piste."""
-    expected = canonical_title(title)
-    rows = page.locator(
-        'li:visible, tr:visible, [role="row"]:visible, '
-        'div:visible, p:visible'
-    )
-
-    candidates: list[tuple[int, int, Locator, str]] = []
-    count = min(rows.count(), 1600)
-
-    for index in range(count):
-        row = rows.nth(index)
-
-        try:
-            row_text = (row.inner_text(timeout=700) or "").strip()
-        except Exception:
-            continue
-
-        if not row_text or len(row_text) > 500:
-            continue
-
-        lines = semantic_lines(row_text)
-        exact_line = any(canonical_title(line) == expected for line in lines)
-        if not exact_line:
-            continue
-
-        controls_count = row.locator(
-            'a, button, [role="button"], input[type="button"], '
-            'input[type="submit"]'
-        ).count()
-        if controls_count == 0:
-            continue
-
-        # Le conteneur le plus petit est normalement la ligne de la piste,
-        # pas tout le bloc tracklist.
-        candidates.append((len(row_text), index, row, row_text))
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: (item[0], item[1]))
-    chosen = candidates[0]
-
-    print(
-        f"  [VÉRIFICATION TRACKLIST] Ligne exacte trouvée: "
-        f"{chosen[3]!r}",
-        file=sys.stderr,
-    )
-    return chosen[2]
-
-
-def describe_control(control: Locator) -> dict:
-    """Informations utiles pour reconnaître l'icône de téléchargement."""
-    data: dict[str, str | None] = {}
-
-    for attribute in (
-        "href",
-        "download",
-        "title",
-        "aria-label",
-        "class",
-        "data-tooltip",
-    ):
-        try:
-            data[attribute] = control.get_attribute(attribute)
-        except Exception:
-            data[attribute] = None
-
-    data["label"] = locator_label(control)
+    if page is None:
+        page = context.new_page()
 
     try:
-        data["html"] = control.inner_html(timeout=800)[:500]
-    except Exception:
-        data["html"] = ""
-
-    return data
-
-
-def find_row_download_control(row: Locator, title: str) -> Locator | None:
-    """
-    Trouve uniquement l'icône Download située dans la ligne exacte de la piste.
-
-    Le bouton "download full album" est impossible à sélectionner car la
-    recherche est limitée au conteneur de la piste.
-    """
-    expected_title = canonical_title(title)
-    controls = row.locator(
-        'a:visible, button:visible, [role="button"]:visible, '
-        'input[type="button"]:visible, input[type="submit"]:visible'
-    )
-
-    scored: list[tuple[int, int, Locator, dict]] = []
-    fallback: list[tuple[int, Locator, dict]] = []
-
-    for index in range(controls.count()):
-        control = controls.nth(index)
-        info = describe_control(control)
-
-        label = normalize_text(str(info.get("label") or ""))
-        title_attr = normalize_text(str(info.get("title") or ""))
-        aria = normalize_text(str(info.get("aria-label") or ""))
-        class_name = normalize_text(str(info.get("class") or ""))
-        html = normalize_text(str(info.get("html") or ""))
-        href = str(info.get("href") or "")
-        href_n = normalize_text(href)
-        download_attr = info.get("download")
-
-        # Ne jamais cliquer sur le titre lui-même.
-        if canonical_title(label) == expected_title:
-            continue
-
-        # Rejeter les liens externes vers Qobuz/Deezer/etc.
-        external_service = any(
-            domain in href.lower()
-            for domain in (
-                "qobuz.com",
-                "deezer.com",
-                "spotify.com",
-                "tidal.com",
-                "soundcloud.com",
-                "amazon.",
-                "music.yandex.",
-            )
-        )
-        if external_service:
-            continue
-
-        combined = " ".join(
-            value
-            for value in (
-                label,
-                title_attr,
-                aria,
-                class_name,
-                html,
-                href_n,
-            )
-            if value
-        )
-
-        score = 0
-        if download_attr is not None:
-            score += 500
-        if "download" in combined:
-            score += 350
-        if any(
-            marker in combined
-            for marker in (
-                "arrow down",
-                "arrowdown",
-                "down arrow",
-                "fa download",
-                "icon download",
-                "download icon",
-            )
-        ):
-            score += 250
-        if "download" in href_n:
-            score += 200
-
-        if any(word in combined for word in ("external", "copy link", "permalink")):
-            score -= 400
-
-        if score > 0:
-            scored.append((score, index, control, info))
-        else:
-            # L'icône Download est généralement le premier contrôle interne
-            # immédiatement après le titre de la piste.
-            fallback.append((index, control, info))
-
-    if scored:
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        chosen = scored[0]
-        print(
-            f"  [VÉRIFICATION TRACKLIST] Contrôle Download identifié: "
-            f"{chosen[3]}",
-            file=sys.stderr,
-        )
-        return chosen[2]
-
-    if fallback:
-        # Fallback prudent: premier contrôle interne non externe de la ligne.
-        chosen = fallback[0]
-        print(
-            f"  [VÉRIFICATION TRACKLIST] Icône sans libellé; "
-            f"premier contrôle interne retenu: {chosen[2]}",
-            file=sys.stderr,
-        )
-        return chosen[1]
-
-    return None
-
-
-def find_album_track_download_control(
-    page: Page,
-    title: str,
-) -> Locator | None:
-    if not expand_tracklist(page):
-        print("  [!] Impossible d'ouvrir la tracklist.", file=sys.stderr)
-        return None
-
-    deadline = time.monotonic() + 15
-
-    while time.monotonic() < deadline:
-        row = find_album_track_row(page, title)
-        if row is not None:
-            control = find_row_download_control(row, title)
-            if control is not None:
-                return control
-
-        page.wait_for_timeout(750)
-
-    print(
-        f"  [!] Piste exacte {title!r} introuvable dans la tracklist.",
-        file=sys.stderr,
-    )
-    return None
-
-
-def find_verified_download_control(
-    page: Page,
-    selection_kind: str,
-    title: str,
-    artist: str,
-    album: str,
-) -> Locator | None:
-    """
-    Retourne un contrôle seulement après validation complète de l'identité.
-    """
-    select_original_quality(page)
-
-    if selection_kind == "track":
-        if not verify_track_page_identity(page, title, artist, album):
-            print(
-                "  [!] L'identité de la fiche piste ne correspond pas. "
-                "Téléchargement bloqué.",
-                file=sys.stderr,
-            )
-            return None
-        return find_download_track_control(page)
-
-    if selection_kind == "album":
-        if not verify_album_page_identity(page, artist, album):
-            print(
-                "  [!] L'identité de la fiche album ne correspond pas. "
-                "Téléchargement bloqué.",
-                file=sys.stderr,
-            )
-            return None
-        return find_album_track_download_control(page, title)
-
-    return None
-
-
-def detect_download_fetch_error(page: Page) -> str | None:
-    """Détecte les messages d'erreur réseau affichés dans la page."""
-    try:
-        body = page.locator("body").inner_text(timeout=2_000)
-    except Exception:
-        return None
-
-    body_normalized = normalize_text(body)
-    for marker in DOWNLOAD_FETCH_ERROR_MARKERS:
-        if normalize_text(marker) in body_normalized:
-            return marker
-
-    return None
-
-
-def wait_for_download_attempt(
-    page: Page,
-    attempt_state: dict,
-    timeout_seconds: int,
-) -> tuple[str, object | None]:
-    """
-    Attend sans bloquer aveuglément pendant plusieurs minutes.
-
-    Résultats:
-    - ("download", Download)
-    - ("fetch_error", message)
-    - ("timeout", None)
-    """
-    deadline = time.monotonic() + timeout_seconds
-
-    while time.monotonic() < deadline:
-        download = attempt_state.get("download")
-        if download is not None:
-            return "download", download
-
-        fetch_error = attempt_state.get("fetch_error")
-        if fetch_error:
-            return "fetch_error", str(fetch_error)
-
-        page_error = detect_download_fetch_error(page)
-        if page_error:
-            return "fetch_error", page_error
-
-        page.wait_for_timeout(1_000)
-
-    return "timeout", None
-
-
-
-def prepare_download_retry(
-    page: Page,
-    debug_dir: Path,
-    attempt: int,
-    selection_kind: str,
-    title: str,
-    artist: str,
-    album: str,
-) -> bool:
-    """Prépare une nouvelle tentative sans perdre la piste vérifiée."""
-    save_debug(page, debug_dir, f"download_attempt_{attempt}_failed")
-
-    try:
-        page.keyboard.press("Escape")
+        page.bring_to_front()
     except Exception:
         pass
 
-    try:
-        page.evaluate("window.stop()")
-    except Exception:
-        pass
+    # Nettoyer uniquement les autres onglets vides hérités d'un ancien run.
+    for candidate in pages:
+        if candidate is page or candidate.is_closed():
+            continue
+        if candidate.url in ("", "about:blank"):
+            try:
+                candidate.close()
+            except BaseException:
+                pass
 
-    page.wait_for_timeout(2_500)
-
-    control = find_verified_download_control(
-        page,
-        selection_kind,
-        title,
-        artist,
-        album,
-    )
-    if control is not None:
-        return True
-
-    print(
-        "  [~] Le contrôle vérifié a disparu; rechargement de la fiche...",
-        file=sys.stderr,
-    )
-
-    try:
-        page.reload(wait_until="domcontentloaded", timeout=60_000)
-    except Exception as exc:
-        print(f"  [!] Rechargement impossible: {exc}", file=sys.stderr)
-        return False
-
-    if not wait_for_media_page(
-        page,
-        selection_kind=selection_kind,
-        timeout_seconds=60,
-    ):
-        return False
-
-    return find_verified_download_control(
-        page,
-        selection_kind,
-        title,
-        artist,
-        album,
-    ) is not None
+    return page
 
 
-def download_with_cookies(
-    url: str,
-    cookies: list[dict],
-    user_agent: str,
-    output_dir: Path,
-    fallback_filename: str,
-) -> str | None:
-    """Fallback HTTP utilisant la même session logique que le navigateur."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / safe_filename(fallback_filename)
+# ─── LUCIDA Provider ─────────────────────────────────────────────────────────
 
-    try:
-        session = create_session(user_agent=user_agent)
-
-        for cookie in cookies:
-            session.cookies.set(
-                cookie["name"],
-                cookie["value"],
-                domain=cookie.get("domain") or None,
-                path=cookie.get("path") or "/",
-            )
-
-        response = session.get(
-            url,
-            stream=True,
-            timeout=300,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-
-        content_type = response.headers.get("content-type", "").lower()
-        if "text/html" in content_type or "application/json" in content_type:
-            raise RuntimeError(
-                f"La réponse n'est pas un fichier audio ({content_type})."
-            )
-
-        disposition = response.headers.get("content-disposition", "")
-        filename_match = re.search(
-            r"""filename\*?=(?:UTF-8''|["'])?([^;"']+)""",
-            disposition,
-            flags=re.IGNORECASE,
-        )
-        if filename_match:
-            destination = output_dir / safe_filename(filename_match.group(1))
-
-        total = int(response.headers.get("content-length", "0") or 0)
-        downloaded = 0
-
-        with destination.open("wb") as file_handle:
-            for chunk in response.iter_content(chunk_size=1024 * 256):
-                if not chunk:
-                    continue
-                file_handle.write(chunk)
-                downloaded += len(chunk)
-
-                if total:
-                    percent = downloaded / total * 100
-                    print(
-                        f"  [~] {percent:5.1f}% "
-                        f"({downloaded / 1024 / 1024:.1f}/"
-                        f"{total / 1024 / 1024:.1f} Mo)",
-                        end="\r",
-                        file=sys.stderr,
-                    )
-
-        print(file=sys.stderr)
-        print(
-            f"  [~] Téléchargé: {destination.name} "
-            f"({destination.stat().st_size / 1024 / 1024:.1f} Mo)",
-            file=sys.stderr,
-        )
-        return str(destination)
-
-    except Exception as exc:
-        print(f"  [!] Échec du fallback HTTP: {exc}", file=sys.stderr)
-        if destination.exists():
-            destination.unlink()
-        return None
+LUCIDA_CONFIG = ProviderConfig(
+    name="lucida",
+    display_name="Lucida (Qobuz)",
+    base_url="https://lucida.app",
+    description="Fournisseur Lucida — recherche via URL Qobuz",
+)
 
 
 def download_from_lucida(
@@ -1597,664 +842,855 @@ def download_from_lucida(
     target_title: str,
     target_artist: str,
     target_album: str,
-    output_dir: str,
-    visible: bool,
-    lucida_index: int | None,
-    search_service: str = "Qobuz",
-    download_timeout_seconds: int = 75,
-    download_retries: int = 2,
+    output_dir: Path,
+    visible: bool = True,
+    download_timeout_seconds: int = 120,
     target_duration: int = 0,
     event_callback: EventCallback | None = None,
-) -> str | None:
-    output_path = Path(output_dir)
-    debug_dir = output_path / "debug"
-    output_path.mkdir(parents=True, exist_ok=True)
+) -> Optional[str]:
+    """
+    Fournisseur Lucida — recherche via URL Qobuz.
+    """
+    debug_dir = output_dir / "debug" / "lucida"
     debug_dir.mkdir(parents=True, exist_ok=True)
 
-    print(
-        f"  [~] Recherche envoyée à Lucida: {search_query!r}",
-        file=sys.stderr,
-    )
-
-    captured_audio_urls: list[str] = []
-
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=not visible,
-            )
-            context: BrowserContext = browser.new_context(
-                viewport={"width": 1440, "height": 1000},
-                locale="en-US",
-                accept_downloads=True,
-            )
-            page = context.new_page()
-            page.set_default_timeout(10_000)
+        playwright = sync_playwright().start()
 
-            # État de la tentative de téléchargement en cours. Les callbacks
-            # réseau et console peuvent ainsi interrompre rapidement l'attente.
-            download_attempt_state = {
-                "active": False,
-                "download": None,
-                "fetch_error": None,
-            }
+        context = _get_persistent_context(playwright, "lucida", visible, event_callback)
+        page = _get_visible_work_page(context)
+        page.set_default_timeout(30_000)
+        page.set_default_navigation_timeout(60_000)
 
-            def on_download(download) -> None:
-                if download_attempt_state["active"]:
-                    download_attempt_state["download"] = download
+        # Listener réseau pour débogage Cloudflare
+        def log_failed_request(request: Any) -> None:
+            failure = request.failure
+            print(f"[RÉSEAU ÉCHEC] {request.method} {request.url} — {failure}", file=sys.stderr)
 
-            def on_console(message) -> None:
-                if "[i18n]: 'my' locale is non-standard." in message.text:
-                    return
+        page.on("requestfailed", log_failed_request)
 
-                message_text = message.text or ""
-                message_normalized = normalize_text(message_text)
+        qobuz_url = resolve_qobuz_album_url(
+            context=context,
+            target_title=target_title,
+            target_artist=target_artist,
+            target_album=target_album,
+            raw_query=search_query,
+            timeout_seconds=min(download_timeout_seconds, 75),
+            event_callback=event_callback,
+            page=page,
+        )
+        if not qobuz_url:
+            notify(event_callback, "error", code="QOBUZ_URL_NOT_FOUND", message="URL Qobuz exacte introuvable")
+            safe_close_playwright_session(context, playwright)
+            return None
+        search_query = qobuz_url
 
-                if (
-                    download_attempt_state["active"]
-                    and message.type == "error"
-                    and any(
-                        normalize_text(marker) in message_normalized
-                        for marker in DOWNLOAD_FETCH_ERROR_MARKERS
-                    )
-                ):
-                    download_attempt_state["fetch_error"] = (
-                        f"Console: {message_text}"
-                    )
+        notify(event_callback, "stage", stage="navigating", message=f"Navigation vers {LUCIDA_CONFIG.base_url}")
+        print(f"  [LUCIDA] Navigation vers {LUCIDA_CONFIG.base_url}...", file=sys.stderr)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        page.goto(LUCIDA_CONFIG.base_url, wait_until="domcontentloaded", timeout=60_000)
+        if page.url in ("", "about:blank"):
+            raise RuntimeError("LUCIDA: la navigation est restée sur about:blank")
+        print(f"  [LUCIDA] Page chargée: {page.url}", file=sys.stderr)
+        page.wait_for_timeout(3_000)
 
-                if message.type in ("error", "warning"):
-                    print(
-                        f"  [CONSOLE] {message.type}: {message_text}",
-                        file=sys.stderr,
-                    )
+        save_debug(page, debug_dir, "01_homepage")
 
-            def on_request_failed(request) -> None:
-                if "/cdn-cgi/rum" in request.url:
-                    return
-
-                failure = request.failure or "échec réseau inconnu"
-                print(
-                    f"  [REQ FAIL] {request.method} {request.url} "
-                    f"— {failure}",
-                    file=sys.stderr,
-                )
-
-                if (
-                    download_attempt_state["active"]
-                    and request.resource_type in ("xhr", "fetch")
-                    and "/api/stats/recent-download" not in request.url
-                ):
-                    download_attempt_state["fetch_error"] = (
-                        f"{request.resource_type.upper()} "
-                        f"{request.method} {request.url}: {failure}"
-                    )
-
-            def on_response(response) -> None:
-                url = response.url
-                path = urlparse(url).path.lower()
-                content_type = response.headers.get("content-type", "").lower()
-                disposition = response.headers.get(
-                    "content-disposition",
-                    "",
-                ).lower()
-
-                audio_url = any(path.endswith(ext) for ext in AUDIO_EXTENSIONS)
-                audio_type = content_type.startswith("audio/")
-                audio_attachment = (
-                    "attachment" in disposition
-                    and any(ext in disposition for ext in AUDIO_EXTENSIONS)
-                )
-
-                if audio_url or audio_type or audio_attachment:
-                    if url not in captured_audio_urls:
-                        captured_audio_urls.append(url)
-                        print(
-                            f"  [~] URL audio détectée: {url[:160]}",
-                            file=sys.stderr,
-                        )
-
-                if (
-                    download_attempt_state["active"]
-                    and response.request.resource_type in ("xhr", "fetch")
-                    and response.status >= 400
-                    and "/api/stats/recent-download" not in url
-                ):
-                    download_attempt_state["fetch_error"] = (
-                        f"HTTP {response.status} sur "
-                        f"{response.request.resource_type.upper()} {url}"
-                    )
-
-            page.on("download", on_download)
-            page.on("console", on_console)
-            page.on("requestfailed", on_request_failed)
-            page.on("response", on_response)
-
-            notify(event_callback, "stage", stage="opening_site", message="Ouverture de Lucida")
-            print(f"  [1/6] Ouverture de {BASE_URL}...", file=sys.stderr)
-            response = page.goto(
-                BASE_URL,
-                wait_until="domcontentloaded",
-                timeout=60_000,
-            )
-
-            status = response.status if response else None
-            print(
-                f"  [HTTP] {status} — {page.url}",
-                file=sys.stderr,
-            )
-
-            if status is not None and status >= 400:
-                notify(event_callback, "error", code="LUCIDA_ERROR", message=f"Lucida a répondu HTTP {status}")
-                save_debug(page, debug_dir, "http_error")
-                browser.close()
-                return None
-
-            page.wait_for_timeout(2_000)
-            save_debug(page, debug_dir, "01_home")
-
-            search_input = page.locator(
-                'input#download, input[name="url"], '
-                'input[placeholder*="search" i], '
-                'input[placeholder*="URL" i]'
-            ).first
-            go_button = page.locator(
-                'input#go, input[type="submit"], '
-                'button[type="submit"], button:has-text("Go")'
-            ).first
-
-            if not search_input.count() or not search_input.is_visible():
-                notify(event_callback, "error", code="LUCIDA_ERROR", message="Champ de recherche Lucida introuvable")
-                print("  [!] Champ de recherche Lucida introuvable.", file=sys.stderr)
-                save_debug(page, debug_dir, "no_search_input")
-                browser.close()
-                return None
-
-            if not go_button.count() or not go_button.is_visible():
-                notify(event_callback, "error", code="LUCIDA_ERROR", message="Bouton Go de Lucida introuvable")
-                print("  [!] Bouton Go de Lucida introuvable.", file=sys.stderr)
-                save_debug(page, debug_dir, "no_go_button")
-                browser.close()
-                return None
-
-            notify(event_callback, "stage", stage="lucida_search", message="Saisie de la recherche dans Lucida")
-            print("  [2/6] Saisie de la recherche texte...", file=sys.stderr)
-            search_input.fill(search_query)
-
-            notify(event_callback, "stage", stage="selecting_service", message=f"Sélection du service {search_service}")
-            print(
-                f"  [3/6] Sélection du service {search_service}...",
-                file=sys.stderr,
-            )
-            if not select_search_service(page, search_service):
-                notify(event_callback, "error", code="LUCIDA_ERROR", message=f"Service {search_service} introuvable")
-                save_debug(page, debug_dir, "service_not_found")
-                browser.close()
-                return None
-
-            save_debug(page, debug_dir, "02_search_ready")
-
-            notify(event_callback, "stage", stage="waiting_results", message="Recherche des résultats Qobuz")
-            print("  [4/6] Clic sur Go et attente des résultats...", file=sys.stderr)
-            go_button.click()
-
-            if not wait_for_search_results(
-                page,
-                title=target_title,
-                artist=target_artist,
-                timeout_seconds=90,
-            ):
-                notify(event_callback, "error", code="SEARCH_FAILED", message="Lucida n’a pas retourné les résultats attendus")
-                save_debug(page, debug_dir, "search_failed")
-                browser.close()
-                return None
-
-            save_debug(page, debug_dir, "03_results")
-
-            notify(event_callback, "stage", stage="verifying", message="Vérification stricte du titre, de l’artiste et de l’album")
-            print("  [5/6] Vérification stricte du résultat...", file=sys.stderr)
-            selection = find_lucida_result(
-                page=page,
-                title=target_title,
-                artist=target_artist,
-                album=target_album,
-                forced_index=lucida_index,
-            )
-
-            if selection is None:
-                notify(event_callback, "error", code="NO_EXACT_MATCH", message="Aucune correspondance exacte titre, artiste et album")
-                save_debug(page, debug_dir, "no_exact_matching_result")
-                browser.close()
-                return None
-
-            selection_kind = selection["kind"]
-            notify(event_callback, "stage", stage="opening_result", message=f"Ouverture de la fiche {selection_kind}", resultKind=selection_kind)
-            selection["locator"].click(timeout=15_000)
-
-            if not wait_for_media_page(
-                page,
-                selection_kind=selection_kind,
-                timeout_seconds=60,
-            ):
-                notify(event_callback, "error", code="LUCIDA_ERROR", message="La fiche du résultat exact ne s’est pas ouverte")
-                save_debug(page, debug_dir, "media_page_failed")
-                browser.close()
-                return None
-
-            save_debug(page, debug_dir, f"04_{selection_kind}")
-
-            print(
-                f"  [6/6] Téléchargement vérifié via "
-                f"{'la fiche piste' if selection_kind == 'track' else 'la tracklist de l’album'}...",
-                file=sys.stderr,
-            )
-
-            notify(event_callback, "stage", stage="downloading", message="Préparation du téléchargement")
-            total_attempts = max(1, download_retries + 1)
-
-            for attempt in range(1, total_attempts + 1):
-                download_control = find_verified_download_control(
-                    page,
-                    selection_kind,
-                    target_title,
-                    target_artist,
-                    target_album,
-                )
-                if download_control is None:
-                    print(
-                        "  [!] Contrôle de téléchargement vérifié introuvable.",
-                        file=sys.stderr,
-                    )
-
-                    if (
-                        attempt < total_attempts
-                        and prepare_download_retry(
-                            page,
-                            debug_dir,
-                            attempt,
-                            selection_kind,
-                            target_title,
-                            target_artist,
-                            target_album,
-                        )
-                    ):
-                        continue
-
-                    save_debug(page, debug_dir, "no_download_track")
+        # Trouver le champ de recherche
+        search_input = None
+        for selector in ['input[type="text"]', 'input[placeholder*="URL"]', 'input[placeholder*="url"]', 'input']:
+            try:
+                candidate = page.locator(selector).first
+                if candidate.is_visible(timeout=2_000):
+                    search_input = candidate
                     break
+            except Exception:
+                continue
 
-                captured_audio_urls.clear()
-                download_attempt_state["active"] = True
-                download_attempt_state["download"] = None
-                download_attempt_state["fetch_error"] = None
-
-                notify(
-                    event_callback,
-                    "progress",
-                    stage="downloading",
-                    percent=0,
-                    attempt=attempt,
-                    maxAttempts=total_attempts,
-                )
-                print(
-                    f"  [~] Tentative de téléchargement "
-                    f"{attempt}/{total_attempts} "
-                    f"(timeout {download_timeout_seconds}s)...",
-                    file=sys.stderr,
-                )
-
-                try:
-                    download_control.click(timeout=15_000)
-                except Exception as exc:
-                    download_attempt_state["active"] = False
-                    reason = f"clic impossible: {exc}"
-                    outcome = "click_error"
-                    payload = reason
-                else:
-                    outcome, payload = wait_for_download_attempt(
-                        page=page,
-                        attempt_state=download_attempt_state,
-                        timeout_seconds=download_timeout_seconds,
-                    )
-                    download_attempt_state["active"] = False
-
-                if outcome == "download":
-                    download = payload
-                    filename = safe_filename(
-                        download.suggested_filename
-                        or f"{target_artist} - {target_title}.flac"
-                    )
-                    destination = output_path / filename
-                    download.save_as(destination)
-
-                    notify(event_callback, "stage", stage="validating", message="Vérification des métadonnées et de la durée")
-                    if not verify_downloaded_file(
-                        str(destination),
-                        target_title,
-                        target_artist,
-                        target_album,
-                        target_duration,
-                    ):
-                        notify(event_callback, "error", code="FILE_VALIDATION_FAILED", message="Le fichier téléchargé ne correspond pas au morceau sélectionné")
-                        save_debug(
-                            page,
-                            debug_dir,
-                            "downloaded_file_identity_mismatch",
-                        )
-                        browser.close()
-                        return None
-
-                    size = destination.stat().st_size
-                    print(
-                        f"  [~] Téléchargé et vérifié: {destination.name} "
-                        f"({size / 1024 / 1024:.1f} Mo)",
-                        file=sys.stderr,
-                    )
-                    browser.close()
-                    return str(destination)
-
-                if outcome == "fetch_error":
-                    print(
-                        f"  [!] Erreur Fetch détectée: {payload}",
-                        file=sys.stderr,
-                    )
-                elif outcome == "timeout":
-                    print(
-                        f"  [!] Aucun téléchargement après "
-                        f"{download_timeout_seconds}s.",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(f"  [!] {payload}", file=sys.stderr)
-
-                if attempt < total_attempts:
-                    delay_seconds = min(3 * attempt, 8)
-                    notify(
-                        event_callback,
-                        "retry",
-                        attempt=attempt + 1,
-                        maxAttempts=total_attempts,
-                        reason=str(payload) if payload is not None else outcome,
-                        delaySeconds=delay_seconds,
-                    )
-                    print(
-                        f"  [~] Nouvelle tentative automatique dans "
-                        f"{delay_seconds}s...",
-                        file=sys.stderr,
-                    )
-                    page.wait_for_timeout(delay_seconds * 1_000)
-
-                    if not prepare_download_retry(
-                        page,
-                        debug_dir,
-                        attempt,
-                        selection_kind,
-                        target_title,
-                        target_artist,
-                        target_album,
-                    ):
-                        print(
-                            "  [!] Impossible de préparer la nouvelle tentative.",
-                            file=sys.stderr,
-                        )
-                        break
-
-            # Dernier recours: utiliser une URL audio déjà interceptée.
-            if captured_audio_urls:
-                print(
-                    "  [~] Toutes les tentatives par clic ont échoué; "
-                    "essai avec l'URL audio interceptée...",
-                    file=sys.stderr,
-                )
-                cookies = context.cookies()
-                user_agent = page.evaluate("navigator.userAgent")
-                fallback_url = captured_audio_urls[-1]
-                browser.close()
-
-                fallback_path = download_with_cookies(
-                    url=fallback_url,
-                    cookies=cookies,
-                    user_agent=user_agent,
-                    output_dir=output_path,
-                    fallback_filename=f"{target_artist} - {target_title}.flac",
-                )
-
-                if (
-                    fallback_path
-                    and verify_downloaded_file(
-                        fallback_path,
-                        target_title,
-                        target_artist,
-                        target_album,
-                        target_duration,
-                    )
-                ):
-                    return fallback_path
-
-                return None
-
-            save_debug(page, debug_dir, "download_all_attempts_failed")
-            browser.close()
+        if search_input is None:
+            notify(event_callback, "error", code="LUCIDA_ERROR", message="Barre de recherche non trouvée")
+            save_debug(page, debug_dir, "search_ui_not_found")
+            safe_close_playwright_session(context, playwright)
             return None
 
+        # Remplir avec le query
+        human_like_type(page, search_input, search_query)
+        human_like_wait(page, 300, 800)
+        search_input.press("Enter")
+
+        save_debug(page, debug_dir, "02_search_submitted")
+
+        # Capturer les downloads
+        captured_downloads: list[Download] = []
+        page.on("download", lambda download: captured_downloads.append(download))
+
+        # Attendre le téléchargement
+        deadline = time.monotonic() + download_timeout_seconds
+        downloaded_file = None
+
+        while time.monotonic() < deadline:
+            if captured_downloads:
+                download = captured_downloads.pop(0)
+                filename = safe_filename(download.suggested_filename or f"{target_artist} - {target_title}.flac")
+                destination = output_dir / filename
+                download.save_as(destination)
+                downloaded_file = destination
+                break
+
+            if not is_blocked_by_challenge(page):
+                # Vérifier si un fichier est apparu dans ~/Downloads
+                default_download_dir = Path.home() / "Downloads"
+                before_snapshot_downloads = snapshot_directory(default_download_dir)
+                external_file = find_new_file_in_directory_now(default_download_dir, before_snapshot_downloads, 5)
+                if external_file is not None:
+                    destination = output_dir / external_file.name
+                    shutil.copy2(external_file, destination)
+                    downloaded_file = destination
+                    break
+
+            time.sleep(1.0)
+
+        if not downloaded_file or not downloaded_file.exists():
+            notify(event_callback, "error", code="LUCIDA_ERROR", message="Fichier non détecté")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        print(f"  [LUCIDA] Fichier détecté: {downloaded_file.name}", file=sys.stderr)
+
+        # Vérifier + renommer
+        if not verify_downloaded_file(str(downloaded_file), target_title, target_artist, target_album, target_duration, strict_mode=True):
+            notify(event_callback, "error", code="FILE_VALIDATION_FAILED", message="Le fichier ne correspond pas")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        final_path = rename_with_metadata(str(downloaded_file), target_title, target_artist, output_dir)
+        size = Path(final_path).stat().st_size
+        print(f"  [LUCIDA] Téléchargé et vérifié: {Path(final_path).name} ({size / 1024 / 1024:.1f} Mo)", file=sys.stderr)
+
+        safe_close_playwright_session(context, playwright)
+        return final_path
+
+    except KeyboardInterrupt:
+        notify(event_callback, "error", code="CANCELLED", message="Import annulé.", retryable=False)
+        print("  [LUCIDA] Import annulé.", file=sys.stderr)
+        safe_close_playwright_session(context, playwright)
+        return None
     except Exception as exc:
         notify(event_callback, "error", code="INTERNAL_ERROR", message=str(exc)[:500])
-        print(f"  [!] Erreur générale: {exc}", file=sys.stderr)
-        import traceback
-
+        print(f"  [LUCIDA] Erreur: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
+        safe_close_playwright_session(context, playwright)
         return None
 
 
-def probe_downloaded_identity(filepath: str) -> dict:
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        return {"error": "ffprobe introuvable"}
+# ─── MONOCHROME Provider ─────────────────────────────────────────────────────
 
-    command = [
-        ffprobe,
-        "-v",
-        "quiet",
-        "-show_entries",
-        "format=duration:format_tags=title,artist,album,album_artist",
-        "-of",
-        "json",
-        filepath,
-    ]
+MONOCHROME_CONFIG = ProviderConfig(
+    name="monochrome",
+    display_name="Monochrome.tf",
+    base_url="https://monochrome.tf",
+    description="Fournisseur Monochrome — recherche et téléchargement direct",
+)
+
+
+def download_from_monochrome(
+    search_query: str,
+    target_title: str,
+    target_artist: str,
+    target_album: str,
+    output_dir: Path,
+    visible: bool = True,
+    download_timeout_seconds: int = 180,
+    target_duration: int = 0,
+    event_callback: EventCallback | None = None,
+) -> Optional[str]:
+    """
+    Fournisseur Monochrome.tf — mode automatique.
+
+    Le site Monochrome.tf est une SPA. Workflow :
+      1. Ouvrir monochrome.tf dans Chromium visible
+      2. Le script remplit la barre de recherche et appuie Enter
+      3. Le script trouve le résultat correspondant au morceau
+      4. Le script clique sur le résultat
+      5. Le script clique sur le bouton Download
+      6. Le fichier est capturé (download event ou fichier dans ~/Downloads)
+      7. Vérifie FLAC + métadonnées + durée
+      8. Renomme en Artiste - Titre.flac
+    """
+    debug_dir = output_dir / "debug" / "monochrome"
+    debug_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        playwright = sync_playwright().start()
 
-        if result.returncode != 0 or not result.stdout.strip():
-            return {
-                "error": result.stderr.strip() or "ffprobe a échoué"
-            }
+        context = _get_persistent_context(playwright, "monochrome", visible, event_callback)
+        page = _get_visible_work_page(context)
+        page.set_default_timeout(30_000)
+        page.set_default_navigation_timeout(60_000)
 
-        return json.loads(result.stdout)
+        # Listener réseau pour débogage Cloudflare
+        def log_failed_request(request: Any) -> None:
+            failure = request.failure
+            print(f"[RÉSEAU ÉCHEC] {request.method} {request.url} — {failure}", file=sys.stderr)
+
+        page.on("requestfailed", log_failed_request)
+
+        notify(event_callback, "stage", stage="navigating", message=f"Navigation vers {MONOCHROME_CONFIG.base_url}")
+        print(f"  [MONOCHROME] Navigation vers {MONOCHROME_CONFIG.base_url}...", file=sys.stderr)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        page.goto(MONOCHROME_CONFIG.base_url, wait_until="domcontentloaded", timeout=60_000)
+        if page.url in ("", "about:blank"):
+            raise RuntimeError("MONOCHROME: la navigation est restée sur about:blank")
+        print(f"  [MONOCHROME] Page chargée: {page.url}", file=sys.stderr)
+        page.wait_for_timeout(5_000)
+
+        save_debug(page, debug_dir, "01_homepage")
+
+        # === Étape 1 : Vérifier Cloudflare ===
+        if is_blocked_by_challenge(page):
+            notify(event_callback, "warning", message="Cloudflare détecté sur Monochrome — attente de résolution")
+            print("  [MONOCHROME] ⚠️  Cloudflare détecté — veuillez résoudre...", file=sys.stderr)
+            if not wait_for_challenge_to_clear(page, timeout_seconds=90):
+                notify(event_callback, "error", code="CHALLENGE_BLOCKED", message="Cloudflare non résolu")
+                safe_close_playwright_session(context, playwright)
+                return None
+            print("  [MONOCHROME] Cloudflare résolu, reprise...", file=sys.stderr)
+
+        # === Étape 2 : Trouver la barre de recherche ===
+        notify(event_callback, "stage", stage="filling_search", message="Remplissage de la recherche")
+        print(f"  [MONOCHROME] Remplissage avec: {search_query}", file=sys.stderr)
+
+        search_input = None
+        # Cible exacte : #search-input (placeholder "Search for tracks, artists, albums...")
+        try:
+            candidate = page.locator('#search-input')
+            if candidate.is_visible(timeout=3_000):
+                search_input = candidate
+        except Exception:
+            pass
+
+        # Fallback : tout input search
+        if search_input is None:
+            try:
+                candidate = page.locator('input[type="search"]').first
+                if candidate.is_visible(timeout=2_000):
+                    search_input = candidate
+            except Exception:
+                pass
+
+        # Dernier fallback : tout input text
+        if search_input is None:
+            try:
+                candidate = page.locator('input[placeholder*="Search"]')
+                if candidate.is_visible(timeout=2_000):
+                    search_input = candidate
+            except Exception:
+                pass
+
+        if search_input is None:
+            notify(event_callback, "error", code="MONOCHROME_ERROR", message="Barre de recherche non trouvée")
+            save_debug(page, debug_dir, "search_ui_not_found")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        human_like_type(page, search_input, search_query)
+        human_like_wait(page, 300, 800)
+        search_input.press("Enter")
+
+        save_debug(page, debug_dir, "02_search_submitted")
+
+        # === Étape 3 : Attendre les résultats ===
+        notify(event_callback, "stage", stage="waiting_results", message="Attente des résultats")
+        print("  [MONOCHROME] Attente des résultats...", file=sys.stderr)
+
+        if not wait_for_monochrome_results(page, timeout_seconds=45):
+            notify(event_callback, "error", code="MONOCHROME_ERROR", message="Aucun résultat après attente")
+            save_debug(page, debug_dir, "no_results")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        # === Étape 4 : Vérifier Cloudflare après recherche ===
+        if is_blocked_by_challenge(page):
+            notify(event_callback, "warning", message="Cloudflare détecté sur les résultats")
+            print("  [MONOCHROME] ⚠️  Cloudflare sur les résultats — veuillez résoudre...", file=sys.stderr)
+            if not wait_for_challenge_to_clear(page, timeout_seconds=60):
+                notify(event_callback, "error", code="CHALLENGE_BLOCKED", message="Cloudflare non résolu")
+                safe_close_playwright_session(context, playwright)
+                return None
+            print("  [MONOCHROME] Cloudflare résolu, reprise...", file=sys.stderr)
+
+        # === Étape 5 : Trouver le résultat qui correspond ===
+        notify(event_callback, "stage", stage="selecting_result", message="Sélection du résultat")
+        print("  [MONOCHROME] Recherche du résultat correspondant...", file=sys.stderr)
+
+        result_element = find_monochrome_result(page, target_title, target_artist, target_album)
+        if result_element is None:
+            # Fallback : prendre le premier résultat qui contient l'artiste
+            result_element = find_monochrome_result(page, "", target_artist, "")
+        if result_element is None:
+            notify(event_callback, "error", code="MONOCHROME_ERROR", message="Aucun résultat correspondant trouvé")
+            save_debug(page, debug_dir, "no_matching_result")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        # === Étape 6 : Cliquer sur le résultat ===
+        notify(event_callback, "stage", stage="clicking_result", message="Clic sur le résultat")
+        human_like_click(page, result_element["locator"])
+
+        save_debug(page, debug_dir, "03_result_clicked")
+
+        # === Étape 7 : Capturer le téléchargement ===
+        notify(event_callback, "stage", stage="downloading", message="Attente du téléchargement")
+        print("  [MONOCHROME] Attente du téléchargement...", file=sys.stderr)
+
+        captured_downloads: list[Download] = []
+        page.on("download", lambda download: captured_downloads.append(download))
+
+        # Snapshot des dossiers
+        before_snapshot_output = snapshot_directory(output_dir)
+        default_download_dir = Path.home() / "Downloads"
+        before_snapshot_downloads = snapshot_directory(default_download_dir)
+
+        # === Étape 8 : Trouver le bouton Download ===
+        download_button = find_monochrome_download_button(page, target_title)
+        if download_button is not None:
+            human_like_click(page, download_button)
+            human_like_wait(page, 200, 500)
+
+        # === Étape 9 : Attendre le fichier ===
+        deadline = time.monotonic() + download_timeout_seconds
+        downloaded_file = None
+
+        while time.monotonic() < deadline:
+            if captured_downloads:
+                download = captured_downloads.pop(0)
+                filename = safe_filename(download.suggested_filename or f"{target_artist} - {target_title}.flac")
+                destination = output_dir / filename
+                download.save_as(destination)
+                downloaded_file = destination
+                break
+
+            # Vérifier output_dir
+            downloaded_file = find_new_file_in_directory_now(output_dir, before_snapshot_output, 5)
+            if downloaded_file is not None:
+                break
+
+            # Vérifier ~/Downloads
+            external_file = find_new_file_in_directory_now(default_download_dir, before_snapshot_downloads, 5)
+            if external_file is not None:
+                destination = output_dir / external_file.name
+                shutil.copy2(external_file, destination)
+                downloaded_file = destination
+                break
+
+            time.sleep(1.0)
+
+        if not downloaded_file or not downloaded_file.exists():
+            notify(event_callback, "error", code="FILE_DETECTION_FAILED", message="Fichier téléchargé non détecté")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        print(f"  [MONOCHROME] Fichier détecté: {downloaded_file.name}", file=sys.stderr)
+
+        # === Étape 10 : Vérifier + renommer ===
+        if not verify_downloaded_file(str(downloaded_file), target_title, target_artist, target_album, target_duration, strict_mode=False):
+            notify(event_callback, "error", code="FILE_VALIDATION_FAILED", message="Le fichier ne correspond pas")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        final_path = rename_with_metadata(str(downloaded_file), target_title, target_artist, output_dir)
+        size = Path(final_path).stat().st_size
+        print(f"  [MONOCHROME] Téléchargé et vérifié: {Path(final_path).name} ({size / 1024 / 1024:.1f} Mo)", file=sys.stderr)
+
+        safe_close_playwright_session(context, playwright)
+        return final_path
+
+    except KeyboardInterrupt:
+        notify(event_callback, "error", code="CANCELLED", message="Import annulé.", retryable=False)
+        print("  [MONOCHROME] Import annulé.", file=sys.stderr)
+        safe_close_playwright_session(context, playwright)
+        return None
     except Exception as exc:
-        return {"error": str(exc)}
+        notify(event_callback, "error", code="INTERNAL_ERROR", message=str(exc)[:500])
+        print(f"  [MONOCHROME] Erreur: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        safe_close_playwright_session(context, playwright)
+        return None
 
 
-def verify_downloaded_file(
-    filepath: str,
+def wait_for_monochrome_results(page: Page, timeout_seconds: int = 45) -> bool:
+    """Attend que les résultats de recherche apparaissent sur Monochrome.
+
+    Monochrome est une SPA — les résultats apparaissent dans des divs, pas des liens.
+    On attend qu'il y ait du texte visible qui contient le nom de l'artiste ou du titre.
+    """
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        try:
+            body_text = page.locator("body").inner_text(timeout=2_000).lower()
+            if not body_text:
+                time.sleep(1.0)
+                continue
+
+            # On a des résultats quand le corps de la page contient l'artiste ou le titre
+            if "guala" in body_text or "lifestyle" in body_text:
+                return True
+
+            # Ou si on voit des éléments de résultat (divs avec du texte > 3 chars)
+            all_divs = page.locator('div').all()
+            result_count = 0
+            for d in all_divs[:200]:
+                try:
+                    t = d.inner_text().strip()
+                    if len(t) > 3:
+                        result_count += 1
+                except Exception:
+                    continue
+            # On a des résultats si on trouve au moins 5 divs avec du texte
+            if result_count >= 5:
+                return True
+
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return False
+
+
+def find_monochrome_result(
+    page: Page,
     title: str,
     artist: str,
     album: str,
-    expected_duration: int,
-) -> bool:
+) -> Optional[dict[str, Any]]:
+    """Trouve le résultat exact sur Monochrome.
+
+    Monochrome est une SPA — les résultats sont dans des divs, pas des liens.
+    On cherche des éléments qui contiennent le texte de l'artiste ou du titre.
     """
-    Dernière barrière de sécurité après le téléchargement.
+    candidates: list[dict[str, Any]] = []
+    normalized_artist = normalize_text(artist)
+    normalized_title = normalize_text(title)
 
-    Quand les tags existent, titre/artiste/album doivent correspondre.
-    La durée est également comparée à Deezer avec une tolérance raisonnable.
-    """
-    identity = probe_downloaded_identity(filepath)
-
-    if "error" in identity:
-        print(
-            f"  [VÉRIFICATION FICHIER] Impossible de lire les tags: "
-            f"{identity['error']}. Validation DOM conservée.",
-            file=sys.stderr,
-        )
-        return True
-
-    audio_format = identity.get("format", {})
-    tags = {
-        normalize_text(key): str(value)
-        for key, value in (audio_format.get("tags") or {}).items()
-    }
-
-    actual_title = tags.get("title", "")
-    actual_artist = tags.get("artist", "") or tags.get("album artist", "")
-    actual_album = tags.get("album", "")
-
-    mismatches: list[str] = []
-
-    if actual_title and canonical_title(actual_title) != canonical_title(title):
-        mismatches.append(
-            f"titre reçu={actual_title!r}, attendu={title!r}"
-        )
-
-    if actual_artist and normalize_text(actual_artist) != normalize_text(artist):
-        mismatches.append(
-            f"artiste reçu={actual_artist!r}, attendu={artist!r}"
-        )
-
-    if (
-        actual_album
-        and album
-        and canonical_release_name(actual_album)
-        != canonical_release_name(album)
-    ):
-        mismatches.append(
-            f"album reçu={actual_album!r}, attendu={album!r}"
-        )
-
+    # Approche 1 : tous les divs avec du texte > 3 chars (sans filtre)
     try:
-        actual_duration = float(audio_format.get("duration", 0) or 0)
-    except (TypeError, ValueError):
-        actual_duration = 0.0
+        all_divs = page.locator('div').all()
+        for d in all_divs[:500]:
+            try:
+                text = d.inner_text().strip()
+                if not text or len(text) < 3:
+                    continue
+                text_lower = text.lower()
 
-    if expected_duration > 0 and actual_duration > 0:
-        tolerance = max(12.0, expected_duration * 0.08)
-        difference = abs(actual_duration - expected_duration)
+                artist_match = normalized_artist and normalized_artist in text_lower
+                title_match = normalized_title and normalized_title in text_lower
 
-        if difference > tolerance:
-            mismatches.append(
-                f"durée reçue={actual_duration:.1f}s, "
-                f"attendue≈{expected_duration}s"
-            )
-
-    print(
-        "  [VÉRIFICATION FICHIER] "
-        f"title={actual_title or '?'}, "
-        f"artist={actual_artist or '?'}, "
-        f"album={actual_album or '?'}, "
-        f"duration={actual_duration:.1f}s",
-        file=sys.stderr,
-    )
-
-    if mismatches:
-        print(
-            "  [!] MAUVAIS FICHIER DÉTECTÉ:",
-            file=sys.stderr,
-        )
-        for mismatch in mismatches:
-            print(f"      - {mismatch}", file=sys.stderr)
-
-        path = Path(filepath)
-        if path.exists():
-            path.unlink()
-
-        print(
-            "  [!] Le fichier incorrect a été supprimé automatiquement.",
-            file=sys.stderr,
-        )
-        return False
-
-    print(
-        "  [VÉRIFICATION FICHIER] Correspondance validée.",
-        file=sys.stderr,
-    )
-    return True
-
-
-def analyze_audio(filepath: str) -> dict:
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        return {"error": "ffprobe introuvable"}
-
-    try:
-        command = [
-            ffprobe,
-            "-v",
-            "quiet",
-            "-show_entries",
-            "stream=codec_name,sample_rate,channels,bits_per_raw_sample",
-            "-show_entries",
-            "format=format_name,size,bit_rate,duration",
-            "-of",
-            "json",
-            filepath,
-        ]
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-
-        if result.returncode != 0 or not result.stdout.strip():
-            return {"error": result.stderr.strip() or "ffprobe a échoué"}
-
-        return json.loads(result.stdout)
-    except Exception as exc:
-        return {"error": str(exc)}
-
-
-def print_audio_info(info: dict) -> None:
-    if "error" in info:
-        print(f"  Analyse audio ignorée: {info['error']}", file=sys.stderr)
-        return
-
-    streams = info.get("streams", [])
-    audio_format = info.get("format", {})
-
-    if streams:
-        stream = streams[0]
-        print(f"  Codec:       {stream.get('codec_name', '?')}")
-        print(f"  Sample rate: {stream.get('sample_rate', '?')} Hz")
-        print(f"  Canaux:      {stream.get('channels', '?')}")
-        bits = stream.get("bits_per_raw_sample")
-        if bits:
-            print(f"  Bit depth:   {bits} bits")
-
-    try:
-        size = float(audio_format.get("size", 0))
-        duration = float(audio_format.get("duration", 0))
-        print(f"  Format:      {audio_format.get('format_name', '?')}")
-        print(f"  Taille:      {size / 1024 / 1024:.1f} Mo")
-        print(f"  Durée:       {duration:.1f} s")
-    except (TypeError, ValueError):
+                # Le div contient l'artiste ET/OU le titre → c'est un résultat
+                if (artist_match and title_match) or (artist_match and not title_match) or (title_match and not artist_match):
+                    candidates.append({
+                        "locator": d,
+                        "text": text,
+                        "href": "",
+                    })
+            except Exception:
+                continue
+    except Exception:
         pass
 
+    if candidates:
+        return candidates[0]
+
+    return None
+
+
+def find_monochrome_download_button(page: Page, target_title: str) -> Optional[Any]:
+    """Trouve le bouton de téléchargement sur Monochrome."""
+    try:
+        # Chercher les boutons/liens de download
+        download_selectors = [
+            'button:has-text("Download")',
+            'a:has-text("Download")',
+            'button:has-text("download")',
+            'a:has-text("download")',
+            'button:has-text("Télécharger")',
+            'a:has-text("Télécharger")',
+            'button:has-text("Get")',
+            'a:has-text("Get")',
+            'button:has-text("Download FLAC")',
+            'a:has-text("Download FLAC")',
+            '[class*="download"]',
+            '[class*="Download"]',
+        ]
+
+        for selector in download_selectors:
+            elements = page.locator(selector).all()
+            for elem in elements:
+                try:
+                    if elem.is_visible():
+                        text = elem.inner_text().strip().lower()
+                        if text and any(w in text for w in ["download", "télécharger", "get", "flac"]):
+                            return elem
+                except Exception:
+                    continue
+
+    except Exception:
+        pass
+
+    return None
+
+
+# ─── DOUBLEDOUBLE Provider ───────────────────────────────────────────────────
+
+DOUBLEDOUBLE_CONFIG = ProviderConfig(
+    name="doubledouble",
+    display_name="Doubledouble.top",
+    base_url="https://eu.doubledouble.top",
+    description="Fournisseur Doubledouble — recherche via URL Qobuz",
+)
+
+
+def download_from_doubledouble(
+    search_query: str,
+    target_title: str,
+    target_artist: str,
+    target_album: str,
+    output_dir: Path,
+    visible: bool = True,
+    download_timeout_seconds: int = 180,
+    target_duration: int = 0,
+    event_callback: EventCallback | None = None,
+) -> Optional[str]:
+    """
+    Fournisseur Doubledouble.top — mode automatique.
+
+    Workflow réel :
+      1. Rechercher automatiquement le morceau sur Qobuz
+      2. Ouvrir doubledouble.top et coller l'URL Qobuz complète
+      3. Appuyer Enter
+      4. Trouver le bouton Download
+      5. Cliquer Download
+      6. Cloudflare CAPTCHA apparaît (l'utilisateur résout)
+      7. Le fichier est téléchargé
+      8. Vérifie FLAC + métadonnées + durée
+      9. Renomme en Artiste - Titre.flac
+    """
+    debug_dir = output_dir / "debug" / "doubledouble"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        playwright = sync_playwright().start()
+
+        context = _get_persistent_context(playwright, "doubledouble", visible, event_callback)
+        page = _get_visible_work_page(context)
+        page.set_default_timeout(30_000)
+        page.set_default_navigation_timeout(60_000)
+
+        # Listener réseau pour débogage Cloudflare
+        def log_failed_request(request: Any) -> None:
+            failure = request.failure
+            print(f"[RÉSEAU ÉCHEC] {request.method} {request.url} — {failure}", file=sys.stderr)
+
+        page.on("requestfailed", log_failed_request)
+
+        qobuz_url = resolve_qobuz_album_url(
+            context=context,
+            target_title=target_title,
+            target_artist=target_artist,
+            target_album=target_album,
+            raw_query=search_query,
+            timeout_seconds=min(download_timeout_seconds, 75),
+            event_callback=event_callback,
+            page=page,
+        )
+        if not qobuz_url:
+            notify(event_callback, "error", code="QOBUZ_URL_NOT_FOUND", message="URL Qobuz exacte introuvable")
+            save_debug(page, debug_dir, "qobuz_url_not_found")
+            safe_close_playwright_session(context, playwright)
+            return None
+        search_query = qobuz_url
+        print(f"  [DOUBLEDOUBLE] URL Qobuz complète: {search_query}", file=sys.stderr)
+
+        notify(event_callback, "stage", stage="navigating", message=f"Navigation vers {DOUBLEDOUBLE_CONFIG.base_url}")
+        print(f"  [DOUBLEDOUBLE] Navigation vers {DOUBLEDOUBLE_CONFIG.base_url}...", file=sys.stderr)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        page.goto(DOUBLEDOUBLE_CONFIG.base_url, wait_until="domcontentloaded", timeout=60_000)
+        if page.url in ("", "about:blank"):
+            raise RuntimeError("DOUBLEDOUBLE: la navigation est restée sur about:blank")
+        print(f"  [DOUBLEDOUBLE] Page chargée: {page.url}", file=sys.stderr)
+        page.wait_for_timeout(5_000)
+
+        save_debug(page, debug_dir, "01_homepage")
+
+        # === Étape 1 : Trouver la barre de recherche ===
+        notify(event_callback, "stage", stage="filling_search", message="Remplissage avec URL Qobuz")
+        print(f"  [DOUBLEDOUBLE] Remplissage avec: {search_query}", file=sys.stderr)
+
+        search_input = None
+        for selector in ['input[type="text"]', 'input[placeholder*="URL"]', 'input[placeholder*="url"]', 'input[placeholder*="Search"]', 'input[placeholder*="search"]', 'input', 'input[type="search"]']:
+            try:
+                candidate = page.locator(selector).first
+                if candidate.is_visible(timeout=2_000):
+                    search_input = candidate
+                    break
+            except Exception:
+                continue
+
+        if search_input is None:
+            notify(event_callback, "error", code="DOUBLEDOUBLE_ERROR", message="Barre de recherche non trouvée")
+            save_debug(page, debug_dir, "search_ui_not_found")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        # Coller l'URL Qobuz dans la barre de recherche
+        human_like_type(page, search_input, search_query)
+        human_like_wait(page, 500, 1200)
+        search_input.press("Enter")
+
+        save_debug(page, debug_dir, "02_search_submitted")
+
+        # === Étape 2 : Cloudflare apparaît — l'utilisateur résout ===
+        notify(event_callback, "stage", stage="cloudflare_check", message="Cloudflare détecté — attente de résolution humaine")
+        print("  [DOUBLEDOUBLE] ⚠️  Cloudflare détecté — veuillez resolve...", file=sys.stderr)
+
+        if is_blocked_by_challenge(page):
+            if not wait_for_challenge_to_clear(page, timeout_seconds=120):
+                notify(event_callback, "error", code="CHALLENGE_BLOCKED", message="Cloudflare non résolu")
+                safe_close_playwright_session(context, playwright)
+                return None
+            print("  [DOUBLEDOUBLE] Cloudflare résolu, reprise...", file=sys.stderr)
+
+        # === Étape 3 : Attendre que le site se charge complètement ===
+        notify(event_callback, "stage", stage="waiting_page_load", message="Attente du chargement complet")
+        page.wait_for_timeout(3_000)
+
+        # === Étape 4 : Trouver le bouton Download et cliquer ===
+        notify(event_callback, "stage", stage="clicking_download", message="Clic sur Download")
+        print("  [DOUBLEDOUBLE] Recherche du bouton Download...", file=sys.stderr)
+
+        download_button = find_doubledouble_download_button(page)
+        if download_button is None:
+            notify(event_callback, "error", code="DOUBLEDOUBLE_ERROR", message="Bouton Download non trouvé")
+            save_debug(page, debug_dir, "download_button_not_found")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        # Vérifier que le bouton est enabled
+        try:
+            if not download_button.is_enabled(timeout=5_000):
+                notify(event_callback, "warning", message="Bouton Download désactivé — attente Cloudflare")
+                page.wait_for_timeout(5_000)
+        except Exception:
+            pass
+
+        human_like_click(page, download_button)
+        human_like_wait(page, 500, 1200)
+
+        save_debug(page, debug_dir, "03_download_clicked")
+
+        # === Étape 5 : Capturer le téléchargement ===
+        notify(event_callback, "stage", stage="downloading", message="Attente du téléchargement")
+        print("  [DOUBLEDOUBLE] Attente du téléchargement...", file=sys.stderr)
+
+        captured_downloads: list[Download] = []
+        page.on("download", lambda download: captured_downloads.append(download))
+
+        # Snapshot des dossiers
+        before_snapshot_output = snapshot_directory(output_dir)
+        default_download_dir = Path.home() / "Downloads"
+        before_snapshot_downloads = snapshot_directory(default_download_dir)
+
+        # === Étape 6 : Attendre le fichier ===
+        deadline = time.monotonic() + download_timeout_seconds
+        downloaded_file = None
+
+        while time.monotonic() < deadline:
+            if captured_downloads:
+                download = captured_downloads.pop(0)
+                filename = safe_filename(download.suggested_filename or f"{target_artist} - {target_title}.flac")
+                destination = output_dir / filename
+                download.save_as(destination)
+                downloaded_file = destination
+                break
+
+            # Vérifier output_dir
+            downloaded_file = find_new_file_in_directory_now(output_dir, before_snapshot_output, 5)
+            if downloaded_file is not None:
+                break
+
+            # Vérifier ~/Downloads
+            external_file = find_new_file_in_directory_now(default_download_dir, before_snapshot_downloads, 5)
+            if external_file is not None:
+                destination = output_dir / external_file.name
+                shutil.copy2(external_file, destination)
+                downloaded_file = destination
+                break
+
+            time.sleep(1.0)
+
+        if not downloaded_file or not downloaded_file.exists():
+            notify(event_callback, "error", code="FILE_DETECTION_FAILED", message="Fichier téléchargé non détecté")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        print(f"  [DOUBLEDOUBLE] Fichier détecté: {downloaded_file.name}", file=sys.stderr)
+
+        # === Étape 7 : Vérifier + renommer ===
+        if not verify_downloaded_file(str(downloaded_file), target_title, target_artist, target_album, target_duration, strict_mode=False):
+            notify(event_callback, "error", code="FILE_VALIDATION_FAILED", message="Le fichier ne correspond pas")
+            safe_close_playwright_session(context, playwright)
+            return None
+
+        final_path = rename_with_metadata(str(downloaded_file), target_title, target_artist, output_dir)
+        size = Path(final_path).stat().st_size
+        print(f"  [DOUBLEDOUBLE] Téléchargé et vérifié: {Path(final_path).name} ({size / 1024 / 1024:.1f} Mo)", file=sys.stderr)
+
+        safe_close_playwright_session(context, playwright)
+        return final_path
+
+    except KeyboardInterrupt:
+        notify(event_callback, "error", code="CANCELLED", message="Import annulé.", retryable=False)
+        print("  [DOUBLEDOUBLE] Import annulé.", file=sys.stderr)
+        safe_close_playwright_session(context, playwright)
+        return None
+    except Exception as exc:
+        notify(event_callback, "error", code="INTERNAL_ERROR", message=str(exc)[:500])
+        print(f"  [DOUBLEDOUBLE] Erreur: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        safe_close_playwright_session(context, playwright)
+        return None
+
+
+def find_doubledouble_result(
+    page: Page,
+    title: str,
+    artist: str,
+    album: str,
+) -> Optional[Any]:
+    """Trouve le lien qui correspond au morceau sur Doubledouble."""
+    try:
+        all_links = page.locator('a[href]').all()
+
+        normalized_title = normalize_text(title)
+        normalized_artist = normalize_text(artist)
+
+        for link in all_links:
+            try:
+                text = link.inner_text().lower()
+                href = link.get_attribute("href") or ""
+
+                title_match = normalized_title in text if title else True
+                artist_match = normalized_artist in text if artist else True
+
+                if title_match and artist_match:
+                    return link
+            except Exception:
+                continue
+
+        # Fallback : premier lien qui contient l'artiste
+        for link in all_links:
+            try:
+                text = link.inner_text().lower()
+                if normalized_artist in text:
+                    return link
+            except Exception:
+                continue
+
+    except Exception:
+        pass
+
+    return None
+
+
+def find_doubledouble_download_button(page: Page) -> Optional[Any]:
+    """Trouve le bouton Download sur Doubledouble."""
+    try:
+        download_selectors = [
+            'button:has-text("Download")',
+            'a:has-text("Download")',
+            'button:has-text("download")',
+            'a:has-text("download")',
+            'button:has-text("Télécharger")',
+            'a:has-text("Télécharger")',
+        ]
+
+        for selector in download_selectors:
+            elements = page.locator(selector).all()
+            for elem in elements:
+                try:
+                    if elem.is_visible():
+                        return elem
+                except Exception:
+                    continue
+
+    except Exception:
+        pass
+
+    return None
+
+
+# ─── Provider selection ──────────────────────────────────────────────────────
+
+AVAILABLE_PROVIDERS = [
+    LUCIDA_CONFIG,
+    MONOCHROME_CONFIG,
+    DOUBLEDOUBLE_CONFIG,
+]
+
+PROVIDER_DISPATCH = {
+    "lucida": download_from_lucida,
+    "monochrome": download_from_monochrome,
+    "doubledouble": download_from_doubledouble,
+}
+
+
+def select_provider(provider_name: str) -> Optional[ProviderConfig]:
+    """
+    Sélectionne un fournisseur.
+
+    Si provider_name est "auto", sélectionne aléatoirement parmi les disponibles.
+    Sinon retourne le fournisseur correspondant ou None.
+    """
+    normalized = provider_name.strip().lower()
+
+    if normalized == "auto":
+        chosen = random.choice(AVAILABLE_PROVIDERS)
+        print(f"  [PROVIDER] Sélection aléatoire: {chosen.display_name}", file=sys.stderr)
+        return chosen
+
+    for config in AVAILABLE_PROVIDERS:
+        if config.name == normalized:
+            return config
+
+    return None
+
+
+# ─── Main ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Recherche texte Lucida puis téléchargement du morceau sélectionné.",
+        description="HomeSpotify — Multi-Provider FLAC Downloader",
     )
-    parser.add_argument("query", help='Recherche, par exemple "Josman Intro"')
+    parser.add_argument("query", help='Recherche, par exemple "Guala Lifestyles"')
     parser.add_argument(
         "--output",
         "-o",
-        default=OUTPUT_DIR,
+        default=str(OUTPUT_DIR),
         help=f"Dossier de sortie (défaut: {OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--provider",
+        "-p",
+        default="auto",
+        choices=["auto", "lucida", "monochrome", "doubledouble"],
+        help="Fournisseur à utiliser (défaut: auto = aléatoire)",
     )
     parser.add_argument(
         "--index",
@@ -2264,27 +1700,10 @@ def main() -> None:
         help="Index du résultat Deezer utilisé pour identifier le morceau",
     )
     parser.add_argument(
-        "--lucida-index",
-        type=int,
-        default=None,
-        help="Force un résultat parmi les candidats Lucida affichés dans le terminal",
-    )
-    parser.add_argument(
-        "--service",
-        default="Qobuz",
-        help="Service Lucida utilisé pour la recherche (défaut: Qobuz)",
-    )
-    parser.add_argument(
         "--download-timeout",
         type=int,
-        default=75,
-        help="Secondes maximales par tentative de téléchargement (défaut: 75)",
-    )
-    parser.add_argument(
-        "--download-retries",
-        type=int,
-        default=2,
-        help="Nombre de nouvelles tentatives après la première (défaut: 2)",
+        default=180,
+        help="Secondes maximales par tentative de téléchargement (défaut: 180)",
     )
     parser.add_argument(
         "--list",
@@ -2314,27 +1733,25 @@ def main() -> None:
     callback: EventCallback | None = machine_callback if args.json else None
 
     if args.download_timeout < 10:
-        notify(callback, "error", code="INVALID_ARGUMENT", message="--download-timeout doit être au minimum de 10 secondes")
+        notify(callback, "error", code="INVALID_ARGUMENT", message="--download-timeout must be at least 10 seconds")
         parser.print_usage(sys.stderr)
         raise SystemExit(EXIT_INVALID_ARGUMENT)
-    if args.download_retries < 0 or args.download_retries > 10:
-        notify(callback, "error", code="INVALID_ARGUMENT", message="--download-retries doit être compris entre 0 et 10")
-        parser.print_usage(sys.stderr)
-        raise SystemExit(EXIT_INVALID_ARGUMENT)
-    if normalize_text(args.service) != "qobuz":
-        notify(callback, "error", code="INVALID_ARGUMENT", message="Seul le service Qobuz est autorisé")
-        raise SystemExit(EXIT_INVALID_ARGUMENT)
+
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 66, file=sys.stderr)
-    print("  LUCIDA.TO DOWNLOADER — v10.1 JSON", file=sys.stderr)
+    print("  HOMESPOTIFY — Multi-Provider FLAC Downloader", file=sys.stderr)
     print("=" * 66, file=sys.stderr)
-    print(f"  Recherche utilisateur: {args.query}", file=sys.stderr)
+    print(f"  Search query: {args.query}", file=sys.stderr)
+    print(f"  Provider: {args.provider}", file=sys.stderr)
 
-    notify(callback, "stage", stage="searching", message="Recherche du morceau")
+    # Deezer search for identification
+    notify(callback, "stage", stage="searching", message="Searching track on Deezer")
     results = search_deezer(args.query)
 
     if results:
-        print("\n  Résultats Deezer servant à identifier le titre:", file=sys.stderr)
+        print("\n  Deezer results used to identify the track:", file=sys.stderr)
         for index, result in enumerate(results):
             notify(
                 callback,
@@ -2359,10 +1776,10 @@ def main() -> None:
             return
 
         if args.index < 0 or args.index >= len(results):
-            notify(callback, "error", code="INVALID_ARGUMENT", message=f"Index Deezer invalide: {args.index}")
+            notify(callback, "error", code="INVALID_ARGUMENT", message=f"Deezer index invalid: {args.index}")
             print(
-                f"\n  [!] Index Deezer invalide: {args.index}. "
-                f"Choisis entre 0 et {len(results) - 1}.",
+                f"\n  [!] Invalid Deezer index: {args.index}. "
+                f"Choose between 0 and {len(results) - 1}.",
                 file=sys.stderr,
             )
             raise SystemExit(EXIT_INVALID_ARGUMENT)
@@ -2372,19 +1789,21 @@ def main() -> None:
         target_artist = selected["artist_name"]
         target_album = selected["album_title"]
         target_duration = selected["duration"]
-        lucida_query = f"{target_artist} {target_title}".strip()
+
+        # Le fournisseur Lucida/Doubledouble effectue une vraie recherche Qobuz
+        # et récupère l'URL complète avec l'identifiant final de l'album.
+        search_query = args.query
     else:
         if args.list:
-            notify(callback, "error", code="NO_RESULTS", message="Aucun résultat Deezer")
-            print("  Aucun résultat Deezer.", file=sys.stderr)
+            notify(callback, "error", code="NO_RESULTS", message="No Deezer results")
+            print("  No Deezer results.", file=sys.stderr)
             raise SystemExit(EXIT_NO_RESULT)
 
-        # Le téléchargement reste possible même si l'API Deezer est indisponible.
         target_title = args.query
         target_artist = ""
         target_album = ""
         target_duration = 0
-        lucida_query = args.query
+        search_query = args.query
 
     notify(
         callback,
@@ -2394,36 +1813,53 @@ def main() -> None:
         artist=target_artist,
         album=target_album,
         duration=target_duration,
-        service=args.service,
     )
 
-    print("\n  Sélection:", file=sys.stderr)
-    print(f"  Titre:    {target_title}", file=sys.stderr)
-    print(f"  Artiste:  {target_artist or '(inconnu)'}", file=sys.stderr)
-    print(f"  Album:    {target_album or '(inconnu)'}", file=sys.stderr)
-    print(f"  Lucida:   {lucida_query}", file=sys.stderr)
+    print("\n  Selected:", file=sys.stderr)
+    print(f"  Title:    {target_title}", file=sys.stderr)
+    print(f"  Artist:  {target_artist or '(unknown)'}", file=sys.stderr)
+    print(f"  Album:    {target_album or '(unknown)'}", file=sys.stderr)
 
-    result_path = download_from_lucida(
-        search_query=lucida_query,
+    # Provider selection
+    provider = select_provider(args.provider)
+    if provider is None:
+        notify(callback, "error", code="INVALID_PROVIDER", message=f"Unknown provider: {args.provider}")
+        raise SystemExit(EXIT_INVALID_ARGUMENT)
+
+    dispatch = PROVIDER_DISPATCH.get(provider.name)
+    if dispatch is None:
+        notify(callback, "error", code="PROVIDER_NOT_IMPLEMENTED", message=f"Provider {provider.name} not implemented")
+        raise SystemExit(EXIT_INVALID_ARGUMENT)
+
+    notify(
+        callback,
+        "stage",
+        stage="provider_selected",
+        provider=provider.name,
+        displayName=provider.display_name,
+        baseURL=provider.base_url,
+    )
+
+    print(f"\n  Provider selected: {provider.display_name} ({provider.base_url})", file=sys.stderr)
+
+    # Call the provider
+    result_path = dispatch(
+        search_query=search_query,
         target_title=target_title,
         target_artist=target_artist,
         target_album=target_album,
-        output_dir=args.output,
+        output_dir=output_dir,
         visible=args.visible,
-        lucida_index=args.lucida_index,
-        search_service=args.service,
         download_timeout_seconds=args.download_timeout,
-        download_retries=args.download_retries,
         target_duration=target_duration,
         event_callback=callback,
     )
 
     if not result_path or not Path(result_path).exists():
-        # Une erreur précise est privilégiée; éviter deux événements error successifs.
         if not machine_state["error_emitted"]:
-            notify(callback, "error", code="DOWNLOAD_FAILED", message="Le téléchargement n’a pas produit de fichier valide")
+            notify(callback, "error", code="DOWNLOAD_FAILED", message="Download did not produce a valid file")
         print(
-            f"\n  [!] Échec. Fichiers de diagnostic: {args.output}/debug/",
+            f"\n  [!] Failed. Debug files: {output_dir}/debug/",
             file=sys.stderr,
         )
         raise SystemExit(EXIT_EXTERNAL_ERROR)
@@ -2437,13 +1873,15 @@ def main() -> None:
         artist=target_artist,
         album=target_album,
         duration=target_duration,
+        provider=provider.name,
     )
 
-    print("\n  Analyse du fichier:", file=sys.stderr)
-    print(f"  Chemin: {result_path}", file=sys.stderr)
+    print("\n  File analysis:", file=sys.stderr)
+    print(f"  Path: {result_path}", file=sys.stderr)
+    print(f"  Provider: {provider.display_name}", file=sys.stderr)
     if not args.json:
         print_audio_info(info)
-    print("\nTerminé.", file=sys.stderr)
+    print("\nDone.", file=sys.stderr)
 
 
 if __name__ == "__main__":

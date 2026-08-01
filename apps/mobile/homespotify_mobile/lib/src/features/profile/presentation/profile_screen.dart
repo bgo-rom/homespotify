@@ -54,16 +54,18 @@ class ProfileScreen extends ConsumerWidget {
                         const _SectionTitle('Mon espace'),
                         const SizedBox(height: HomeDesign.space8),
                         _ProfileAction(
+                          key: const ValueKey('profile-add-music-action'),
+                          icon: Icons.add_circle_outline_rounded,
+                          title: 'Ajouter une musique',
+                          subtitle:
+                              'Rechercher un titre et l’installer directement',
+                          onTap: () => openCatalogSearch(context),
+                        ),
+                        _ProfileAction(
                           icon: Icons.manage_accounts_outlined,
                           title: 'Compte et paramètres',
                           subtitle: 'Sécurité, serveur et préférences',
                           onTap: () => openSettings(context),
-                        ),
-                        _ProfileAction(
-                          icon: Icons.inbox_outlined,
-                          title: 'Mes demandes',
-                          subtitle: 'Suivre vos demandes musicales',
-                          onTap: () => openMusicRequests(context),
                         ),
                         if (user?.isOwner ?? false) ...[
                           const SizedBox(height: HomeDesign.space24),
@@ -74,12 +76,6 @@ class ProfileScreen extends ConsumerWidget {
                             title: 'Tableau de bord',
                             subtitle: 'Utilisateurs et outils serveur',
                             onTap: () => context.push('/admin'),
-                          ),
-                          _ProfileAction(
-                            icon: Icons.mark_email_unread_outlined,
-                            title: 'Demandes musicales',
-                            subtitle: 'Examiner et rapprocher les demandes',
-                            onTap: () => context.push('/admin/music-requests'),
                           ),
                           _ProfileAction(
                             icon: Icons.move_to_inbox_outlined,
@@ -186,6 +182,7 @@ class _SectionTitle extends StatelessWidget {
 
 class _ProfileAction extends StatelessWidget {
   const _ProfileAction({
+    super.key,
     required this.icon,
     required this.title,
     required this.subtitle,

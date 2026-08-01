@@ -193,6 +193,203 @@ CREATE TABLE IF NOT EXISTS \`import_jobs\` (
   FOREIGN KEY (\`music_request_item_id\`) REFERENCES \`music_request_items\`(\`id\`) ON UPDATE no action ON DELETE set null
 )`;
 
+const ACQUISITION_JOBS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS \`acquisition_jobs\` (
+  \`id\` text PRIMARY KEY NOT NULL,
+  \`user_id\` integer NOT NULL,
+  \`provider\` text DEFAULT 'QOBUZ' NOT NULL,
+  \`query\` text NOT NULL,
+  \`dedupe_key\` text NOT NULL,
+  \`result_index\` integer,
+  \`status\` text DEFAULT 'QUEUED' NOT NULL,
+  \`stage\` text,
+  \`progress\` integer DEFAULT 0 NOT NULL,
+  \`message\` text,
+  \`selected_title\` text,
+  \`selected_artist\` text,
+  \`selected_album\` text,
+  \`selected_duration_seconds\` integer,
+  \`attempt\` integer DEFAULT 0 NOT NULL,
+  \`max_attempts\` integer DEFAULT 3 NOT NULL,
+  \`downloaded_relative_path\` text,
+  \`local_import_job_id\` integer,
+  \`track_id\` integer,
+  \`error_code\` text,
+  \`error_message\` text,
+  \`provider_used\` text DEFAULT 'LUCIDA' NOT NULL,
+  \`fallback_from\` text,
+  \`fallback_reason_code\` text,
+  \`cancel_requested\` integer DEFAULT false NOT NULL,
+  \`created_at\` text NOT NULL,
+  \`updated_at\` text NOT NULL,
+  \`started_at\` text,
+  \`completed_at\` text,
+  FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+  FOREIGN KEY (\`local_import_job_id\`) REFERENCES \`import_jobs\`(\`id\`) ON UPDATE no action ON DELETE set null,
+  FOREIGN KEY (\`track_id\`) REFERENCES \`tracks\`(\`id\`) ON UPDATE no action ON DELETE set null,
+  CONSTRAINT \`acquisition_jobs_provider_check\` CHECK (\`provider\` IN ('QOBUZ')),
+  CONSTRAINT \`acquisition_jobs_status_check\` CHECK (\`status\` IN (
+    'QUEUED',
+    'SEARCHING',
+    'SELECTING',
+    'OPENING_RESULT',
+    'VERIFYING',
+    'DOWNLOADING',
+    'RETRYING',
+    'PAUSED_PROVIDER',
+    'MANUAL_VERIFICATION_REQUIRED',
+    'WAITING_MANUAL_DOWNLOAD',
+    'DOWNLOADED',
+    'IMPORTING',
+    'COMPLETED',
+    'FAILED',
+    'CANCELLED',
+    'INTERRUPTED'
+  )),
+  CONSTRAINT \`acquisition_jobs_progress_check\` CHECK (\`progress\` >= 0 AND \`progress\` <= 100),
+  CONSTRAINT \`acquisition_jobs_result_index_check\` CHECK (\`result_index\` IS NULL OR \`result_index\` >= 0),
+  CONSTRAINT \`acquisition_jobs_duration_check\` CHECK (\`selected_duration_seconds\` IS NULL OR \`selected_duration_seconds\` >= 0),
+  CONSTRAINT \`acquisition_jobs_attempt_check\` CHECK (\`attempt\` >= 0),
+  CONSTRAINT \`acquisition_jobs_max_attempts_check\` CHECK (\`max_attempts\` >= 1 AND \`max_attempts\` <= 10)
+)`;
+
+const DOWNLOAD_JOBS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS \`download_jobs\` (
+  \`id\` text PRIMARY KEY NOT NULL,
+  \`user_id\` integer NOT NULL,
+  \`provider\` text DEFAULT 'antra' NOT NULL,
+  \`requested_url\` text NOT NULL,
+  \`normalized_url\` text NOT NULL,
+  \`request_kind\` text DEFAULT 'url' NOT NULL,
+  \`query\` text,
+  \`candidates_json\` text,
+  \`attempts_json\` text,
+  \`selected_provider\` text,
+  \`selected_url\` text,
+  \`status\` text DEFAULT 'queued' NOT NULL,
+  \`stage\` text,
+  \`progress\` integer DEFAULT 0 NOT NULL,
+  \`message\` text,
+  \`title\` text,
+  \`artist\` text,
+  \`album\` text,
+  \`source\` text,
+  \`quality\` text,
+  \`output_path\` text,
+  \`local_import_job_id\` integer,
+  \`track_id\` integer,
+  \`error_code\` text,
+  \`error_message\` text,
+  \`process_id\` integer,
+  \`attempt\` integer DEFAULT 0 NOT NULL,
+  \`max_attempts\` integer DEFAULT 3 NOT NULL,
+  \`cancel_requested\` integer DEFAULT false NOT NULL,
+  \`created_at\` text NOT NULL,
+  \`updated_at\` text NOT NULL,
+  \`started_at\` text,
+  \`completed_at\` text,
+  FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+  FOREIGN KEY (\`local_import_job_id\`) REFERENCES \`import_jobs\`(\`id\`) ON UPDATE no action ON DELETE set null,
+  FOREIGN KEY (\`track_id\`) REFERENCES \`tracks\`(\`id\`) ON UPDATE no action ON DELETE set null,
+  CONSTRAINT \`download_jobs_provider_check\` CHECK (\`provider\` IN ('antra')),
+  CONSTRAINT \`download_jobs_status_check\` CHECK (\`status\` IN (
+    'queued',
+    'resolving',
+    'downloading',
+    'processing',
+    'importing',
+    'completed',
+    'failed',
+    'cancelled',
+    'interrupted'
+  )),
+  CONSTRAINT \`download_jobs_progress_check\` CHECK (\`progress\` >= 0 AND \`progress\` <= 100),
+  CONSTRAINT \`download_jobs_attempt_check\` CHECK (\`attempt\` >= 0),
+  CONSTRAINT \`download_jobs_max_attempts_check\` CHECK (\`max_attempts\` >= 1 AND \`max_attempts\` <= 10),
+  CONSTRAINT \`download_jobs_process_id_check\` CHECK (\`process_id\` IS NULL OR \`process_id\` > 0),
+  CONSTRAINT \`download_jobs_request_kind_check\` CHECK (\`request_kind\` IN ('url', 'search'))
+)`;
+
+/**
+ * Colonnes de la recherche texte, ajoutées de façon PUREMENT ADDITIVE.
+ *
+ * SQLite ne sait pas ajouter une contrainte CHECK par `ALTER TABLE` : sur une
+ * table `download_jobs` antérieure, `request_kind` arrive donc sans sa
+ * contrainte. Le dépôt la revalide de toute façon avant écriture — la base
+ * n'est jamais la seule barrière, et reconstruire la table pour cela coûterait
+ * plus cher que le bénéfice.
+ */
+const DOWNLOAD_JOBS_SEARCH_COLUMNS: ReadonlyArray<{
+  table: string;
+  column: string;
+  ddl: string;
+}> = [
+  {
+    table: 'download_jobs',
+    column: 'request_kind',
+    ddl: "ALTER TABLE `download_jobs` ADD `request_kind` text DEFAULT 'url' NOT NULL",
+  },
+  { table: 'download_jobs', column: 'query', ddl: 'ALTER TABLE `download_jobs` ADD `query` text' },
+  {
+    table: 'download_jobs',
+    column: 'candidates_json',
+    ddl: 'ALTER TABLE `download_jobs` ADD `candidates_json` text',
+  },
+  {
+    table: 'download_jobs',
+    column: 'attempts_json',
+    ddl: 'ALTER TABLE `download_jobs` ADD `attempts_json` text',
+  },
+  {
+    table: 'download_jobs',
+    column: 'selected_provider',
+    ddl: 'ALTER TABLE `download_jobs` ADD `selected_provider` text',
+  },
+  {
+    table: 'download_jobs',
+    column: 'selected_url',
+    ddl: 'ALTER TABLE `download_jobs` ADD `selected_url` text',
+  },
+];
+
+const MONOCHROME_MANUAL_SESSIONS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS \`monochrome_manual_sessions\` (
+  \`job_id\` text PRIMARY KEY NOT NULL,
+  \`user_id\` integer NOT NULL,
+  \`status\` text DEFAULT 'WAITING' NOT NULL,
+  \`reserved_at\` text,
+  \`started_at\` text,
+  \`result_received_at\` text,
+  \`created_at\` text NOT NULL,
+  \`updated_at\` text NOT NULL,
+  FOREIGN KEY (\`job_id\`) REFERENCES \`acquisition_jobs\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+  FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+  CONSTRAINT \`monochrome_manual_status_check\`
+    CHECK (\`status\` IN ('WAITING','RESERVED','RESULT_RECEIVED'))
+)`;
+
+const PROVIDER_HEALTH_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS \`provider_health\` (
+  \`provider\` text PRIMARY KEY NOT NULL,
+  \`state\` text DEFAULT 'CLOSED' NOT NULL,
+  \`reason_code\` text,
+  \`public_message\` text,
+  \`failure_count\` integer DEFAULT 0 NOT NULL,
+  \`opened_at\` text,
+  \`retry_at\` text,
+  \`last_failure_at\` text,
+  \`last_success_at\` text,
+  \`half_open_probe_job_id\` text,
+  \`manual_verification_job_id\` text,
+  \`manual_verification_holder_job_id\` text,
+  \`created_at\` text NOT NULL,
+  \`updated_at\` text NOT NULL,
+  CONSTRAINT \`provider_health_state_check\` CHECK (\`state\` IN ('CLOSED','OPEN','HALF_OPEN','MANUAL_VERIFICATION_REQUIRED')),
+  CONSTRAINT \`provider_health_failure_count_check\` CHECK (\`failure_count\` >= 0),
+  CONSTRAINT \`provider_health_half_open_probe_check\` CHECK (\`state\` = 'HALF_OPEN' OR \`half_open_probe_job_id\` IS NULL),
+  CONSTRAINT \`provider_health_manual_verification_job_required_check\` CHECK ((\`state\` = 'MANUAL_VERIFICATION_REQUIRED' AND \`manual_verification_job_id\` IS NOT NULL) OR (\`manual_verification_job_id\` IS NULL AND \`manual_verification_holder_job_id\` IS NULL))
+)`;
+
 const TRACK_OFFLINE_VARIANTS_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS \`track_offline_variants\` (
   \`id\` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -398,6 +595,230 @@ export function ensureRequestImportSchema(
   return repaired;
 }
 
+/**
+ * Schéma persistant des acquisitions distantes. Cette table suit le processus
+ * Python et pointe ensuite vers le vrai import_jobs créé par UserImportService.
+ */
+export function ensureAcquisitionJobsSchema(
+  handle: DbHandle,
+  log: MigrationLogger = defaultLogger,
+): string[] {
+  if (
+    !tableExists(handle, 'users') ||
+    !tableExists(handle, 'tracks') ||
+    !tableExists(handle, 'import_jobs')
+  ) {
+    return [];
+  }
+
+  const had = tableExists(handle, 'acquisition_jobs');
+
+  handle.sqlite.transaction(() => {
+    if (had) {
+      const definition = handle.sqlite
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'acquisition_jobs'",
+        )
+        .get() as { sql?: string } | undefined;
+      if (
+        !definition?.sql?.includes('PAUSED_PROVIDER') ||
+        !definition.sql.includes('MANUAL_VERIFICATION_REQUIRED') ||
+        !definition.sql.includes('WAITING_MANUAL_DOWNLOAD') ||
+        !definition.sql.includes('provider_used')
+      ) {
+        handle.sqlite.exec(
+          'ALTER TABLE `acquisition_jobs` RENAME TO `acquisition_jobs_hs_import_16_legacy`',
+        );
+        handle.sqlite.exec(ACQUISITION_JOBS_TABLE_SQL);
+        handle.sqlite.exec(`
+          INSERT INTO \`acquisition_jobs\` (
+            id,user_id,provider,query,dedupe_key,result_index,status,stage,
+            progress,message,selected_title,selected_artist,selected_album,
+            selected_duration_seconds,attempt,max_attempts,
+            downloaded_relative_path,local_import_job_id,track_id,error_code,
+            error_message,provider_used,fallback_from,fallback_reason_code,
+            cancel_requested,created_at,updated_at,started_at,
+            completed_at
+          )
+          SELECT
+            id,user_id,provider,query,dedupe_key,result_index,status,stage,
+            progress,message,selected_title,selected_artist,selected_album,
+            selected_duration_seconds,attempt,max_attempts,
+            downloaded_relative_path,local_import_job_id,track_id,error_code,
+            error_message,'LUCIDA',NULL,NULL,
+            cancel_requested,created_at,updated_at,started_at,
+            completed_at
+          FROM \`acquisition_jobs_hs_import_16_legacy\`
+        `);
+        handle.sqlite.exec(
+          'DROP TABLE `acquisition_jobs_hs_import_16_legacy`',
+        );
+      }
+    }
+    handle.sqlite.exec(ACQUISITION_JOBS_TABLE_SQL);
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `acquisition_jobs_user_created_idx` ON `acquisition_jobs` (`user_id`,`created_at`)',
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `acquisition_jobs_status_idx` ON `acquisition_jobs` (`status`)',
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `acquisition_jobs_local_import_idx` ON `acquisition_jobs` (`local_import_job_id`)',
+    );
+    handle.sqlite.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS `acquisition_jobs_active_dedupe_unique` ON `acquisition_jobs` (`user_id`,`dedupe_key`) WHERE `status` IN ('QUEUED','SEARCHING','SELECTING','OPENING_RESULT','VERIFYING','DOWNLOADING','RETRYING','PAUSED_PROVIDER','MANUAL_VERIFICATION_REQUIRED','WAITING_MANUAL_DOWNLOAD','DOWNLOADED','IMPORTING')",
+    );
+    handle.sqlite.exec(MONOCHROME_MANUAL_SESSIONS_TABLE_SQL);
+    handle.sqlite.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS `monochrome_manual_single_active_unique` ON `monochrome_manual_sessions` ((1)) WHERE `status` IN ('WAITING','RESERVED')",
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `monochrome_manual_user_idx` ON `monochrome_manual_sessions` (`user_id`)',
+    );
+  })();
+
+  if (had) return [];
+
+  log.info('réparation schéma : table acquisition_jobs créée');
+  return ['acquisition_jobs'];
+}
+
+/**
+ * Schéma persistant des téléchargements Antra. Filet IDEMPOTENT indépendant du
+ * journal drizzle : une base déjà avancée dont le `when` dépasse celui de 0021
+ * sauterait la migration sans jamais créer la table.
+ */
+export function ensureDownloadJobsSchema(
+  handle: DbHandle,
+  log: MigrationLogger = defaultLogger,
+): string[] {
+  if (
+    !tableExists(handle, 'users') ||
+    !tableExists(handle, 'tracks') ||
+    !tableExists(handle, 'import_jobs')
+  ) {
+    return [];
+  }
+
+  const had = tableExists(handle, 'download_jobs');
+  handle.sqlite.transaction(() => {
+    handle.sqlite.exec(DOWNLOAD_JOBS_TABLE_SQL);
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `download_jobs_user_created_idx` ON `download_jobs` (`user_id`,`created_at`)',
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `download_jobs_status_idx` ON `download_jobs` (`status`)',
+    );
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `download_jobs_local_import_idx` ON `download_jobs` (`local_import_job_id`)',
+    );
+    handle.sqlite.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS `download_jobs_active_url_unique` ON `download_jobs` (`user_id`,`normalized_url`) WHERE `status` IN ('queued','resolving','downloading','processing','importing')",
+    );
+  })();
+
+  // Base créée avant la recherche texte : ajout additif des colonnes.
+  const addedColumns = ensureColumns(handle, DOWNLOAD_JOBS_SEARCH_COLUMNS, log);
+
+  if (had) return addedColumns;
+  log.info('réparation schéma : table download_jobs créée');
+  return ['download_jobs'];
+}
+
+export function ensureProviderHealthSchema(
+  handle: DbHandle,
+  log: MigrationLogger = defaultLogger,
+): string[] {
+  const had = tableExists(handle, 'provider_health');
+  handle.sqlite.transaction(() => {
+    if (had) {
+      const definition = handle.sqlite
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider_health'",
+        )
+        .get() as { sql?: string } | undefined;
+      const hasManualVerificationColumns =
+        definition?.sql?.includes('manual_verification_holder_job_id') ===
+        true;
+      if (hasManualVerificationColumns) {
+        handle.sqlite.exec(`
+          UPDATE \`provider_health\`
+          SET
+            \`state\` = 'CLOSED',
+            \`reason_code\` = NULL,
+            \`public_message\` = NULL,
+            \`failure_count\` = 0,
+            \`opened_at\` = NULL,
+            \`retry_at\` = NULL,
+            \`half_open_probe_job_id\` = NULL,
+            \`manual_verification_job_id\` = NULL,
+            \`manual_verification_holder_job_id\` = NULL
+          WHERE \`state\` = 'MANUAL_VERIFICATION_REQUIRED'
+            AND (
+              \`manual_verification_job_id\` IS NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM \`acquisition_jobs\`
+                WHERE \`acquisition_jobs\`.\`id\` =
+                      \`provider_health\`.\`manual_verification_job_id\`
+                  AND \`acquisition_jobs\`.\`status\` =
+                      'MANUAL_VERIFICATION_REQUIRED'
+                  AND \`acquisition_jobs\`.\`stage\` =
+                      'waiting_user_verification'
+              )
+            )
+        `);
+      }
+      if (
+        !definition?.sql?.includes('MANUAL_VERIFICATION_REQUIRED') ||
+        !definition.sql.includes('manual_verification_holder_job_id') ||
+        !definition.sql.includes(
+          'provider_health_manual_verification_job_required_check',
+        )
+      ) {
+        handle.sqlite.exec(
+          'ALTER TABLE `provider_health` RENAME TO `provider_health_hs_import_16_legacy`',
+        );
+        handle.sqlite.exec(PROVIDER_HEALTH_TABLE_SQL);
+        handle.sqlite.exec(`
+          INSERT INTO \`provider_health\` (
+            provider,state,reason_code,public_message,failure_count,opened_at,
+            retry_at,last_failure_at,last_success_at,half_open_probe_job_id,
+            manual_verification_job_id,
+            manual_verification_holder_job_id,
+            created_at,updated_at
+          )
+          SELECT
+            provider,state,reason_code,public_message,failure_count,opened_at,
+            retry_at,last_failure_at,last_success_at,half_open_probe_job_id,
+            ${
+              hasManualVerificationColumns
+                ? 'manual_verification_job_id'
+                : 'NULL'
+            },
+            ${
+              hasManualVerificationColumns
+                ? 'manual_verification_holder_job_id'
+                : 'NULL'
+            },
+            created_at,updated_at
+          FROM \`provider_health_hs_import_16_legacy\`
+        `);
+        handle.sqlite.exec(
+          'DROP TABLE `provider_health_hs_import_16_legacy`',
+        );
+      }
+    }
+    handle.sqlite.exec(PROVIDER_HEALTH_TABLE_SQL);
+    handle.sqlite.exec(
+      'CREATE INDEX IF NOT EXISTS `provider_health_state_retry_idx` ON `provider_health` (`state`,`retry_at`)',
+    );
+  })();
+  if (had) return [];
+  log.info('réparation schéma : table provider_health créée');
+  return ['provider_health'];
+}
+
 function ensureColumns(
   handle: DbHandle,
   specs: ReadonlyArray<{ table: string; column: string; ddl: string }>,
@@ -442,6 +863,9 @@ export function runMigrations(handle: DbHandle, log: MigrationLogger = defaultLo
   // colonnes v4. Toujours idempotente (colonnes déjà là → skip).
   const postMedia = ensureMediaReadyV4Columns(handle, log);
   const requestImports = ensureRequestImportSchema(handle, log);
+  const acquisitionJobs = ensureAcquisitionJobsSchema(handle, log);
+  const downloadJobs = ensureDownloadJobsSchema(handle, log);
+  const providerHealth = ensureProviderHealthSchema(handle, log);
   const offlineVariants = ensureOfflineVariantsSchema(handle, log);
   const loudnessAnalysis = ensureLoudnessAnalysisSchema(handle, log);
   const repaired = [
@@ -451,6 +875,9 @@ export function runMigrations(handle: DbHandle, log: MigrationLogger = defaultLo
     ...postRepair,
     ...postMedia,
     ...requestImports,
+    ...acquisitionJobs,
+    ...downloadJobs,
+    ...providerHealth,
     ...offlineVariants,
     ...loudnessAnalysis,
   ];
