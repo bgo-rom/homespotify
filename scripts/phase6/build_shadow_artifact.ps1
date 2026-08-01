@@ -17,7 +17,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $RepoRoot = 'F:\dev\homespotify-phase6-shadow',
+    [string] $RepoRoot = 'F:\dev\homespotify-phase6-final-c',
     [string] $StagingRoot = 'F:\dev\homespotify-phase6-staging',
     [string] $BundleId = 'linux-x64-node22.18.0-abi127',
     [switch] $SkipBuild
@@ -29,7 +29,7 @@ function Step([string] $Message) { Write-Host "[phase6-build] $Message" }
 
 Set-Location -LiteralPath $RepoRoot
 $branch = (git branch --show-current)
-if ($branch -ne 'phase6/vps-shadow-deployment') { Fail "branche inattendue : $branch" }
+if ($branch -ne 'phase6/vps-final-c') { Fail "branche inattendue : $branch" }
 
 if (-not $SkipBuild) {
     Step 'build API'

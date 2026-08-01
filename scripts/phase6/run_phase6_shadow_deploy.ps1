@@ -37,7 +37,7 @@ param(
     [string] $VpsHost = '135.125.101.79',
     [string] $VpsUser = 'debian',
     [string] $IdentityFile = "$env:USERPROFILE\.ssh\id_ed25519",
-    [string] $RepoRoot = 'F:\dev\homespotify-phase6-shadow',
+    [string] $RepoRoot = 'F:\dev\homespotify-phase6-final-c',
     [string] $StagingRoot = 'F:\dev\homespotify-phase6-staging',
 
     # Entrées réelles. Ce sont des CHEMINS, jamais des secrets.
@@ -79,7 +79,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ExpectedBranch = 'phase6/vps-shadow-deployment'
+$ExpectedBranch = 'phase6/vps-final-c'
 $ShadowPort = 3002
 $RemoteStagingRoot = '/home/debian/homespotify-phase6-staging'
 $RemoteBundleSource = '/home/debian/homespotify-phase45/api/node_modules'

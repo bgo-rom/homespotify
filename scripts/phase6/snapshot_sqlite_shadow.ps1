@@ -20,7 +20,7 @@
 param(
     [Parameter(Mandatory = $true)][string] $SourceDbPath,
     [string] $StagingRoot = 'F:\dev\homespotify-phase6-staging',
-    [string] $RepoRoot = 'F:\dev\homespotify-phase6-shadow'
+    [string] $RepoRoot = 'F:\dev\homespotify-phase6-final-c'
 )
 
 $ErrorActionPreference = 'Stop'

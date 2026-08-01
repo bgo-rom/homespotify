@@ -541,7 +541,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("sshConnectionsOpened = $script:SshConnections", branch)
 
     def test_guards_worktree_and_branch(self) -> None:
-        self.assertIn("phase6/vps-shadow-deployment", self.text)
+        self.assertIn("phase6/vps-final-c", self.text)
         self.assertIn("rev-parse --show-toplevel", self.text)
         self.assertIn('Fail "branche inattendue', self.text)
 
