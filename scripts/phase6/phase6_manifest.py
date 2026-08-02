@@ -36,6 +36,7 @@ MANIFEST_NAME = "manifest.json"
 EXCLUDED_NAMES = frozenset({
     ".env", ".env.local", ".env.production", ".hmac-secret",
     "node_modules", "__pycache__", ".git", ".ds_store", "thumbs.db",
+    "endpoint_manifest_cache.json", "provider_stats.db",
 })
 EXCLUDED_SUFFIXES = (
     ".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3",
@@ -125,7 +126,9 @@ def make_release_id(built_at: str, commit: str, digest: str) -> str:
 
 def build_manifest(root: Path, *, commit: str, built_at: str,
                    node_version: str, node_abi: str, arch: str,
-                   bundle_id: str) -> dict[str, Any]:
+                   bundle_id: str, antra_commit: str = "",
+                   antra_requirements_sha256: str = "",
+                   antra_runtime_id: str = "") -> dict[str, Any]:
     entries = build_entries(root)
     digest = manifest_digest(entries)
     return {
@@ -137,6 +140,9 @@ def build_manifest(root: Path, *, commit: str, built_at: str,
         "requiredNodeAbi": node_abi,
         "requiredArch": arch,
         "dependencyBundleId": bundle_id,
+        "antraCommit": antra_commit,
+        "antraRequirementsSha256": antra_requirements_sha256,
+        "antraRuntimeId": antra_runtime_id,
         "fileCount": len(entries),
         "totalBytes": sum(e["sizeBytes"] for e in entries),
         "manifestSha256": digest,
