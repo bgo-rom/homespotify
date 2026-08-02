@@ -133,11 +133,16 @@ describe('buildAntraCommand', () => {
     expect(command.cwd).toBe(makeConfig().dir);
   });
 
-  it('impose l’environnement de sûreté et n’expose jamais la clé Premium', () => {
+  it('transmet l’environnement privé sans placer les secrets dans les arguments', () => {
     const command = buildAntraCommand(
       makeConfig(),
       { jobId: 'job-1', url: 'https://open.spotify.com/track/1', outputDir: '/out' },
-      { ANTRA_API_KEY: 'sk_live_ne_doit_pas_fuiter', PATH: '/usr/bin' },
+      {
+        ANTRA_API_KEY: 'sk_live_ne_doit_pas_fuiter',
+        ANTRA_ENDPOINT_MANIFEST_CACHE_PATH: '/state/antra/endpoint_manifest_cache.json',
+        PROVIDER_STATS_DB_PATH: '/state/antra/provider_stats.db',
+        PATH: '/usr/bin',
+      },
     );
 
     expect(command.env.PYTHONUNBUFFERED).toBe('1');
@@ -147,12 +152,22 @@ describe('buildAntraCommand', () => {
     expect(command.env.OUTPUT_DIR).toBe('/out');
     expect(command.env.OUTPUT_FORMAT).toBe('flac');
     expect(command.env.SOURCE_PREFERENCES).toBe('auto');
-    // L'environnement hérité est conservé…
     expect(command.env.PATH).toBe('/usr/bin');
-    // …mais la clé Premium n'est JAMAIS transmise par HomeSpotify : le
-    // processus la lit dans son propre .env grâce au cwd.
-    expect(command.env.ANTRA_API_KEY).toBeUndefined();
-    expect(JSON.stringify(command)).not.toContain('sk_live_ne_doit_pas_fuiter');
+    expect(command.env.ANTRA_API_KEY).toBe(
+      'sk_live_ne_doit_pas_fuiter',
+    );
+    expect(command.env.ANTRA_ENDPOINT_MANIFEST_CACHE_PATH).toBe(
+      '/state/antra/endpoint_manifest_cache.json',
+    );
+    expect(command.env.PROVIDER_STATS_DB_PATH).toBe(
+      '/state/antra/provider_stats.db',
+    );
+
+    // Les secrets ne sont jamais placés dans argv ni dans le cwd.
+    expect(JSON.stringify(command.args)).not.toContain(
+      'sk_live_ne_doit_pas_fuiter',
+    );
+    expect(command.cwd).not.toContain('sk_live_ne_doit_pas_fuiter');
   });
 });
 
@@ -168,6 +183,9 @@ describe('AntraDownloadProvider — exécution', () => {
     });
     expect(spawner.calls[0]?.options.shell).toBe(false);
     expect(spawner.calls[0]?.options.windowsHide).toBe(true);
+    expect(spawner.calls[0]?.options.detached).toBe(
+      process.platform !== 'win32',
+    );
     expect(handle.processId).toBe(4242);
 
     spawner.children[0]?.finish(0);
@@ -298,6 +316,53 @@ describe('AntraDownloadProvider — annulation', () => {
     expect(spawner.children[0]?.killed).toBe(true);
 
     spawner.children[0]?.finish(1);
+    const result = await handle.completion;
+    expect(result.errorCode).toBe('CANCELLED');
+  });
+
+
+  it('arrête le groupe POSIX par SIGTERM puis SIGKILL', async () => {
+    const spawner = new FakeSpawner();
+    const signals: Array<{
+      pid: number;
+      signal: NodeJS.Signals;
+    }> = [];
+
+    const provider = new AntraDownloadProvider(makeConfig(), {
+      spawner,
+      baseEnv: {},
+      platform: 'linux',
+      gracefulShutdownMs: 5,
+      processKiller: (pid, signal) => {
+        signals.push({ pid, signal });
+      },
+    });
+
+    const handle = await provider.start({
+      jobId: 'job-posix',
+      url: 'https://open.spotify.com/track/1',
+      outputDir: join(root, 'staging', 'job-posix'),
+    });
+
+    expect(spawner.calls[0]?.options.detached).toBe(true);
+
+    await provider.cancel('job-posix');
+
+    expect(signals).toEqual([
+      { pid: -4242, signal: 'SIGTERM' },
+    ]);
+
+    await new Promise((resolvePromise) => {
+      setTimeout(resolvePromise, 25);
+    });
+
+    expect(signals).toEqual([
+      { pid: -4242, signal: 'SIGTERM' },
+      { pid: -4242, signal: 'SIGKILL' },
+    ]);
+
+    spawner.children[0]?.finish(1);
+
     const result = await handle.completion;
     expect(result.errorCode).toBe('CANCELLED');
   });

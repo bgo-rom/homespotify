@@ -38,6 +38,7 @@ export interface ProcessSpawner {
       env: NodeJS.ProcessEnv;
       shell: false;
       windowsHide: true;
+      detached?: boolean;
     },
   ): ChildProcess;
 }
@@ -65,10 +66,9 @@ export interface AntraCommand {
  * jamais `ensure_slskd` et écrit du NDJSON.
  *
  * Choix de la configuration : tout passe par l'environnement du processus.
- * `antra.core.config` charge son `.env` avec `override=False`, donc l'env
- * injecté gagne — SAUF `ANTRA_API_KEY`, volontairement absent ici, qui reste
- * lu depuis `tools/antra/.env` grâce au `cwd`. Aucun secret ne transite par
- * HomeSpotify.
+ * En production, systemd injecte les secrets et chemins runtime depuis le
+ * fichier privé `/etc/homespotify/api-shadow.env`, hors de l'arbre de release.
+ * La commande et les journaux ne contiennent jamais ces valeurs en argument.
  */
 export function buildAntraCommand(
   config: AntraConfig,
@@ -97,10 +97,6 @@ export function buildAntraCommand(
     // celle de HomeSpotify (sha256 / ISRC / titre+artiste+durée) fait foi.
     FILENAME_CONFLICT_BEHAVIOR: 'rename',
   };
-  // Jamais transmise par HomeSpotify : le processus la lit dans son propre
-  // `.env`. Supprimer une éventuelle valeur héritée évite qu'une variable
-  // d'environnement du serveur prenne silencieusement le dessus.
-  delete env.ANTRA_API_KEY;
 
   return {
     executable: config.pythonPath,
@@ -137,6 +133,10 @@ export class AntraDownloadProvider implements DownloadProvider {
       /** Injectable pour les tests : évite d'attendre 4 s réelles. */
       gracefulShutdownMs?: number;
       baseEnv?: NodeJS.ProcessEnv;
+      /** Plateforme injectable pour tester le comportement POSIX sous Windows. */
+      platform?: NodeJS.Platform;
+      /** process.kill injectable : aucun signal réel n'est envoyé par les tests. */
+      processKiller?: (pid: number, signal: NodeJS.Signals) => void;
       logger?: {
         debug(context: Record<string, unknown>, message: string): void;
         warn(context: Record<string, unknown>, message: string): void;
@@ -160,11 +160,15 @@ export class AntraDownloadProvider implements DownloadProvider {
       this.options.baseEnv ?? process.env,
     );
     const spawner = this.options.spawner ?? nodeSpawner;
+    const platform = this.options.platform ?? process.platform;
     const child = spawner.spawn(command.executable, command.args, {
       cwd: command.cwd,
       env: command.env,
       shell: false,
       windowsHide: true,
+      // POSIX crée un groupe propre au job : ffmpeg, yt-dlp et les autres
+      // descendants pourront être arrêtés sans toucher au groupe de Node.
+      detached: platform !== 'win32',
     });
 
     const running: RunningProcess = { child, killTimer: null, cancelled: false };
@@ -307,9 +311,9 @@ export class AntraDownloadProvider implements DownloadProvider {
   }
 
   /**
-   * Annulation idempotente : arrêt normal, puis suppression de l'ARBRE de
-   * processus Windows. Antra lance des enfants (ffmpeg, yt-dlp) qui survivent
-   * à un simple `kill` du parent.
+   * Annulation idempotente :
+   * - Windows : SIGTERM sur le parent, puis `taskkill /T /F`;
+   * - POSIX : SIGTERM puis SIGKILL sur le groupe dédié au job.
    */
   async cancel(jobId: string): Promise<void> {
     const running = this.processes.get(jobId);
@@ -317,29 +321,63 @@ export class AntraDownloadProvider implements DownloadProvider {
     running.cancelled = true;
 
     const pid = running.child.pid;
-    try {
-      running.child.kill();
-    } catch {
-      // Processus déjà mort : rien à faire.
+    const platform = this.options.platform ?? process.platform;
+
+    if (pid === undefined) {
+      try {
+        running.child.kill('SIGTERM');
+      } catch {
+        // Processus déjà mort : rien à faire.
+      }
+      return;
     }
 
-    if (pid === undefined) return;
-    const delayMs = this.options.gracefulShutdownMs ?? GRACEFUL_SHUTDOWN_MS;
+    if (platform === 'win32') {
+      try {
+        running.child.kill('SIGTERM');
+      } catch {
+        // Processus déjà mort : rien à faire.
+      }
+    } else {
+      this.signalPosixGroup(pid, 'SIGTERM');
+    }
+
+    const delayMs =
+      this.options.gracefulShutdownMs ?? GRACEFUL_SHUTDOWN_MS;
+
     running.killTimer = setTimeout(() => {
-      this.killProcessTree(pid);
+      this.forceKillProcessTree(pid);
     }, delayMs);
+
     running.killTimer.unref();
   }
 
   /**
-   * Termine l'arbre de processus. Sous Windows, `taskkill /T /F` est le SEUL
-   * moyen fiable ; ailleurs, `SIGKILL` sur le groupe.
+   * Le PID négatif désigne le groupe POSIX créé grâce à `detached: true`.
    */
-  private killProcessTree(pid: number): void {
-    if (process.platform === 'win32') {
+  private signalPosixGroup(
+    pid: number,
+    signal: NodeJS.Signals,
+  ): void {
+    try {
+      const processKiller =
+        this.options.processKiller ??
+        ((target: number, targetSignal: NodeJS.Signals): void => {
+          process.kill(target, targetSignal);
+        });
+
+      processKiller(-pid, signal);
+    } catch {
+      // Groupe déjà terminé ou signal non disponible.
+    }
+  }
+
+  private forceKillProcessTree(pid: number): void {
+    const platform = this.options.platform ?? process.platform;
+
+    if (platform === 'win32') {
       try {
-        // `shell: false` : `taskkill` reçoit ses arguments tels quels, le PID
-        // est un entier issu du système, jamais une valeur utilisateur.
+        // `shell: false` : le PID vient du système et jamais d'un utilisateur.
         spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
           shell: false,
           windowsHide: true,
@@ -352,11 +390,8 @@ export class AntraDownloadProvider implements DownloadProvider {
       }
       return;
     }
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // Processus déjà terminé.
-    }
+
+    this.signalPosixGroup(pid, 'SIGKILL');
   }
 
   stopAll(): void {
@@ -406,7 +441,7 @@ export class AntraDownloadProvider implements DownloadProvider {
     // Vérifié indépendamment du dossier : la clé peut aussi venir de
     // l'environnement du serveur, auquel cas elle n'est simplement pas
     // supprimée de l'env transmis… mais elle reste hors de toute réponse.
-    const premiumKeyConfigured = await this.premiumKeyLooksConfigured(dirFound);
+    const premiumKeyConfigured = this.premiumKeyLooksConfigured();
     if (!premiumKeyConfigured) problems.push('clé Premium absente');
 
     const antraImportable =
@@ -443,23 +478,14 @@ export class AntraDownloadProvider implements DownloadProvider {
   }
 
   /**
-   * Vérifie qu'une clé Premium SEMBLE présente, sans jamais la lire ailleurs
-   * qu'en mémoire locale ni la renvoyer. Seul un booléen sort de cette méthode.
+   * Vérifie uniquement la présence de la variable injectée par le service.
+   * Le dépôt Antra et l'arbre `/opt` ne sont jamais consultés pour un secret.
    */
-  private async premiumKeyLooksConfigured(dirFound: boolean): Promise<boolean> {
-    const envValue = (this.options.baseEnv ?? process.env).ANTRA_API_KEY ?? '';
-    if (envValue.trim().length > 0) return true;
-    if (!dirFound) return false;
+  private premiumKeyLooksConfigured(): boolean {
+    const envValue =
+      (this.options.baseEnv ?? process.env).ANTRA_API_KEY ?? '';
 
-    try {
-      const { readFile } = await import('node:fs/promises');
-      const content = await readFile(resolve(this.config.dir, '.env'), 'utf-8');
-      return content
-        .split(/\r?\n/)
-        .some((line) => /^\s*ANTRA_API_KEY\s*=\s*\S+/.test(line));
-    } catch {
-      return false;
-    }
+    return envValue.trim().length > 0;
   }
 
   private async checkImportable(): Promise<boolean> {
