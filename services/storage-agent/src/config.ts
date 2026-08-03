@@ -25,6 +25,10 @@ export interface StorageAgentConfig {
   /** IP sources autorisées, déjà normalisées (IPv4-mapped réduit en IPv4). */
   allowedRemoteIps: readonly string[];
   maxConcurrentStreams: number;
+  /** Nombre maximal d'imports audio simultanés. */
+  maxConcurrentImports: number;
+  /** Taille maximale d'un objet importé, en octets. */
+  maxImportBytes: number;
   hmacMaxClockSkewSeconds: number;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   /** Intervalle de scrutation mtime de l'index ; 0 = rechargement manuel seul. */
@@ -214,6 +218,20 @@ export function loadStorageAgentConfig(
       8,
       1,
       64,
+    ),
+    maxConcurrentImports: boundedInt(
+      'STORAGE_AGENT_MAX_CONCURRENT_IMPORTS',
+      env.STORAGE_AGENT_MAX_CONCURRENT_IMPORTS,
+      2,
+      1,
+      8,
+    ),
+    maxImportBytes: boundedInt(
+      'STORAGE_AGENT_MAX_IMPORT_BYTES',
+      env.STORAGE_AGENT_MAX_IMPORT_BYTES,
+      1024 * 1024 * 1024,
+      1024 * 1024,
+      4 * 1024 * 1024 * 1024,
     ),
     hmacMaxClockSkewSeconds: boundedInt(
       'STORAGE_AGENT_HMAC_MAX_CLOCK_SKEW_SECONDS',

@@ -1,22 +1,23 @@
 /**
  * Serveur HTTP du Storage Agent.
  *
- * Trois routes, aucune autre. Aucun chemin n'entre par le réseau, aucun chemin
- * ne sort par le réseau : l'agent ne parle qu'en identifiants de pistes.
+ * Surface minimale : santé, lecture indexée et import d'objets audio
+ * immuables. Aucun chemin arbitraire n'entre par le réseau : un import est
+ * adressé uniquement par SHA-256 + extension contrôlée.
  *
  * Ordre des barrières, du moins cher au plus cher :
  *   1. filtrage de l'IP source (403) ;
- *   2. refus de tout corps de requête ;
- *   3. HMAC daté + anti-rejeu (401) ;
- *   4. validation du trackId (400) ;
- *   5. résolution via l'index (404) ;
- *   6. confinement sous MUSIC_ROOT ;
- *   7. réservation d'un emplacement de flux (503).
+ *   2. validation méthode/route/taille ;
+ *   3. HMAC daté + anti-rejeu, incluant le SHA-256 du corps (401) ;
+ *   4. validation de l'identifiant demandé ;
+ *   5. confinement sous MUSIC_ROOT ;
+ *   6. limites de concurrence ;
+ *   7. écriture durable avant reçu d'import.
  */
 import { createReadStream as nodeCreateReadStream, type ReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
-import { Transform } from 'node:stream';
+import { Transform, type Readable } from 'node:stream';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -39,15 +40,59 @@ import {
 import { PathSafetyError, resolveWithinRoot } from './path-safety.js';
 import { isMultiRange, parseRangeHeader } from './range.js';
 import { StorageIndexStore } from './storage-index.js';
+import {
+  DurableObjectStore,
+  ObjectStoreError,
+  type ObjectExtension,
+} from './object-store.js';
 import { StreamLimiter } from './stream-limiter.js';
 
 /** Version de l'agent, exposée par `/health`. Suit package.json manuellement. */
-export const STORAGE_AGENT_VERSION = '0.1.0';
+export const STORAGE_AGENT_VERSION = '0.2.0';
 
 const BASE_PATH = '/internal/storage';
+const OBJECT_UPLOAD_ROUTE = `${BASE_PATH}/objects/:contentHash.:extension`;
+const OBJECT_UPLOAD_PATH =
+  /^\/internal\/storage\/objects\/([a-f0-9]{64})\.(flac|wav)$/;
 
 /** Identifiant de piste : entier décimal positif, longueur bornée. */
 const TRACK_ID = /^[1-9][0-9]{0,14}$/;
+
+interface UploadDescriptor {
+  contentHash: string;
+  extension: ObjectExtension;
+  sizeBytes: number;
+}
+
+function uploadDescriptor(
+  method: string,
+  rawUrl: string,
+  contentLength: string | string[] | undefined,
+  maxImportBytes: number,
+): UploadDescriptor | null {
+  if (method !== 'PUT') return null;
+  const match = OBJECT_UPLOAD_PATH.exec(rawUrl);
+  if (match === null) return null;
+  if (
+    Array.isArray(contentLength) ||
+    typeof contentLength !== 'string' ||
+    !/^[1-9][0-9]{0,15}$/.test(contentLength)
+  ) {
+    throw new StorageAgentError('INVALID_CONTENT_LENGTH');
+  }
+  const sizeBytes = Number(contentLength);
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    throw new StorageAgentError('INVALID_CONTENT_LENGTH');
+  }
+  if (sizeBytes > maxImportBytes) {
+    throw new StorageAgentError('OBJECT_TOO_LARGE');
+  }
+  return {
+    contentHash: match[1]!,
+    extension: match[2]! as ObjectExtension,
+    sizeBytes,
+  };
+}
 
 /** `X-Request-Id` fourni par le VPS : accepté seulement s'il est inoffensif. */
 const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]{1,96}$/;
@@ -63,6 +108,8 @@ export interface BuildStorageAgentOptions {
   indexStore?: StorageIndexStore;
   /** Injecté par les tests (comptage d'ouvertures, simulation d'erreur disque). */
   createReadStream?: CreateReadStreamFn;
+  /** Injecté par les tests ; sinon magasin durable sous MUSIC_ROOT. */
+  objectStore?: DurableObjectStore;
   now?: () => number;
   logger?: FastifyServerOptions['logger'];
 }
@@ -70,6 +117,8 @@ export interface BuildStorageAgentOptions {
 export interface StorageAgentRuntime {
   indexStore: StorageIndexStore;
   limiter: StreamLimiter;
+  importLimiter: StreamLimiter;
+  objectStore: DurableObjectStore;
   nonceCache: NonceCache;
   startedAtMs: number;
 }
@@ -86,6 +135,7 @@ export type StorageAgentInstance = FastifyInstance;
 interface RequestState {
   startedAt: number;
   trackId: number | null;
+  upload: UploadDescriptor | null;
   rangeRequested: string | null;
   bytesSent: number;
   terminalLogged: boolean;
@@ -113,6 +163,13 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
     });
 
   const limiter = new StreamLimiter(config.maxConcurrentStreams);
+  const importLimiter = new StreamLimiter(config.maxConcurrentImports);
+  const objectStore =
+    options.objectStore ??
+    new DurableObjectStore({
+      musicRoot: config.musicRoot,
+      maxBytes: config.maxImportBytes,
+    });
   const nonceCache = new NonceCache(config.hmacMaxClockSkewSeconds * 2 * 1000);
   const verifier = new HmacVerifier({
     secret: config.sharedSecret,
@@ -129,7 +186,8 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
     // Un HEAD implicite rejouerait le handler GET et ouvrirait un flux : la
     // route HEAD est déclarée explicitement à la place.
     exposeHeadRoutes: false,
-    // Aucune route n'accepte de corps.
+    // Les routes de lecture restent sans corps. La route PUT définit sa borne
+    // propre ; le parser octet-stream restitue le flux sans le charger en RAM.
     bodyLimit: 1024,
     genReqId: (request) => {
       const raw = request.headers['x-request-id'];
@@ -140,6 +198,11 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
     logger: options.logger ?? { level: config.logLevel },
   });
 
+  app.addContentTypeParser(
+    'application/octet-stream',
+    (_request, payload, done) => done(null, payload),
+  );
+
   const states = new WeakMap<FastifyRequest, RequestState>();
 
   function stateOf(request: FastifyRequest): RequestState {
@@ -148,6 +211,7 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       state = {
         startedAt: performance.now(),
         trackId: null,
+        upload: null,
         rangeRequested: null,
         bytesSent: 0,
         terminalLogged: false,
@@ -210,7 +274,8 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
   // -------------------------------------------------------------------------
   app.addHook('onRequest', async (request, reply) => {
     const state = stateOf(request);
-    state.rangeRequested = typeof request.headers.range === 'string' ? request.headers.range : null;
+    state.rangeRequested =
+      typeof request.headers.range === 'string' ? request.headers.range : null;
     reply.header('x-request-id', String(request.id));
     logEvent(request, 'STORAGE_AGENT_REQUEST_STARTED', {
       rangeRequested: state.rangeRequested,
@@ -232,27 +297,56 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       return reply;
     }
 
-    // Aucune route n'accepte de corps : un corps signé serait une surface
-    // d'attaque gratuite.
+    const rawUrl = request.raw.url ?? request.url;
+    let upload: UploadDescriptor | null;
+    try {
+      upload = uploadDescriptor(
+        request.method,
+        rawUrl,
+        request.headers['content-length'],
+        config.maxImportBytes,
+      );
+    } catch (error) {
+      if (error instanceof StorageAgentError) {
+        state.terminalLogged = true;
+        sendError(request, reply, error.code);
+        return reply;
+      }
+      throw error;
+    }
+    state.upload = upload;
+
     const contentLength = request.headers['content-length'];
-    if (typeof contentLength === 'string' && contentLength !== '0') {
+    if (
+      upload === null &&
+      ((typeof contentLength === 'string' && contentLength !== '0') ||
+        Array.isArray(contentLength))
+    ) {
       logEvent(
         request,
         'STORAGE_AGENT_AUTH_REJECTED',
-        { errorCode: 'AUTH_INVALID', reason: 'corps de requête refusé' },
+        { errorCode: 'AUTH_INVALID', reason: 'corps refusé sur route de lecture' },
         'warn',
       );
       state.terminalLogged = true;
       sendError(request, reply, 'AUTH_INVALID');
       return reply;
     }
+    if (
+      upload !== null &&
+      request.headers['content-type'] !== 'application/octet-stream'
+    ) {
+      state.terminalLogged = true;
+      sendError(request, reply, 'INVALID_OBJECT');
+      return reply;
+    }
 
     const verification = verifier.verify({
       method: request.method,
       // URL brute, query comprise, exactement telle que reçue.
-      pathWithQuery: request.raw.url ?? request.url,
+      pathWithQuery: rawUrl,
       headers: request.headers,
-      bodySha256: EMPTY_BODY_SHA256,
+      bodySha256: upload?.contentHash ?? EMPTY_BODY_SHA256,
     });
     if (!verification.ok) {
       // `reason` est un motif court et fixe : ni signature, ni secret, ni nonce.
@@ -378,9 +472,73 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       musicRootAvailable: musicRootOk,
       activeStreams: limiter.activeStreams,
       maxConcurrentStreams: limiter.limit,
+      activeImports: importLimiter.activeStreams,
+      maxConcurrentImports: importLimiter.limit,
       uptimeSeconds: Math.floor((now() - startedAtMs) / 1000),
     });
   });
+
+  /**
+   * Import d'un objet audio immuable.
+   *
+   * Le SHA-256 est à la fois dans la route et dans la signature HMAC. Le flux
+   * est recalculé pendant l'écriture ; aucune confiance n'est accordée à
+   * l'en-tête déclaré. Le reçu `durable: true` n'est émis qu'après fsync du
+   * fichier final renommé.
+   */
+  app.put(
+    OBJECT_UPLOAD_ROUTE,
+    {
+      bodyLimit: config.maxImportBytes,
+    },
+    async (request, reply) => {
+      const descriptor = stateOf(request).upload;
+      if (descriptor === null) {
+        throw new StorageAgentError('INVALID_OBJECT');
+      }
+      const release = importLimiter.acquire();
+      if (release === null) {
+        throw new StorageAgentError('IMPORT_LIMIT_REACHED');
+      }
+      try {
+        const source = request.body as Readable | undefined;
+        if (
+          source === undefined ||
+          typeof (source as { pipe?: unknown }).pipe !== 'function'
+        ) {
+          throw new StorageAgentError('INVALID_OBJECT');
+        }
+        const receipt = await objectStore.store({
+          contentHash: descriptor.contentHash,
+          extension: descriptor.extension,
+          expectedSizeBytes: descriptor.sizeBytes,
+          source,
+        });
+        logEvent(request, 'STORAGE_AGENT_OBJECT_STORED', {
+          objectId: descriptor.contentHash.slice(0, 12),
+          extension: descriptor.extension,
+          sizeBytes: receipt.sizeBytes,
+          reused: receipt.reused,
+          durable: receipt.durable,
+        });
+        return reply.code(receipt.reused ? 200 : 201).send({
+          status: 'stored',
+          contentHash: receipt.contentHash,
+          extension: receipt.extension,
+          sizeBytes: receipt.sizeBytes,
+          reused: receipt.reused,
+          durable: receipt.durable,
+        });
+      } catch (error) {
+        if (error instanceof ObjectStoreError) {
+          throw new StorageAgentError(error.code);
+        }
+        throw error;
+      } finally {
+        release();
+      }
+    },
+  );
 
   /**
    * HEAD : `stat` uniquement, JAMAIS de `createReadStream`, et aucun
@@ -552,6 +710,8 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
   app.decorate('storageAgent', {
     indexStore,
     limiter,
+    importLimiter,
+    objectStore,
     nonceCache,
     startedAtMs,
   } satisfies StorageAgentRuntime);

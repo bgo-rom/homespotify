@@ -25,6 +25,13 @@ export const STORAGE_AGENT_ERROR_CODES = [
   'MUSIC_ROOT_UNAVAILABLE',
   'STREAM_LIMIT_REACHED',
   'STREAM_READ_ERROR',
+  'INVALID_OBJECT',
+  'INVALID_CONTENT_LENGTH',
+  'OBJECT_TOO_LARGE',
+  'OBJECT_HASH_MISMATCH',
+  'OBJECT_SIZE_MISMATCH',
+  'OBJECT_WRITE_FAILED',
+  'IMPORT_LIMIT_REACHED',
   'INTERNAL_ERROR',
 ] as const;
 
@@ -54,6 +61,13 @@ const STATUS_BY_CODE: Record<StorageAgentErrorCode, number> = {
   MUSIC_ROOT_UNAVAILABLE: 503,
   STREAM_LIMIT_REACHED: 503,
   STREAM_READ_ERROR: 500,
+  INVALID_OBJECT: 400,
+  INVALID_CONTENT_LENGTH: 400,
+  OBJECT_TOO_LARGE: 413,
+  OBJECT_HASH_MISMATCH: 422,
+  OBJECT_SIZE_MISMATCH: 422,
+  OBJECT_WRITE_FAILED: 500,
+  IMPORT_LIMIT_REACHED: 503,
   INTERNAL_ERROR: 500,
 };
 
@@ -73,6 +87,13 @@ const MESSAGE_BY_CODE: Record<StorageAgentErrorCode, string> = {
   MUSIC_ROOT_UNAVAILABLE: 'Racine musicale indisponible.',
   STREAM_LIMIT_REACHED: 'Limite de flux simultanés atteinte.',
   STREAM_READ_ERROR: 'Erreur de lecture du fichier.',
+  INVALID_OBJECT: 'Objet audio invalide.',
+  INVALID_CONTENT_LENGTH: 'Taille de corps invalide.',
+  OBJECT_TOO_LARGE: 'Objet audio trop volumineux.',
+  OBJECT_HASH_MISMATCH: 'Empreinte du contenu invalide.',
+  OBJECT_SIZE_MISMATCH: 'Taille du contenu invalide.',
+  OBJECT_WRITE_FAILED: 'Écriture durable impossible.',
+  IMPORT_LIMIT_REACHED: 'Limite d’imports simultanés atteinte.',
   INTERNAL_ERROR: 'Erreur interne.',
 };
 

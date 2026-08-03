@@ -45,20 +45,26 @@ export function buildSignedHeaders(options: {
   timestamp?: number;
   nonce?: string;
   requestId?: string;
+  /** SHA-256 déjà calculé d'un flux : évite de charger un fichier en mémoire. */
+  contentSha256?: string;
 }): Record<string, string> {
   const timestamp = options.timestamp ?? Math.floor(Date.now() / 1_000);
   const nonce = options.nonce ?? generateNonce();
+  const contentSha256 = options.contentSha256 ?? EMPTY_BODY_SHA256;
+  if (!/^[0-9a-f]{64}$/.test(contentSha256)) {
+    throw new Error('Empreinte HMAC de corps invalide.');
+  }
   const signature = signCanonical(options.secret, {
     method: options.method,
     pathWithQuery: options.pathWithQuery,
     timestamp,
     nonce,
-    contentSha256: EMPTY_BODY_SHA256,
+    contentSha256,
   });
   return {
     'x-hs-timestamp': String(timestamp),
     'x-hs-nonce': nonce,
-    'x-hs-content-sha256': EMPTY_BODY_SHA256,
+    'x-hs-content-sha256': contentSha256,
     'x-hs-signature': signature,
     ...(options.requestId === undefined
       ? {}

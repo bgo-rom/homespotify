@@ -1,7 +1,7 @@
 # @homespotify/storage-agent
 
 Agent de stockage Windows : sert les octets des fichiers audio locaux au VPS
-HomeSpotify, à travers WireGuard, en lecture seule.
+HomeSpotify et reçoit les nouveaux objets audio immuables à travers WireGuard.
 
 **Documentation de référence : [`docs/VPS_PHASE2_STORAGE_AGENT.md`](../../docs/VPS_PHASE2_STORAGE_AGENT.md).**
 
@@ -18,6 +18,12 @@ sur `127.0.0.1` et n'est lancé qu'à la main.
 | `GET` | `/internal/storage/health` | état de l'agent (authentifié) |
 | `HEAD` | `/internal/storage/tracks/:trackId` | métadonnées, `stat` seul |
 | `GET` | `/internal/storage/tracks/:trackId` | flux audio, HTTP Range |
+| `PUT` | `/internal/storage/objects/:sha256.:extension` | import streaming durable FLAC/WAV |
+
+La route d'import n'accepte aucun chemin choisi par le client : le stockage
+final est dérivé du SHA-256 sous `.homespotify/objects/`. Le reçu n'est renvoyé
+qu'après contrôle taille/empreinte, `fsync`, renommage atomique et nouvelle
+synchronisation du fichier final.
 
 Toutes authentifiées par HMAC-SHA256 daté avec anti-rejeu, derrière un filtrage
 strict de l'IP source.

@@ -4,7 +4,8 @@
  * Toujours 127.0.0.1 + port éphémère, jamais 3100, jamais 0.0.0.0. Chaque
  * serveur est fermé en `afterEach` : aucun processus ne reste en écoute.
  */
-import { rmSync, statSync } from 'node:fs';
+import { readFileSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -13,6 +14,7 @@ import type { ReadStream } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadStorageAgentConfig } from './config.js';
 import { EMPTY_BODY_SHA256, buildSignedHeaders, generateNonce } from './hmac-auth.js';
+import { objectAbsolutePath } from './object-store.js';
 import { StorageIndexStore } from './storage-index.js';
 import {
   createFixture,
@@ -29,7 +31,16 @@ import type { CreateReadStreamFn, StorageAgentInstance } from './server.js';
 import type { FastifyServerOptions } from 'fastify';
 
 const TRACKS = '/internal/storage/tracks';
+const OBJECTS = '/internal/storage/objects';
 const HEALTH = '/internal/storage/health';
+
+function objectRoute(body: Buffer, extension: 'flac' | 'wav' = 'flac'): {
+  hash: string;
+  path: string;
+} {
+  const hash = createHash('sha256').update(body).digest('hex');
+  return { hash, path: `${OBJECTS}/${hash}.${extension}` };
+}
 
 let fixture: AgentFixture;
 const running: RunningAgent[] = [];
@@ -666,18 +677,154 @@ describe('GET /internal/storage/health', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Import durable d'objets
+// ---------------------------------------------------------------------------
+describe('PUT /internal/storage/objects/:sha256.:extension', () => {
+  it('publie un objet vérifié, synchronisé et sans exposer de chemin', async () => {
+    const agent = await launch();
+    const body = Buffer.from('FLAC durable depuis le VPS');
+    const object = objectRoute(body);
+
+    const response = await signedFetch(agent, 'PUT', object.path, {
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(response.status).toBe(201);
+    const receipt = (await response.json()) as Record<string, unknown>;
+    expect(receipt).toEqual({
+      status: 'stored',
+      contentHash: object.hash,
+      extension: 'flac',
+      sizeBytes: body.length,
+      reused: false,
+      durable: true,
+    });
+    expect(JSON.stringify(receipt).toLowerCase()).not.toContain('path');
+    expect(
+      readFileSync(objectAbsolutePath(fixture.musicRoot, object.hash, 'flac')),
+    ).toEqual(body);
+  });
+
+  it('est idempotent : le deuxième PUT réutilise le même objet', async () => {
+    const agent = await launch();
+    const body = Buffer.from('objet idempotent');
+    const object = objectRoute(body, 'wav');
+    const init = {
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
+    };
+
+    expect((await signedFetch(agent, 'PUT', object.path, init)).status).toBe(201);
+    const second = await signedFetch(agent, 'PUT', object.path, init);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({
+      contentHash: object.hash,
+      extension: 'wav',
+      sizeBytes: body.length,
+      reused: true,
+      durable: true,
+    });
+  });
+
+  it('refuse un corps différent de l’empreinte signée et ne publie rien', async () => {
+    const agent = await launch();
+    const expected = Buffer.from('expected');
+    const actual = Buffer.from('modified');
+    expect(expected.length).toBe(actual.length);
+    const object = objectRoute(expected);
+    const headers = buildSignedHeaders({
+      secret: agent.secret,
+      method: 'PUT',
+      pathWithQuery: object.path,
+      body: expected,
+    });
+
+    const response = await fetch(`${agent.baseUrl}${object.path}`, {
+      method: 'PUT',
+      headers: {
+        ...headers,
+        'content-type': 'application/octet-stream',
+        'content-length': String(actual.length),
+      },
+      body: actual,
+    });
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get('x-hs-error-code')).toBe(
+      'OBJECT_HASH_MISMATCH',
+    );
+    expect(() =>
+      statSync(objectAbsolutePath(fixture.musicRoot, object.hash, 'flac')),
+    ).toThrow();
+  });
+
+  it('refuse une signature qui ne porte pas sur le SHA de la route', async () => {
+    const agent = await launch();
+    const body = Buffer.from('route-hash-binding');
+    const object = objectRoute(body);
+    const response = await signedFetch(agent, 'PUT', object.path, {
+      body: Buffer.from('autre-contenu---'),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+    expect(response.status).toBe(401);
+    expect(response.headers.get('x-hs-error-code')).toBe('AUTH_INVALID');
+  });
+
+  it('refuse avant écriture un objet au-dessus de la borne', async () => {
+    const agent = await launch({
+      configOverrides: { maxImportBytes: 8 },
+    });
+    const body = Buffer.alloc(9, 1);
+    const object = objectRoute(body);
+    const response = await signedFetch(agent, 'PUT', object.path, {
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+    expect(response.status).toBe(413);
+    expect(response.headers.get('x-hs-error-code')).toBe('OBJECT_TOO_LARGE');
+  });
+
+  it('exige application/octet-stream et une taille positive', async () => {
+    const agent = await launch();
+    const body = Buffer.from('typed');
+    const object = objectRoute(body);
+    const response = await signedFetch(agent, 'PUT', object.path, { body });
+    expect(response.status).toBe(400);
+    expect(response.headers.get('x-hs-error-code')).toBe('INVALID_OBJECT');
+  });
+
+  it('expose les compteurs d’import sans détail de chemin', async () => {
+    const agent = await launch();
+    const body = (await (await signedFetch(agent, 'GET', HEALTH)).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(body.activeImports).toBe(0);
+    expect(body.maxConcurrentImports).toBe(2);
+    expect(JSON.stringify(body)).not.toContain(fixture.musicRoot);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Surface exposée
 // ---------------------------------------------------------------------------
 describe('surface HTTP', () => {
   it('n’expose aucune autre route', async () => {
     const agent = await launch();
-    for (const path of ['/', '/internal/storage', '/internal/storage/tracks', '/api/tracks/1']) {
+    for (const path of [
+      '/',
+      '/internal/storage',
+      '/internal/storage/tracks',
+      '/internal/storage/objects',
+      '/api/tracks/1',
+    ]) {
       const response = await signedFetch(agent, 'GET', path);
       expect(response.status).toBe(404);
     }
   });
 
-  it('refuse toute méthode d’écriture', async () => {
+  it('refuse toute écriture hors de la route objet contrôlée', async () => {
     const agent = await launch();
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
       const response = await fetch(`${agent.baseUrl}${TRACKS}/1`, {

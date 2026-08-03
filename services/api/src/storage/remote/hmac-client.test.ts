@@ -64,6 +64,41 @@ describe('client HMAC du Storage Agent', () => {
     ).not.toBe(headers['x-hs-signature']);
   });
 
+
+  it('signe un SHA-256 de flux déjà calculé sans charger le corps', () => {
+    const contentSha256 = 'a'.repeat(64);
+    const options = {
+      secret: VECTOR.secret,
+      method: 'PUT',
+      pathWithQuery: `/internal/storage/objects/${contentSha256}.flac`,
+      timestamp: VECTOR.timestamp,
+      nonce: VECTOR.nonce,
+      contentSha256,
+    };
+    const headers = buildSignedHeaders(options);
+    expect(headers['x-hs-content-sha256']).toBe(contentSha256);
+    expect(headers['x-hs-signature']).toBe(
+      signAgentCanonical(VECTOR.secret, {
+        method: options.method,
+        pathWithQuery: options.pathWithQuery,
+        timestamp: options.timestamp,
+        nonce: options.nonce,
+        contentSha256,
+      }),
+    );
+  });
+
+  it('refuse une empreinte pré-calculée mal formée', () => {
+    expect(() =>
+      buildSignedHeaders({
+        secret: VECTOR.secret,
+        method: 'PUT',
+        pathWithQuery: '/internal/storage/objects/x.flac',
+        contentSha256: 'not-a-sha',
+      }),
+    ).toThrow(/Empreinte HMAC/);
+  });
+
   it('génère un nonce cryptographique de 256 bits distinct', () => {
     const first = generateNonce();
     const second = generateNonce();

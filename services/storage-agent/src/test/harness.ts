@@ -81,6 +81,8 @@ export function testConfig(
     // 127.0.0.1 explicitement autorisée pour les tests, jamais par défaut.
     allowedRemoteIps: ['127.0.0.1'],
     maxConcurrentStreams: 8,
+    maxConcurrentImports: 2,
+    maxImportBytes: 1024 * 1024,
     hmacMaxClockSkewSeconds: 60,
     logLevel: 'fatal',
     indexPollIntervalMs: 0,
@@ -120,10 +122,11 @@ export async function startAgent(
 /** Requête signée valide. `headerOverrides` permet de casser un seul élément. */
 export async function signedFetch(
   agent: RunningAgent,
-  method: 'GET' | 'HEAD',
+  method: 'GET' | 'HEAD' | 'PUT',
   pathWithQuery: string,
   init: {
     headers?: Record<string, string>;
+    body?: Buffer;
     headerOverrides?: Record<string, string | null>;
     secret?: string;
     signedPath?: string;
@@ -140,6 +143,7 @@ export async function signedFetch(
       pathWithQuery: init.signedPath ?? pathWithQuery,
       ...(init.timestamp !== undefined ? { timestamp: init.timestamp } : {}),
       ...(init.nonce !== undefined ? { nonce: init.nonce } : {}),
+      ...(init.body !== undefined ? { body: init.body } : {}),
     }),
     ...(init.headers ?? {}),
   };
@@ -150,6 +154,7 @@ export async function signedFetch(
   return fetch(`${agent.baseUrl}${pathWithQuery}`, {
     method,
     headers,
+    ...(init.body === undefined ? {} : { body: init.body }),
     ...(init.signal ? { signal: init.signal } : {}),
   });
 }

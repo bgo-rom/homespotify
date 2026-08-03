@@ -33,6 +33,8 @@ async function main(): Promise<void> {
       host: config.host,
       port: config.port,
       maxConcurrentStreams: config.maxConcurrentStreams,
+      maxConcurrentImports: config.maxConcurrentImports,
+      maxImportBytes: config.maxImportBytes,
       indexEntryCount: app.storageAgent.indexStore.current?.entries.size ?? 0,
     },
     'STORAGE_AGENT_STARTED',

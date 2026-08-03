@@ -26,6 +26,8 @@ describe('loadStorageAgentConfig — défauts sûrs', () => {
   it('applique les défauts de concurrence et de fenêtre horaire', () => {
     const config = loadStorageAgentConfig(baseEnv());
     expect(config.maxConcurrentStreams).toBe(8);
+    expect(config.maxConcurrentImports).toBe(2);
+    expect(config.maxImportBytes).toBe(1024 * 1024 * 1024);
     expect(config.hmacMaxClockSkewSeconds).toBe(60);
     expect(config.allowedRemoteIps).toEqual(['10.8.0.1']);
   });
@@ -86,6 +88,15 @@ describe('loadStorageAgentConfig — chemins et bornes', () => {
     ).toThrowError(StorageAgentConfigError);
     expect(() =>
       loadStorageAgentConfig(baseEnv({ STORAGE_AGENT_MAX_CONCURRENT_STREAMS: '9999' })),
+    ).toThrowError(StorageAgentConfigError);
+  });
+
+  it('refuse des bornes d’import invalides', () => {
+    expect(() =>
+      loadStorageAgentConfig(baseEnv({ STORAGE_AGENT_MAX_CONCURRENT_IMPORTS: '0' })),
+    ).toThrowError(StorageAgentConfigError);
+    expect(() =>
+      loadStorageAgentConfig(baseEnv({ STORAGE_AGENT_MAX_IMPORT_BYTES: '1024' })),
     ).toThrowError(StorageAgentConfigError);
   });
 
