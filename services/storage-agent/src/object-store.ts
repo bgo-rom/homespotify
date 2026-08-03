@@ -238,12 +238,16 @@ export class DurableObjectStore {
     const current = this.inFlight.get(key);
     if (current !== undefined) {
       // Chaque requête reste vérifiée et entièrement consommée, même si une
-      // écriture identique est déjà en cours.
-      return verifySource(
+      // écriture identique est déjà en cours. Le suiveur attend la preuve
+      // durable du leader mais reçoit `reused: true` : deux clients ne doivent
+      // jamais croire qu'ils ont tous deux créé le même objet immuable.
+      await verifySource(
         input.source,
         hash,
         input.expectedSizeBytes,
-      ).then(() => current);
+      );
+      const receipt = await current;
+      return { ...receipt, reused: true };
     }
 
     const operation = this.storeOnce(normalizedInput);
