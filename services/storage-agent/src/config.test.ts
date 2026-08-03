@@ -28,6 +28,7 @@ describe('loadStorageAgentConfig — défauts sûrs', () => {
     expect(config.maxConcurrentStreams).toBe(8);
     expect(config.maxConcurrentImports).toBe(2);
     expect(config.maxImportBytes).toBe(1024 * 1024 * 1024);
+    expect(config.maxIndexBytes).toBe(16 * 1024 * 1024);
     expect(config.hmacMaxClockSkewSeconds).toBe(60);
     expect(config.allowedRemoteIps).toEqual(['10.8.0.1']);
   });
@@ -97,6 +98,9 @@ describe('loadStorageAgentConfig — chemins et bornes', () => {
     ).toThrowError(StorageAgentConfigError);
     expect(() =>
       loadStorageAgentConfig(baseEnv({ STORAGE_AGENT_MAX_IMPORT_BYTES: '1024' })),
+    ).toThrowError(StorageAgentConfigError);
+    expect(() =>
+      loadStorageAgentConfig(baseEnv({ STORAGE_AGENT_MAX_INDEX_BYTES: '512' })),
     ).toThrowError(StorageAgentConfigError);
   });
 

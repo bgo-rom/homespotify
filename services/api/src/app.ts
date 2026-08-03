@@ -95,7 +95,12 @@ import {
 } from './storage/provider-factory.js';
 import { AntraDownloadProvider } from './download/antra-download-provider.js';
 import { DownloadJobRepository } from './download/download-job-repository.js';
-import { DownloadService } from './download/download-service.js';
+import {
+  DownloadService,
+  type DownloadRemoteImportService,
+} from './download/download-service.js';
+import { RemoteDownloadedFileImporter } from './download/remote-downloaded-file-importer.js';
+import { StorageAgentClient } from './storage/remote/storage-agent-client.js';
 import type { DownloadProvider } from './download/download-provider.js';
 import {
   DiscoveryTrackSearchProvider,
@@ -146,6 +151,8 @@ export interface BuildAppOptions {
   opusEncoderRunner?: OpusEncoderRunner;
   /** Moteur de téléchargement injectable : les tests ne lancent jamais Antra. */
   downloadProvider?: DownloadProvider;
+  /** Import distant injectable : les tests n'ouvrent jamais de socket Windows. */
+  downloadRemoteImportService?: DownloadRemoteImportService;
   /** Recherche de pistes injectable : les tests n'appellent aucun catalogue. */
   trackSearchProvider?: TrackSearchProvider;
 }
@@ -448,6 +455,30 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
         })
       : null);
 
+  const remoteWriteLogger = {
+    info: (fields: Record<string, unknown>, message: string) =>
+      app.log.info(fields, message),
+    warn: (fields: Record<string, unknown>, message: string) =>
+      app.log.warn(fields, message),
+    error: (fields: Record<string, unknown>, message: string) =>
+      app.log.error(fields, message),
+  };
+  const ownedRemoteDownloadImporter =
+    options.downloadRemoteImportService === undefined &&
+    config.audioRemote !== undefined &&
+    config.audioStorageMode !== 'local'
+      ? RemoteDownloadedFileImporter.fromStorageAgentClient(dbHandle, {
+          coversDir: config.coversDir,
+          client: new StorageAgentClient(
+            config.audioRemote,
+            remoteWriteLogger,
+          ),
+          logger: remoteWriteLogger,
+        })
+      : null;
+  const remoteDownloadImportService =
+    options.downloadRemoteImportService ?? ownedRemoteDownloadImporter ?? undefined;
+
   const downloadService =
     config.antra && downloadProvider
       ? new DownloadService(
@@ -460,6 +491,9 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
             maxConcurrent: config.antra.maxConcurrent,
             jobTimeoutMs: config.antra.jobTimeoutMs,
             allowedExtensions: config.antra.allowedExtensions,
+            ...(remoteDownloadImportService === undefined
+              ? {}
+              : { remoteImportService: remoteDownloadImportService }),
             searchProvider: options.trackSearchProvider ?? trackSearchProvider,
             logger: {
               info: (context, message) => app.log.info(context, message),
@@ -532,6 +566,7 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
   app.addHook('onClose', async () => {
     backupScheduler?.stop();
     await downloadService?.stop();
+    ownedRemoteDownloadImporter?.close();
     await acquisitionService?.stop();
     // Si le runner par défaut n’est utilisé que par la recherche, il n’est
     // pas détenu par AcquisitionImportService et doit aussi être arrêté ici.

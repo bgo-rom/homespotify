@@ -40,6 +40,7 @@ import type {
   ProviderHealth,
 } from './download-provider.js';
 import { sanitizeMessage, sanitizeShortField } from './log-sanitizer.js';
+import type { RemoteDownloadedFileImportResult } from './remote-downloaded-file-importer.js';
 
 /** Borne dure : chaque unité = un interpréteur Python complet. */
 export const MAX_CONCURRENT_DOWNLOADS = 4;
@@ -58,6 +59,14 @@ const STAGING_DIRECTORY_NAME = '.antra';
 export interface DownloadLocalImportService {
   ensureUserDirectory(userId: number, username: string): Promise<UserImportPaths>;
   processInboxFile(userId: number, path: string): Promise<number>;
+}
+
+export interface DownloadRemoteImportService {
+  importDownloadedFile(input: {
+    userId: number;
+    filePath: string;
+    requestId?: string;
+  }): Promise<RemoteDownloadedFileImportResult>;
 }
 
 export interface DownloadServiceLogger {
@@ -108,7 +117,7 @@ interface ActiveDownload {
 
 /** Issue d'UNE tentative. `terminal` = le job est déjà finalisé. */
 type AttemptOutcome =
-  | { kind: 'terminal' }
+  | { kind: 'terminal'; purgeStaging: boolean }
   | { kind: 'cancelled' }
   | { kind: 'failed'; errorCode: string; errorMessage: string };
 
@@ -186,12 +195,13 @@ const MESSAGE_BY_STAGE: Record<DownloadStage, string> = {
 };
 
 /**
- * Orchestre les téléchargements Antra puis remet le fichier au pipeline local.
+ * Orchestre les téléchargements Antra puis remet le fichier au pipeline
+ * d'import adapté au mode de stockage.
  *
- * Règle fondamentale, identique à l'acquisition historique :
- * - `download_jobs` suit le processus du moteur ;
- * - `import_jobs` reste créé et finalisé UNIQUEMENT par `UserImportService`.
- *   Aucun second indexeur n'existe.
+ * - local : `UserImportService` conserve le pipeline historique et ses
+ *   `import_jobs` ;
+ * - remote/cached : l'importeur distant attend le reçu durable Windows,
+ *   transactionne SQLite puis republie l'index complet avant tout nettoyage.
  */
 export class DownloadService {
   private readonly queue: QueuedDownload[] = [];
@@ -219,6 +229,11 @@ export class DownloadService {
       /** Plafond d'UNE tentative ; sans lui, aucun repli n'aurait jamais lieu. */
       attemptTimeoutMs?: number;
       allowedExtensions: readonly string[];
+      /**
+       * Mode remote/cached : import direct vers le Storage Agent. Absent =
+       * pipeline local historique via l'inbox utilisateur.
+       */
+      remoteImportService?: DownloadRemoteImportService;
       /**
        * Recherche texte. Absente = seules les URL directes sont acceptées ;
        * `/api/downloads/search` répond alors 503.
@@ -582,10 +597,13 @@ export class DownloadService {
    */
   private async processItem(running: ActiveDownload): Promise<void> {
     const { item } = running;
-    const paths = await this.localImportService.ensureUserDirectory(
-      item.userId,
-      item.username,
-    );
+    const paths =
+      this.options.remoteImportService === undefined
+        ? await this.localImportService.ensureUserDirectory(
+            item.userId,
+            item.username,
+          )
+        : null;
 
     const job = this.repository.getJobForUser(item.jobId, item.userId);
     const candidates = candidatesForJob(job, item.url);
@@ -668,7 +686,9 @@ export class DownloadService {
       // Le pipeline local a déjà tranché (succès ou refus local) : relancer une
       // autre source risquerait un doublon.
       if (outcome.kind === 'terminal') {
-        await this.purgeJobStaging(item.jobId);
+        if (outcome.purgeStaging) {
+          await this.purgeJobStaging(item.jobId);
+        }
         return;
       }
       if (outcome.kind === 'cancelled') {
@@ -729,7 +749,7 @@ export class DownloadService {
   private async runAttempt(
     running: ActiveDownload,
     candidate: DownloadCandidate,
-    paths: UserImportPaths,
+    paths: UserImportPaths | null,
     order: number,
   ): Promise<AttemptOutcome> {
     const { item } = running;
@@ -876,11 +896,15 @@ export class DownloadService {
       message: MESSAGE_BY_STAGE.importing,
     });
 
-    await this.importDetectedFiles(item, paths, detection.accepted.map((f) => f.absolutePath));
-    await this.cleanupStagingIfEmpty(stagingDir);
-    // `importDetectedFiles` a finalisé le job (succès ou refus local) : la
-    // chaîne de repli s'arrête là, sous peine de doublon.
-    return { kind: 'terminal' };
+    const purgeStaging = await this.importDetectedFiles(
+      item,
+      paths,
+      detection.accepted.map((file) => file.absolutePath),
+    );
+    if (purgeStaging) await this.cleanupStagingIfEmpty(stagingDir);
+    // L'import a finalisé le job. En cas d'échec distant, le staging reste
+    // volontairement présent pour une reprise idempotente.
+    return { kind: 'terminal', purgeStaging };
   }
 
   /**
@@ -890,9 +914,17 @@ export class DownloadService {
    */
   private async importDetectedFiles(
     item: QueuedDownload,
-    paths: UserImportPaths,
+    paths: UserImportPaths | null,
     files: readonly string[],
-  ): Promise<void> {
+  ): Promise<boolean> {
+    const remote = this.options.remoteImportService;
+    if (remote !== undefined) {
+      return this.importDetectedFilesRemotely(item, remote, files);
+    }
+    if (paths === null) {
+      throw new Error('Dossiers d’import local indisponibles.');
+    }
+
     let importedTrackId: number | null = null;
     let lastImportJobId: number | null = null;
     let lastStatus: ImportJobStatus | null = null;
@@ -930,7 +962,7 @@ export class DownloadService {
         errorCode: 'LOCAL_IMPORT_JOB_MISSING',
         errorMessage: 'Le pipeline local n’a pas retourné de job valide.',
       });
-      return;
+      return true;
     }
 
     switch (lastStatus) {
@@ -944,13 +976,10 @@ export class DownloadService {
             errorCode: 'LOCAL_IMPORT_TRACK_MISSING',
             errorMessage: 'Le pipeline local a terminé sans identifiant de piste.',
           });
-          return;
+          return true;
         }
         this.finish(item.jobId, {
           status: 'completed',
-          // `reused` est une ÉTAPE distincte, pas un échec : elle permet à
-          // l'application de dire « déjà présent » sans deviner à partir d'un
-          // libellé traduit.
           stage: lastStatus === 'REUSED' ? 'reused' : 'completed',
           progress: 100,
           message:
@@ -961,7 +990,7 @@ export class DownloadService {
           trackId: importedTrackId,
           outputPath,
         });
-        return;
+        return true;
 
       case 'WAITING_FOR_OWNER_MATCH':
         this.finish(item.jobId, {
@@ -974,7 +1003,7 @@ export class DownloadService {
             'Le fichier a été téléchargé mais le rapprochement local est ambigu.',
           outputPath,
         });
-        return;
+        return true;
 
       default:
         this.finish(item.jobId, {
@@ -986,7 +1015,82 @@ export class DownloadService {
           errorMessage: sanitizeMessage(lastError) ?? 'Échec du pipeline local.',
           outputPath,
         });
+        return true;
     }
+  }
+
+  private async importDetectedFilesRemotely(
+    item: QueuedDownload,
+    remote: DownloadRemoteImportService,
+    files: readonly string[],
+  ): Promise<boolean> {
+    let importedTrackId: number | null = null;
+    let reused = false;
+
+    try {
+      for (const file of files) {
+        const result = await remote.importDownloadedFile({
+          userId: item.userId,
+          filePath: file,
+          requestId: `download-${item.jobId}`,
+        });
+        if (result.status === 'WAITING_FOR_OWNER_MATCH') {
+          this.finish(item.jobId, {
+            status: 'failed',
+            stage: 'owner_review_required',
+            message: 'Une validation manuelle est nécessaire.',
+            errorCode: 'REMOTE_IMPORT_REVIEW_REQUIRED',
+            errorMessage:
+              'Le fichier a été conservé sur le VPS car le rapprochement est ambigu.',
+          });
+          return false;
+        }
+
+        importedTrackId ??= result.trackId;
+        reused ||= result.status === 'REUSED';
+
+        // Cette suppression arrive uniquement après :
+        // objet durable -> transaction SQLite -> index distant durable.
+        await rm(file, { force: true });
+      }
+    } catch (error) {
+      const safeMessage =
+        sanitizeMessage(error instanceof Error ? error.message : String(error)) ??
+        'Le transfert vers le stockage Windows a échoué.';
+      this.finish(item.jobId, {
+        status: 'failed',
+        stage: 'remote_import_failed',
+        message: 'Le fichier reste en attente de reprise sur le VPS.',
+        errorCode: 'REMOTE_IMPORT_FAILED',
+        errorMessage: safeMessage,
+      });
+      return false;
+    }
+
+    if (importedTrackId === null) {
+      this.finish(item.jobId, {
+        status: 'failed',
+        stage: 'remote_import_failed',
+        message: 'L’import distant s’est terminé sans piste.',
+        errorCode: 'REMOTE_IMPORT_TRACK_MISSING',
+        errorMessage: 'Aucun identifiant de piste n’a été confirmé.',
+      });
+      return false;
+    }
+
+    this.finish(item.jobId, {
+      status: 'completed',
+      stage: reused ? 'reused' : 'completed',
+      progress: 100,
+      message: reused
+        ? 'Ce titre est déjà présent dans votre bibliothèque.'
+        : 'Piste ajoutée à votre bibliothèque.',
+      trackId: importedTrackId,
+      localImportJobId: null,
+      // Aucun chemin VPS ou Windows n'est persisté dans le job public.
+      outputPath: null,
+    });
+    return true;
   }
 
   private async moveIntoInbox(inbox: string, source: string): Promise<string> {

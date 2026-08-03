@@ -1,9 +1,9 @@
 {
   "name": "@homespotify/storage-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Agent de stockage Windows HomeSpotify — sert les fichiers audio locaux au VPS (Phase 2)",
+  "description": "Agent de stockage Windows HomeSpotify — lecture distante et imports durables depuis le VPS",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",

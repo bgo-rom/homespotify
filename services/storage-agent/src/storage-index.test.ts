@@ -1,4 +1,5 @@
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -283,6 +284,77 @@ describe('StorageIndexStore', () => {
     expect(subject.reloadIfChanged()).toBe(true);
     expect(subject.lookup(1)).toBeUndefined();
     expect(subject.lookup(9)).toBe('neuf.flac');
+  });
+
+  it('publie durablement un index signé puis l’installe en mémoire', async () => {
+    writeFileSync(indexPath, documentWith({ 1: { relativePath: 'ancien.flac' } }));
+    const subject = store();
+    subject.reloadIfChanged();
+
+    const raw = Buffer.from(
+      documentWith({
+        1: { relativePath: 'a/b.flac' },
+        7: { relativePath: '.homespotify/objects/aa/objet.flac' },
+      }),
+      'utf8',
+    );
+    const hash = createHash('sha256').update(raw).digest('hex');
+    const receipt = await subject.publish(raw, hash);
+
+    expect(receipt).toMatchObject({
+      contentSha256: hash,
+      entryCount: 2,
+      durable: true,
+    });
+    expect(subject.lookup(7)).toBe(
+      '.homespotify/objects/aa/objet.flac',
+    );
+    expect(readFileSync(indexPath)).toEqual(raw);
+  });
+
+  it('refuse une empreinte différente sans remplacer l’index actif', async () => {
+    writeFileSync(indexPath, documentWith({ 1: { relativePath: 'ancien.flac' } }));
+    const subject = store();
+    subject.reloadIfChanged();
+    const raw = Buffer.from(
+      documentWith({ 2: { relativePath: 'nouveau.flac' } }),
+      'utf8',
+    );
+
+    await expect(
+      subject.publish(raw, '0'.repeat(64)),
+    ).rejects.toMatchObject({ code: 'INDEX_HASH_MISMATCH' });
+    expect(subject.lookup(1)).toBe('ancien.flac');
+    expect(subject.lookup(2)).toBeUndefined();
+  });
+
+  it('refuse un index plus ancien que celui déjà actif', async () => {
+    writeFileSync(
+      indexPath,
+      JSON.stringify({
+        version: 1,
+        generatedAt: '2026-08-03T20:00:00.000Z',
+        entries: { 1: { relativePath: 'actuel.flac' } },
+      }),
+    );
+    const subject = store();
+    subject.reloadIfChanged();
+    const raw = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        generatedAt: '2026-08-03T19:59:59.000Z',
+        entries: { 2: { relativePath: 'ancien.flac' } },
+      }),
+      'utf8',
+    );
+
+    await expect(
+      subject.publish(
+        raw,
+        createHash('sha256').update(raw).digest('hex'),
+      ),
+    ).rejects.toMatchObject({ code: 'INDEX_STALE_UPLOAD' });
+    expect(subject.lookup(1)).toBe('actuel.flac');
   });
 
   it('start() sans scrutation charge une fois et ne retient pas de timer', () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -9,13 +9,14 @@ import type {
 } from '../discovery/catalog/types.js';
 import type { TrackSearchProvider } from './track-search.js';
 import { runMigrations } from '../db/migrate.js';
-import { users } from '../db/schema.js';
+import { tracks, users } from '../db/schema.js';
 import { makeFlac } from '../test/flac.js';
 import { DownloadJobRepository } from './download-job-repository.js';
 import {
   DownloadService,
   DownloadServiceError,
   type DownloadLocalImportService,
+  type DownloadRemoteImportService,
 } from './download-service.js';
 import type {
   DownloadHandle,
@@ -186,6 +187,24 @@ class FakeLocalImport implements DownloadLocalImportService {
   async processInboxFile(_userId: number, path: string): Promise<number> {
     this.imported.push(path);
     return this.nextJobId;
+  }
+}
+
+class FakeRemoteImport implements DownloadRemoteImportService {
+  readonly imported: string[] = [];
+  fail = false;
+  trackId = 1;
+
+  async importDownloadedFile(input: {
+    userId: number;
+    filePath: string;
+  }) {
+    this.imported.push(input.filePath);
+    if (this.fail) throw new Error('Storage Agent indisponible');
+    return {
+      status: 'IMPORTED' as const,
+      trackId: this.trackId,
+    };
   }
 }
 
@@ -547,6 +566,77 @@ describe('DownloadService — détection et import du fichier', () => {
     expect(localImport.imported).toHaveLength(1);
     expect(localImport.imported[0]).toContain('Lifestyles.flac');
     expect(localImport.imported.join('|')).not.toContain('intrus');
+  });
+});
+
+describe('DownloadService — import distant durable', () => {
+  function existingTrackId(): number {
+    const now = new Date().toISOString();
+    return handle.db
+      .insert(tracks)
+      .values({
+        hash: 'f'.repeat(64),
+        path: '.homespotify/objects/ff/' + 'f'.repeat(64) + '.flac',
+        originalExtension: '.flac',
+        mimeType: 'audio/flac',
+        sizeBytes: 1,
+        durationSeconds: 1,
+        title: 'Remote',
+        artist: 'Remote',
+        album: 'Remote',
+        createdAt: now,
+      })
+      .returning()
+      .get()!.id;
+  }
+
+  it('supprime le staging seulement après le succès de l’import distant', async () => {
+    const provider = new FakeProvider();
+    provider.filesToCreate = () => [
+      { name: 'remote.flac', data: makeFlac({ seconds: 5 }) },
+    ];
+    const remote = new FakeRemoteImport();
+    remote.trackId = existingTrackId();
+    const local = new FakeLocalImport(join(root, 'inbox'));
+    const service = makeService(provider, local, {
+      remoteImportService: remote,
+    });
+
+    const job = enqueue(service, 'https://open.spotify.com/track/remote');
+    await waitFor(() => provider.started.length === 1);
+    const stagingDir = provider.started[0]!.outputDir;
+    provider.succeed(job.id);
+    await service.waitForIdle();
+
+    expect(remote.imported).toHaveLength(1);
+    expect(local.imported).toHaveLength(0);
+    expect(service.getJobForUser(job.id, userId)?.status).toBe('completed');
+    expect(() => statSync(join(stagingDir, 'remote.flac'))).toThrow();
+  });
+
+  it('conserve le staging si le Storage Agent ou l’index échoue', async () => {
+    const provider = new FakeProvider();
+    provider.filesToCreate = () => [
+      { name: 'remote.flac', data: makeFlac({ seconds: 5 }) },
+    ];
+    const remote = new FakeRemoteImport();
+    remote.fail = true;
+    const service = makeService(
+      provider,
+      new FakeLocalImport(join(root, 'inbox')),
+      { remoteImportService: remote },
+    );
+
+    const job = enqueue(service, 'https://open.spotify.com/track/remote-fail');
+    await waitFor(() => provider.started.length === 1);
+    const stagingDir = provider.started[0]!.outputDir;
+    provider.succeed(job.id);
+    await service.waitForIdle();
+
+    const row = service.getJobForUser(job.id, userId);
+    expect(row?.status).toBe('failed');
+    expect(row?.errorCode).toBe('REMOTE_IMPORT_FAILED');
+    expect(statSync(join(stagingDir, 'remote.flac')).isFile()).toBe(true);
   });
 });
 

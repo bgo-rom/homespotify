@@ -19,11 +19,14 @@ sur `127.0.0.1` et n'est lancé qu'à la main.
 | `HEAD` | `/internal/storage/tracks/:trackId` | métadonnées, `stat` seul |
 | `GET` | `/internal/storage/tracks/:trackId` | flux audio, HTTP Range |
 | `PUT` | `/internal/storage/objects/:sha256.:extension` | import streaming durable FLAC/WAV |
+| `PUT` | `/internal/storage/index` | publication atomique de l’index complet |
 
 La route d'import n'accepte aucun chemin choisi par le client : le stockage
 final est dérivé du SHA-256 sous `.homespotify/objects/`. Le reçu n'est renvoyé
 qu'après contrôle taille/empreinte, `fsync`, renommage atomique et nouvelle
-synchronisation du fichier final.
+synchronisation du fichier final. L’index complet est ensuite publié par une
+route distincte, validé, écrit sur le même volume puis installé en mémoire sans
+fenêtre d’index partiel.
 
 Toutes authentifiées par HMAC-SHA256 daté avec anti-rejeu, derrière un filtrage
 strict de l'IP source.

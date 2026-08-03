@@ -5,14 +5,15 @@
  * identifiant numérique, l'agent le traduit via cet index, et lui seul. C'est
  * la propriété de sécurité centrale de la Phase 2.
  *
- * L'index est produit par le CLI en lecture seule de l'API principale
- * (`pnpm --filter @homespotify/api storage-index:export`). La synchronisation
- * automatique VPS → PC n'existe pas encore : elle est explicitement hors
- * périmètre et sera traitée dans une phase ultérieure (cf.
- * docs/VPS_PHASE2_STORAGE_AGENT.md, « Travail restant »). Aujourd'hui, le
- * fichier est déposé manuellement à côté de l'agent.
+ * L'index initial peut être produit par le CLI en lecture seule de l'API
+ * principale (`pnpm --filter @homespotify/api storage-index:export`). En mode
+ * hybride, l'API VPS republie ensuite le document complet par la route interne
+ * signée ; le magasin valide, synchronise et remplace atomiquement le fichier.
  */
+import { createHash, randomUUID } from 'node:crypto';
 import { statSync, readFileSync } from 'node:fs';
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { StorageAgentError } from './errors.js';
 import { PathSafetyError, toPortableRelativePath } from './path-safety.js';
 
@@ -40,6 +41,13 @@ export interface LoadedStorageIndex extends ParsedStorageIndex {
   loadedAt: Date;
   /** Empreinte de la source, pour la détection de modification. */
   fingerprint: string;
+}
+
+export interface DurableIndexReceipt {
+  contentSha256: string;
+  entryCount: number;
+  generatedAt: string;
+  durable: true;
 }
 
 function invalid(detail: string): StorageAgentError {
@@ -138,6 +146,7 @@ export class StorageIndexStore {
   private lastRejection: string | null = null;
   private timer: NodeJS.Timeout | null = null;
   private lastFingerprint: string | null = null;
+  private publicationTail: Promise<void> = Promise.resolve();
   private readonly now: () => Date;
 
   constructor(private readonly options: StorageIndexStoreOptions) {
@@ -208,6 +217,95 @@ export class StorageIndexStore {
       generatedAt: parsed.generatedAt,
     });
     return true;
+  }
+
+  /**
+   * Publie un index reçu du VPS après validation complète.
+   *
+   * L'écriture est sérialisée et durable : fichier temporaire sur le même
+   * volume, fsync, renommage atomique, réouverture du nom final, fsync, puis
+   * échange de la référence en mémoire. Un index plus ancien que celui déjà
+   * chargé est refusé.
+   */
+  publish(
+    raw: Buffer,
+    expectedSha256: string,
+  ): Promise<DurableIndexReceipt> {
+    const operation = this.publicationTail.then(() =>
+      this.publishOnce(raw, expectedSha256),
+    );
+    this.publicationTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  private async publishOnce(
+    raw: Buffer,
+    expectedSha256: string,
+  ): Promise<DurableIndexReceipt> {
+    const observedSha256 = createHash('sha256').update(raw).digest('hex');
+    if (observedSha256 !== expectedSha256) {
+      throw new StorageAgentError('INDEX_HASH_MISMATCH');
+    }
+
+    const parsed = parseStorageIndex(raw.toString('utf8'));
+    if (
+      this.index !== null &&
+      Date.parse(parsed.generatedAt) < Date.parse(this.index.generatedAt)
+    ) {
+      throw new StorageAgentError('INDEX_STALE_UPLOAD');
+    }
+
+    const directory = dirname(this.options.indexPath);
+    const temporaryPath =
+      `${this.options.indexPath}.${randomUUID()}.part`;
+    try {
+      await mkdir(directory, { recursive: true });
+      const temporary = await open(temporaryPath, 'wx', 0o600);
+      try {
+        await temporary.writeFile(raw);
+        await temporary.sync();
+      } finally {
+        await temporary.close();
+      }
+
+      await rename(temporaryPath, this.options.indexPath);
+
+      const finalHandle = await open(this.options.indexPath, 'r+');
+      try {
+        await finalHandle.sync();
+      } finally {
+        await finalHandle.close();
+      }
+
+      const info = await stat(this.options.indexPath);
+      const fingerprint = `${info.mtimeMs}:${info.size}`;
+      this.index = {
+        ...parsed,
+        loadedAt: this.now(),
+        fingerprint,
+      };
+      this.lastFingerprint = fingerprint;
+      this.lastRejection = null;
+      this.options.onEvent?.({
+        event: 'STORAGE_AGENT_INDEX_LOADED',
+        entryCount: parsed.entries.size,
+        indexVersion: parsed.version,
+        generatedAt: parsed.generatedAt,
+      });
+      return {
+        contentSha256: observedSha256,
+        entryCount: parsed.entries.size,
+        generatedAt: parsed.generatedAt,
+        durable: true,
+      };
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      if (error instanceof StorageAgentError) throw error;
+      throw new StorageAgentError('INDEX_WRITE_FAILED');
+    }
   }
 
   private reject(reason: string): void {

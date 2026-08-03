@@ -29,6 +29,8 @@ export interface StorageAgentConfig {
   maxConcurrentImports: number;
   /** Taille maximale d'un objet importé, en octets. */
   maxImportBytes: number;
+  /** Taille maximale du document d'index publié par le VPS. */
+  maxIndexBytes: number;
   hmacMaxClockSkewSeconds: number;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   /** Intervalle de scrutation mtime de l'index ; 0 = rechargement manuel seul. */
@@ -232,6 +234,13 @@ export function loadStorageAgentConfig(
       1024 * 1024 * 1024,
       1024 * 1024,
       4 * 1024 * 1024 * 1024,
+    ),
+    maxIndexBytes: boundedInt(
+      'STORAGE_AGENT_MAX_INDEX_BYTES',
+      env.STORAGE_AGENT_MAX_INDEX_BYTES,
+      16 * 1024 * 1024,
+      1024,
+      64 * 1024 * 1024,
     ),
     hmacMaxClockSkewSeconds: boundedInt(
       'STORAGE_AGENT_HMAC_MAX_CLOCK_SKEW_SECONDS',

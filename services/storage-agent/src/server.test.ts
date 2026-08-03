@@ -33,6 +33,7 @@ import type { FastifyServerOptions } from 'fastify';
 const TRACKS = '/internal/storage/tracks';
 const OBJECTS = '/internal/storage/objects';
 const HEALTH = '/internal/storage/health';
+const INDEX = '/internal/storage/index';
 
 function objectRoute(body: Buffer, extension: 'flac' | 'wav' = 'flac'): {
   hash: string;
@@ -807,6 +808,110 @@ describe('PUT /internal/storage/objects/:sha256.:extension', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Publication durable de l'index
+// ---------------------------------------------------------------------------
+describe('PUT /internal/storage/index', () => {
+  function indexBody(entries: Record<string, string>, generatedAt = new Date().toISOString()): Buffer {
+    return Buffer.from(
+      JSON.stringify({
+        version: 1,
+        generatedAt,
+        entries: Object.fromEntries(
+          Object.entries(entries).map(([id, relativePath]) => [
+            id,
+            { relativePath },
+          ]),
+        ),
+      }),
+      'utf8',
+    );
+  }
+
+  it('publie l’index, l’installe immédiatement et ne divulgue aucun chemin', async () => {
+    const agent = await launch();
+    const body = indexBody({
+      1: 'Artiste/Album/Piste.flac',
+      77: '.homespotify/objects/aa/objet.flac',
+    });
+    const response = await signedFetch(agent, 'PUT', INDEX, {
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(response.status).toBe(200);
+    const receipt = (await response.json()) as Record<string, unknown>;
+    expect(receipt).toMatchObject({
+      status: 'index_stored',
+      contentSha256: createHash('sha256').update(body).digest('hex'),
+      entryCount: 2,
+      durable: true,
+    });
+    expect(JSON.stringify(receipt).toLowerCase()).not.toContain('path');
+    expect(agentRuntime(agent).indexStore.lookup(77)).toBe(
+      '.homespotify/objects/aa/objet.flac',
+    );
+  });
+
+  it('refuse une empreinte différente et conserve l’index précédent', async () => {
+    const agent = await launch();
+    const body = indexBody({ 9: 'nouveau.flac' });
+    const signed = buildSignedHeaders({
+      secret: agent.secret,
+      method: 'PUT',
+      pathWithQuery: INDEX,
+      body: Buffer.from('autre document de même but'),
+    });
+    const response = await fetch(`${agent.baseUrl}${INDEX}`, {
+      method: 'PUT',
+      headers: {
+        ...signed,
+        'content-type': 'application/octet-stream',
+        'content-length': String(body.length),
+      },
+      body,
+    });
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get('x-hs-error-code')).toBe(
+      'INDEX_HASH_MISMATCH',
+    );
+    expect(agentRuntime(agent).indexStore.lookup(1)).toBe(
+      'Artiste/Album/Piste.flac',
+    );
+    expect(agentRuntime(agent).indexStore.lookup(9)).toBeUndefined();
+  });
+
+  it('refuse un document invalide sans remplacer l’index actif', async () => {
+    const agent = await launch();
+    const body = Buffer.from('{ index cassé', 'utf8');
+    const response = await signedFetch(agent, 'PUT', INDEX, {
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('x-hs-error-code')).toBe('INDEX_INVALID');
+    expect(agentRuntime(agent).indexStore.lookup(1)).toBe(
+      'Artiste/Album/Piste.flac',
+    );
+  });
+
+  it('refuse avant lecture un index au-dessus de la borne', async () => {
+    const agent = await launch({
+      configOverrides: { maxIndexBytes: 8 },
+    });
+    const body = Buffer.alloc(9, 1);
+    const response = await signedFetch(agent, 'PUT', INDEX, {
+      body,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get('x-hs-error-code')).toBe('INDEX_TOO_LARGE');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Surface exposée
 // ---------------------------------------------------------------------------
 describe('surface HTTP', () => {
@@ -824,7 +929,7 @@ describe('surface HTTP', () => {
     }
   });
 
-  it('refuse toute écriture hors de la route objet contrôlée', async () => {
+  it('refuse toute écriture hors des routes contrôlées', async () => {
     const agent = await launch();
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
       const response = await fetch(`${agent.baseUrl}${TRACKS}/1`, {

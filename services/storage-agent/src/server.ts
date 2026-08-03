@@ -48,50 +48,91 @@ import {
 import { StreamLimiter } from './stream-limiter.js';
 
 /** Version de l'agent, exposée par `/health`. Suit package.json manuellement. */
-export const STORAGE_AGENT_VERSION = '0.2.0';
+export const STORAGE_AGENT_VERSION = '0.3.0';
 
 const BASE_PATH = '/internal/storage';
 const OBJECT_UPLOAD_ROUTE = `${BASE_PATH}/objects/:contentHash.:extension`;
 const OBJECT_UPLOAD_PATH =
   /^\/internal\/storage\/objects\/([a-f0-9]{64})\.(flac|wav)$/;
+const INDEX_UPLOAD_ROUTE = `${BASE_PATH}/index`;
 
 /** Identifiant de piste : entier décimal positif, longueur bornée. */
 const TRACK_ID = /^[1-9][0-9]{0,14}$/;
 
-interface UploadDescriptor {
-  contentHash: string;
-  extension: ObjectExtension;
-  sizeBytes: number;
-}
+type BodyDescriptor =
+  | {
+      kind: 'object';
+      contentHash: string;
+      extension: ObjectExtension;
+      sizeBytes: number;
+    }
+  | {
+      kind: 'index';
+      contentHash: string;
+      sizeBytes: number;
+    };
 
-function uploadDescriptor(
-  method: string,
-  rawUrl: string,
-  contentLength: string | string[] | undefined,
-  maxImportBytes: number,
-): UploadDescriptor | null {
-  if (method !== 'PUT') return null;
-  const match = OBJECT_UPLOAD_PATH.exec(rawUrl);
-  if (match === null) return null;
+function parseContentLength(
+  raw: string | string[] | undefined,
+): number {
   if (
-    Array.isArray(contentLength) ||
-    typeof contentLength !== 'string' ||
-    !/^[1-9][0-9]{0,15}$/.test(contentLength)
+    Array.isArray(raw) ||
+    typeof raw !== 'string' ||
+    !/^[1-9][0-9]{0,15}$/.test(raw)
   ) {
     throw new StorageAgentError('INVALID_CONTENT_LENGTH');
   }
-  const sizeBytes = Number(contentLength);
+  const sizeBytes = Number(raw);
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
     throw new StorageAgentError('INVALID_CONTENT_LENGTH');
   }
-  if (sizeBytes > maxImportBytes) {
-    throw new StorageAgentError('OBJECT_TOO_LARGE');
+  return sizeBytes;
+}
+
+function bodyDescriptor(
+  method: string,
+  rawUrl: string,
+  contentLength: string | string[] | undefined,
+  contentSha256: string | string[] | undefined,
+  maxImportBytes: number,
+  maxIndexBytes: number,
+): BodyDescriptor | null {
+  if (method !== 'PUT') return null;
+
+  const objectMatch = OBJECT_UPLOAD_PATH.exec(rawUrl);
+  if (objectMatch !== null) {
+    const sizeBytes = parseContentLength(contentLength);
+    if (sizeBytes > maxImportBytes) {
+      throw new StorageAgentError('OBJECT_TOO_LARGE');
+    }
+    return {
+      kind: 'object',
+      contentHash: objectMatch[1]!,
+      extension: objectMatch[2]! as ObjectExtension,
+      sizeBytes,
+    };
   }
-  return {
-    contentHash: match[1]!,
-    extension: match[2]! as ObjectExtension,
-    sizeBytes,
-  };
+
+  if (rawUrl === INDEX_UPLOAD_ROUTE) {
+    const sizeBytes = parseContentLength(contentLength);
+    if (sizeBytes > maxIndexBytes) {
+      throw new StorageAgentError('INDEX_TOO_LARGE');
+    }
+    if (
+      Array.isArray(contentSha256) ||
+      typeof contentSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(contentSha256)
+    ) {
+      throw new StorageAgentError('AUTH_INVALID');
+    }
+    return {
+      kind: 'index',
+      contentHash: contentSha256,
+      sizeBytes,
+    };
+  }
+
+  return null;
 }
 
 /** `X-Request-Id` fourni par le VPS : accepté seulement s'il est inoffensif. */
@@ -135,7 +176,7 @@ export type StorageAgentInstance = FastifyInstance;
 interface RequestState {
   startedAt: number;
   trackId: number | null;
-  upload: UploadDescriptor | null;
+  body: BodyDescriptor | null;
   rangeRequested: string | null;
   bytesSent: number;
   terminalLogged: boolean;
@@ -211,7 +252,7 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       state = {
         startedAt: performance.now(),
         trackId: null,
-        upload: null,
+        body: null,
         rangeRequested: null,
         bytesSent: 0,
         terminalLogged: false,
@@ -298,13 +339,15 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
     }
 
     const rawUrl = request.raw.url ?? request.url;
-    let upload: UploadDescriptor | null;
+    let body: BodyDescriptor | null;
     try {
-      upload = uploadDescriptor(
+      body = bodyDescriptor(
         request.method,
         rawUrl,
         request.headers['content-length'],
+        request.headers['x-hs-content-sha256'],
         config.maxImportBytes,
+        config.maxIndexBytes,
       );
     } catch (error) {
       if (error instanceof StorageAgentError) {
@@ -314,11 +357,11 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       }
       throw error;
     }
-    state.upload = upload;
+    state.body = body;
 
     const contentLength = request.headers['content-length'];
     if (
-      upload === null &&
+      body === null &&
       ((typeof contentLength === 'string' && contentLength !== '0') ||
         Array.isArray(contentLength))
     ) {
@@ -333,7 +376,7 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       return reply;
     }
     if (
-      upload !== null &&
+      body !== null &&
       request.headers['content-type'] !== 'application/octet-stream'
     ) {
       state.terminalLogged = true;
@@ -346,7 +389,7 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       // URL brute, query comprise, exactement telle que reçue.
       pathWithQuery: rawUrl,
       headers: request.headers,
-      bodySha256: upload?.contentHash ?? EMPTY_BODY_SHA256,
+      bodySha256: body?.contentHash ?? EMPTY_BODY_SHA256,
     });
     if (!verification.ok) {
       // `reason` est un motif court et fixe : ni signature, ni secret, ni nonce.
@@ -450,6 +493,26 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
     }
   }
 
+  async function readExactBody(
+    source: Readable,
+    expectedSizeBytes: number,
+  ): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of source) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > expectedSizeBytes) {
+        throw new StorageAgentError('INVALID_CONTENT_LENGTH');
+      }
+      chunks.push(buffer);
+    }
+    if (bytes !== expectedSizeBytes) {
+      throw new StorageAgentError('INVALID_CONTENT_LENGTH');
+    }
+    return Buffer.concat(chunks);
+  }
+
   // -------------------------------------------------------------------------
   // Routes
   // -------------------------------------------------------------------------
@@ -492,8 +555,8 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
       bodyLimit: config.maxImportBytes,
     },
     async (request, reply) => {
-      const descriptor = stateOf(request).upload;
-      if (descriptor === null) {
+      const descriptor = stateOf(request).body;
+      if (descriptor === null || descriptor.kind !== 'object') {
         throw new StorageAgentError('INVALID_OBJECT');
       }
       const release = importLimiter.acquire();
@@ -534,6 +597,57 @@ export function buildStorageAgent(options: BuildStorageAgentOptions): StorageAge
           throw new StorageAgentError(error.code);
         }
         throw error;
+      } finally {
+        release();
+      }
+    },
+  );
+
+  /**
+   * Publication durable de l'index complet.
+   *
+   * Le document est borné, signé par son SHA-256, validé avant écriture, puis
+   * publié atomiquement. Le reçu ne contient aucun chemin.
+   */
+  app.put(
+    INDEX_UPLOAD_ROUTE,
+    {
+      bodyLimit: config.maxIndexBytes,
+    },
+    async (request, reply) => {
+      const descriptor = stateOf(request).body;
+      if (descriptor === null || descriptor.kind !== 'index') {
+        throw new StorageAgentError('INDEX_INVALID');
+      }
+      const release = importLimiter.acquire();
+      if (release === null) {
+        throw new StorageAgentError('IMPORT_LIMIT_REACHED');
+      }
+      try {
+        const source = request.body as Readable | undefined;
+        if (
+          source === undefined ||
+          typeof (source as { pipe?: unknown }).pipe !== 'function'
+        ) {
+          throw new StorageAgentError('INDEX_INVALID');
+        }
+        const raw = await readExactBody(source, descriptor.sizeBytes);
+        const receipt = await indexStore.publish(
+          raw,
+          descriptor.contentHash,
+        );
+        logEvent(request, 'STORAGE_AGENT_INDEX_PUBLISHED', {
+          entryCount: receipt.entryCount,
+          generatedAt: receipt.generatedAt,
+          durable: receipt.durable,
+        });
+        return reply.code(200).send({
+          status: 'index_stored',
+          contentSha256: receipt.contentSha256,
+          entryCount: receipt.entryCount,
+          generatedAt: receipt.generatedAt,
+          durable: receipt.durable,
+        });
       } finally {
         release();
       }

@@ -83,6 +83,7 @@ export function testConfig(
     maxConcurrentStreams: 8,
     maxConcurrentImports: 2,
     maxImportBytes: 1024 * 1024,
+    maxIndexBytes: 1024 * 1024,
     hmacMaxClockSkewSeconds: 60,
     logLevel: 'fatal',
     indexPollIntervalMs: 0,

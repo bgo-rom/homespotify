@@ -2,7 +2,7 @@ import { watch, type Dirent, type FSWatcher } from 'node:fs';
 import { mkdir, readdir, rename, stat } from 'node:fs/promises';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { DbHandle } from '../db/client.js';
 import {
   importJobs,
@@ -19,6 +19,7 @@ import {
   ImportError,
 } from './import-service.js';
 import { hashFile } from './import-service.js';
+import { findExistingTrack } from './track-match.js';
 
 const ACCEPTED_EXTENSIONS = new Set(['.flac', '.wav']);
 const IGNORED_SUFFIXES = ['.tmp', '.part', '.download', '.crdownload'];
@@ -102,14 +103,6 @@ interface ParsedImportMetadata {
   } | null;
 }
 
-function normalize(value: string | null | undefined): string {
-  return (value ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-}
 
 function confined(root: string, candidate: string): string {
   const absoluteRoot = resolve(root);
@@ -464,7 +457,7 @@ export class UserImportService {
             },
       };
       const sha256 = await hashFile(safePath);
-      const duplicate = this.findExistingTrack(sha256, metadata);
+      const duplicate = findExistingTrack(this.handle.db, sha256, metadata);
       let trackId: number;
       let reused = false;
       if (duplicate.kind === 'ambiguous') {
@@ -567,44 +560,6 @@ export class UserImportService {
       await delay(interval);
     }
     throw new UserImportError('file_not_available', 'Le fichier reste en cours d\'écriture.');
-  }
-
-  private findExistingTrack(
-    sha256: string,
-    metadata: ParsedImportMetadata,
-  ): { kind: 'none' | 'unique'; trackId: number | null } | { kind: 'ambiguous'; trackIds: number[] } {
-    const exact = this.handle.db.select({ id: tracks.id }).from(tracks).where(eq(tracks.hash, sha256)).get();
-    if (exact) return { kind: 'unique', trackId: exact.id };
-
-    if (metadata.isrc !== null) {
-      const byIsrc = this.handle.db
-        .select({ id: tracks.id })
-        .from(tracks)
-        .where(eq(tracks.isrc, metadata.isrc))
-        .limit(3)
-        .all();
-      if (byIsrc.length === 1) return { kind: 'unique', trackId: byIsrc[0]!.id };
-      if (byIsrc.length > 1) return { kind: 'ambiguous', trackIds: byIsrc.map((row) => row.id) };
-    }
-
-    const byIdentity = this.handle.db
-      .select({ id: tracks.id, durationSeconds: tracks.durationSeconds })
-      .from(tracks)
-      .where(
-        and(
-          sql`lower(${tracks.title}) = ${normalize(metadata.title)}`,
-          sql`lower(${tracks.artist}) = ${normalize(metadata.artist)}`,
-        ),
-      )
-      .limit(10)
-      .all()
-      .filter((row) => {
-        if (metadata.durationMs === null || row.durationSeconds === null) return true;
-        return Math.abs(row.durationSeconds * 1000 - metadata.durationMs) <= 5000;
-      });
-    if (byIdentity.length === 1) return { kind: 'unique', trackId: byIdentity[0]!.id };
-    if (byIdentity.length > 1) return { kind: 'ambiguous', trackIds: byIdentity.map((row) => row.id) };
-    return { kind: 'none', trackId: null };
   }
 
   private async moveTo(destinationDir: string, source: string): Promise<string> {

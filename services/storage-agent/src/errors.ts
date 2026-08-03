@@ -32,6 +32,10 @@ export const STORAGE_AGENT_ERROR_CODES = [
   'OBJECT_SIZE_MISMATCH',
   'OBJECT_WRITE_FAILED',
   'IMPORT_LIMIT_REACHED',
+  'INDEX_TOO_LARGE',
+  'INDEX_HASH_MISMATCH',
+  'INDEX_STALE_UPLOAD',
+  'INDEX_WRITE_FAILED',
   'INTERNAL_ERROR',
 ] as const;
 
@@ -68,6 +72,10 @@ const STATUS_BY_CODE: Record<StorageAgentErrorCode, number> = {
   OBJECT_SIZE_MISMATCH: 422,
   OBJECT_WRITE_FAILED: 500,
   IMPORT_LIMIT_REACHED: 503,
+  INDEX_TOO_LARGE: 413,
+  INDEX_HASH_MISMATCH: 422,
+  INDEX_STALE_UPLOAD: 409,
+  INDEX_WRITE_FAILED: 500,
   INTERNAL_ERROR: 500,
 };
 
@@ -94,6 +102,10 @@ const MESSAGE_BY_CODE: Record<StorageAgentErrorCode, string> = {
   OBJECT_SIZE_MISMATCH: 'Taille du contenu invalide.',
   OBJECT_WRITE_FAILED: 'Écriture durable impossible.',
   IMPORT_LIMIT_REACHED: 'Limite d’imports simultanés atteinte.',
+  INDEX_TOO_LARGE: 'Document d’index trop volumineux.',
+  INDEX_HASH_MISMATCH: 'Empreinte du document d’index invalide.',
+  INDEX_STALE_UPLOAD: 'Document d’index plus ancien que l’index actif.',
+  INDEX_WRITE_FAILED: 'Publication durable de l’index impossible.',
   INTERNAL_ERROR: 'Erreur interne.',
 };
 
