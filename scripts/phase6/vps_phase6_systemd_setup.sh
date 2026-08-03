@@ -45,11 +45,14 @@ fi
 # 0750 et non 0755 : le code du shadow n'a aucune raison d'etre lisible
 # par tout compte de la machine. Le service traverse par son groupe.
 install -d -o root -g "${USER_NAME}" -m 0750 "${ROOT}" "${ROOT}/releases" \
-  "${ROOT}/dependency-bundles" "${ROOT}/tools"
+  "${ROOT}/dependency-bundles" "${ROOT}/python-runtimes" "${ROOT}/tools"
 install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 \
   "${STATE}" "${STATE}/data" "${STATE}/cache" "${STATE}/cache/audio" \
   "${STATE}/covers" "${STATE}/imports" "${STATE}/imports/incoming" \
-  "${STATE}/offline-variants" "${STATE}/music-unused"
+  "${STATE}/offline-variants" "${STATE}/music-unused" \
+  "${STATE}/antra" "${STATE}/antra/jobs" \
+  "${STATE}/antra/home" "${STATE}/antra/home/.cache" \
+  "${STATE}/antra/home/.local" "${STATE}/antra/home/.local/share"
 # root:root : systemd lit l'EnvironmentFile en root, AVANT de deposer les
 # privileges. Le service n'a donc pas besoin d'entrer dans ce repertoire.
 install -d -o root -g root -m 0750 /etc/homespotify

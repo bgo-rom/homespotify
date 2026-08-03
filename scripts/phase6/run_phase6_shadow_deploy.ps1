@@ -122,6 +122,7 @@ $remoteScripts = @(
     'vps_phase6_stage_preflight.sh', 'vps_phase6_staging_cleanup.sh',
     'vps_phase6_activate_shadow.sh', 'vps_phase6_start_shadow.sh',
     'vps_phase6_monitor.sh',
+    'vps_phase6_prepare_antra_runtime.sh',
     'vps_phase6_preinstall_check.sh',
     'phase6_manifest.py', 'phase6_manifest_verify.py', 'phase6_paths.py',
     'phase6_staging.py', 'phase6_covers.py', 'phase6_env.py',
@@ -137,7 +138,8 @@ $activationTools = @(
     'phase6_covers.py', 'phase6_env.py', 'phase6_probe_agent.mjs',
     'phase6_shadow_token.mjs', 'vps_phase6_preflight.sh',
     'vps_phase6_shadow_tests.py', 'vps_phase6_monitor.sh',
-    'vps_phase6_start_shadow.sh'
+    'vps_phase6_start_shadow.sh',
+    'vps_phase6_prepare_antra_runtime.sh'
 )
 foreach ($name in $remoteScripts) {
     $path = Join-Path $RepoRoot "scripts\phase6\$name"
@@ -932,6 +934,21 @@ sudo -n bash vps_phase6_systemd_setup.sh homespotify-api-shadow.service
     }
     $report['systemd'] = $setupReport
 
+    # --- 4 bis. Runtime Python Linux Antra ----------------------------------
+    Step 'étape 4 bis — runtime Python Linux Antra'
+    $runtimePrepare = Invoke-Ssh -ScriptText @"
+set -Eeuo pipefail
+sudo -n bash '$RemoteStagingRoot/tools/vps_phase6_prepare_antra_runtime.sh' \
+  '$RemoteStagingRoot/releases/$ReleaseId.staging' --install-system-packages
+"@
+    $runtimeReport = Get-LastJson $runtimePrepare.Output
+    if ($null -eq $runtimeReport -or -not $runtimeReport.ok) {
+        Fail "préparation runtime Antra échouée : $($runtimePrepare.Output)"
+    }
+    $report['antraRuntime'] = $runtimeReport
+    Step ("runtime Antra {0}, Python {1}, ffmpeg/ffprobe présents" -f `
+        $runtimeReport.runtimeId, $runtimeReport.python)
+
     # --- 5. Installation immuable de la release ----------------------------
     Step 'étape 5 — installation atomique de la release et des données'
     $activateResult = Invoke-Ssh -ScriptText @"
@@ -1081,6 +1098,7 @@ printf '"bootEnabled":"%s","activeState":"%s"}\n' \
         releaseId = $ReleaseId
         preInstall = $report['preInstall']
         systemd = $report['systemd']
+        antraRuntime = $report['antraRuntime']
         install = $report['install']
         start = $report['start']
         token = $report['token']

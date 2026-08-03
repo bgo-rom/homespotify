@@ -101,6 +101,92 @@ else
   python3 "${ROOT}/tools/phase6_manifest_verify.py" "${INCOMING}" >/dev/null \
     || { rm -rf -- "${INCOMING}"; fail MANIFESTE_DIVERGENT "${INCOMING}"; }
 
+  # 4 bis. Runtime Python Antra : qualifié séparément, puis revérifié ici.
+  # Aucun `current` ne bouge avant ces preuves.
+  RUNTIME_DESCRIPTOR="${INCOMING}/antra-runtime/runtime.json"
+  test -f "${RUNTIME_DESCRIPTOR}" \
+    || { rm -rf -- "${INCOMING}"; fail RUNTIME_DESCRIPTOR_ABSENT; }
+
+  mapfile -t RUNTIME_META < <(
+    python3 - "${INCOMING}/manifest.json" "${RUNTIME_DESCRIPTOR}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+runtime = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+runtime_id = runtime.get("runtimeId", "")
+requirements_hash = runtime.get("requirementsSha256", "")
+commit = runtime.get("antraCommit", "")
+
+if not re.fullmatch(r"py311-antra-[0-9a-f]{8}-[0-9a-f]{8}", runtime_id):
+    raise SystemExit("runtimeId")
+if manifest.get("antraRuntimeId") != runtime_id:
+    raise SystemExit("manifest runtimeId")
+if manifest.get("antraRequirementsSha256") != requirements_hash:
+    raise SystemExit("manifest requirements")
+if manifest.get("antraCommit") != commit:
+    raise SystemExit("manifest commit")
+print(runtime_id)
+print(requirements_hash)
+print(commit)
+PY
+  ) || { rm -rf -- "${INCOMING}"; fail RUNTIME_DESCRIPTOR_INVALIDE; }
+
+  [ "${#RUNTIME_META[@]}" -eq 3 ] \
+    || { rm -rf -- "${INCOMING}"; fail RUNTIME_DESCRIPTOR_INVALIDE; }
+  RUNTIME_ID="${RUNTIME_META[0]}"
+  RUNTIME_REQUIREMENTS_SHA="${RUNTIME_META[1]}"
+  RUNTIME_COMMIT="${RUNTIME_META[2]}"
+  RUNTIME_TARGET="${ROOT}/python-runtimes/${RUNTIME_ID}"
+
+  test -x "${RUNTIME_TARGET}/venv/bin/python" \
+    || { rm -rf -- "${INCOMING}"; fail RUNTIME_CIBLE_ABSENTE "${RUNTIME_TARGET}"; }
+  test -f "${RUNTIME_TARGET}/runtime-meta.json" \
+    || { rm -rf -- "${INCOMING}"; fail RUNTIME_META_ABSENT; }
+  command -v ffmpeg >/dev/null 2>&1 \
+    || { rm -rf -- "${INCOMING}"; fail FFMPEG_ABSENT; }
+  command -v ffprobe >/dev/null 2>&1 \
+    || { rm -rf -- "${INCOMING}"; fail FFPROBE_ABSENT; }
+
+  python3 - \
+    "${RUNTIME_TARGET}/runtime-meta.json" \
+    "${RUNTIME_ID}" \
+    "${RUNTIME_REQUIREMENTS_SHA}" \
+    "${RUNTIME_COMMIT}" <<'PY' \
+    || { rm -rf -- "${INCOMING}"; fail RUNTIME_META_DIVERGENT; }
+import json
+import sys
+from pathlib import Path
+meta = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = {
+    "schemaVersion": 1,
+    "runtimeId": sys.argv[2],
+    "requirementsSha256": sys.argv[3],
+    "antraCommit": sys.argv[4],
+}
+for key, value in expected.items():
+    if meta.get(key) != value:
+        raise SystemExit(key)
+PY
+
+  chmod 0750 "${INCOMING}/bin/antra-python"
+  sudo -u "${USER_NAME}" env \
+    HOME="${STATE}/antra/home" \
+    XDG_CACHE_HOME="${STATE}/antra/home/.cache" \
+    XDG_DATA_HOME="${STATE}/antra/home/.local/share" \
+    SLSKD_AUTO_BOOTSTRAP=false \
+    ANTRA_SLSKD_AUTO_BOOTSTRAP=false \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="${INCOMING}/antra-runtime" \
+    "${INCOMING}/bin/antra-python" - <<'PY' \
+    || { rm -rf -- "${INCOMING}"; fail SMOKE_ANTRA_ECHEC; }
+import importlib
+for name in ("requests", "yt_dlp", "mutagen", "antra.json_cli"):
+    importlib.import_module(name)
+PY
+
   # 5 et 6. ABI, modules natifs, smoke better-sqlite3 reel — depuis la
   # disposition de DESTINATION, seule position ou le resultat vaut quelque
   # chose (L-109).
