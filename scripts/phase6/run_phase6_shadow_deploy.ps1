@@ -23,7 +23,7 @@
 
   SECRETS
   -------
-  Aucun secret ne transite par un argument. Deux sources sont acceptées :
+  Aucun secret ne transite par un argument. Trois secrets sont acquis depuis :
   saisie masquée (défaut), ou lecture interne des fichiers de configuration
   Windows existants (`-SecretsFromWindowsConfig`). Les valeurs ne sont jamais
   affichées, jamais journalisées, jamais écrites ailleurs que dans le fichier
@@ -37,7 +37,7 @@ param(
     [string] $VpsHost = '135.125.101.79',
     [string] $VpsUser = 'debian',
     [string] $IdentityFile = "$env:USERPROFILE\.ssh\id_ed25519",
-    [string] $RepoRoot = 'F:\dev\homespotify-phase6-final-c',
+    [string] $RepoRoot = 'F:\dev\homespotify-phase6-final-c2',
     [string] $StagingRoot = 'F:\dev\homespotify-phase6-staging',
 
     # Entrées réelles. Ce sont des CHEMINS, jamais des secrets.
@@ -48,6 +48,7 @@ param(
     # Secrets : saisie masquée par défaut, lecture de configuration sur demande.
     [switch] $SecretsFromWindowsConfig,
     [string] $ApiEnvPath = 'F:\dev\homespotify\services\api\.env',
+    [string] $AntraEnvPath = 'F:\dev\homespotify\tools\antra\.env',
     [string] $AgentEnvPath = 'C:\ProgramData\HomeSpotify\StorageAgent\config\agent.env',
     # Réutiliser le AUTH_TOKEN_SECRET de production est un CHOIX, jamais un
     # défaut : un shadow qui signe avec la clé de production émet des jetons
@@ -79,7 +80,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ExpectedBranch = 'phase6/vps-final-c'
+$ExpectedBranch = 'phase6/vps-final-c2'
 $ShadowPort = 3002
 $RemoteStagingRoot = '/home/debian/homespotify-phase6-staging'
 $RemoteBundleSource = '/home/debian/homespotify-phase45/api/node_modules'
@@ -285,43 +286,71 @@ function New-ShadowAuthSecret {
 
 function Get-ShadowSecrets {
     <#
-      Renvoie les deux secrets en SecureString. Refuse AVANT toute connexion
-      SSH si l'un manque ou est trop court : ouvrir une connexion pour
-      découvrir ensuite qu'on n'a rien à déposer serait une connexion inutile
-      vers la production.
-
-      Les deux secrets n'ont pas la même nature. `AUDIO_REMOTE_SHARED_SECRET`
-      est PARTAGÉ par construction : il doit être exactement celui du Storage
-      Agent, sinon aucune requête n'est signée valablement.
-      `AUTH_TOKEN_SECRET`, lui, est PROPRE à l'instance et généré ici par
-      défaut.
+      Renvoie trois secrets en SecureString et refuse AVANT toute connexion SSH
+      si l'un manque. Les deux secrets HomeSpotify exigent 32 caractères.
+      ANTRA_API_KEY est seulement exigée non vide : son format appartient au
+      fournisseur et n'est jamais publié, préfixé ni haché.
     #>
     if ($SecretsFromWindowsConfig) {
         Step 'secrets : lecture interne de la configuration Windows'
-        $remote = Read-SecretFromEnvFile -Path $AgentEnvPath -Key 'STORAGE_AGENT_SHARED_SECRET'
-    } else {
-        Step 'secrets : saisie masquée (aucune frappe affichée)'
-        $remote = Read-Host -AsSecureString -Prompt 'AUDIO_REMOTE_SHARED_SECRET (Storage Agent)'
+        $remote = Read-SecretFromEnvFile `
+            -Path $AgentEnvPath `
+            -Key 'STORAGE_AGENT_SHARED_SECRET'
+        $antra = Read-SecretFromEnvFile `
+            -Path $AntraEnvPath `
+            -Key 'ANTRA_API_KEY'
     }
+    else {
+        Step 'secrets : saisie masquée (aucune frappe affichée)'
+        $remote = Read-Host -AsSecureString `
+            -Prompt 'AUDIO_REMOTE_SHARED_SECRET (Storage Agent)'
+        $antra = Read-Host -AsSecureString `
+            -Prompt 'ANTRA_API_KEY (Premium Antra)'
+    }
+
     if ($ReuseProductionAuthSecret) {
         Step 'AUTH_TOKEN_SECRET : réutilisation explicite du secret de production'
-        $auth = Read-SecretFromEnvFile -Path $ApiEnvPath -Key 'AUTH_TOKEN_SECRET'
-    } elseif ($SecretsFromWindowsConfig) {
+        $auth = Read-SecretFromEnvFile `
+            -Path $ApiEnvPath `
+            -Key 'AUTH_TOKEN_SECRET'
+    }
+    elseif ($SecretsFromWindowsConfig) {
         Step 'AUTH_TOKEN_SECRET : généré pour le shadow (jamais celui de production)'
         $auth = New-ShadowAuthSecret
-    } else {
-        $auth = Read-Host -AsSecureString -Prompt 'AUTH_TOKEN_SECRET (propre au shadow, vide = généré)'
+    }
+    else {
+        $auth = Read-Host -AsSecureString `
+            -Prompt 'AUTH_TOKEN_SECRET (propre au shadow, vide = généré)'
         if ($auth.Length -eq 0) {
             Step 'AUTH_TOKEN_SECRET : généré pour le shadow'
             $auth = New-ShadowAuthSecret
         }
     }
-    foreach ($pair in @(@('AUDIO_REMOTE_SHARED_SECRET', $remote), @('AUTH_TOKEN_SECRET', $auth))) {
-        if ($null -eq $pair[1] -or $pair[1].Length -eq 0) { Fail "secret absent : $($pair[0])" }
-        if ($pair[1].Length -lt 32) { Fail "secret trop court : $($pair[0])" }
+
+    foreach ($pair in @(
+        @('AUDIO_REMOTE_SHARED_SECRET', $remote),
+        @('AUTH_TOKEN_SECRET', $auth)
+    )) {
+        if ($null -eq $pair[1] -or $pair[1].Length -eq 0) {
+            Fail "secret absent : $($pair[0])"
+        }
+        if ($pair[1].Length -lt 32) {
+            Fail "secret trop court : $($pair[0])"
+        }
     }
-    Step ('secrets : secretPresent=true longueurConforme=true (aucune valeur publiée)')
-    return @{ AUDIO_REMOTE_SHARED_SECRET = $remote; AUTH_TOKEN_SECRET = $auth }
+
+    if ($null -eq $antra -or $antra.Length -eq 0) {
+        Fail 'secret absent : ANTRA_API_KEY'
+    }
+
+    Step ('secrets : secretPresent=true longueurConforme=true ' +
+          '(trois valeurs, aucune publiée)')
+
+    return @{
+        AUDIO_REMOTE_SHARED_SECRET = $remote
+        AUTH_TOKEN_SECRET = $auth
+        ANTRA_API_KEY = $antra
+    }
 }
 
 function New-PrivateTempFile([string] $Extension) {
@@ -556,6 +585,7 @@ if ($StageOnly) {
         $payloadJson = ConvertTo-Json -Compress @{
             AUDIO_REMOTE_SHARED_SECRET = (ConvertFrom-SecureStringPlain $secrets.AUDIO_REMOTE_SHARED_SECRET)
             AUTH_TOKEN_SECRET = (ConvertFrom-SecureStringPlain $secrets.AUTH_TOKEN_SECRET)
+            ANTRA_API_KEY = (ConvertFrom-SecureStringPlain $secrets.ANTRA_API_KEY)
         }
         $envRaw = ($payloadJson | & python (Join-Path $RepoRoot 'scripts\phase6\phase6_env.py') `
             --template $template --out $envTemp 2>&1 | ForEach-Object { "$_" }) -join "`n"

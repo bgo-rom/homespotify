@@ -273,11 +273,30 @@ class EnvironmentTemplateTest(unittest.TestCase):
         self.assertEqual(int(self.values["AUDIO_CACHE_MIN_FREE_BYTES"]), paths.CACHE_MIN_FREE_BYTES)
 
     def test_every_path_is_absolute_and_under_the_shadow_state_root(self) -> None:
-        for key in ("DB_PATH", "COVERS_DIR", "INCOMING_DIR", "HOMESPOTIFY_IMPORT_ROOT",
-                    "OFFLINE_CACHE_DIR", "AUDIO_CACHE_ROOT", "MUSIC_DIR"):
+        values = {}
+        for line in read(ENV_TEMPLATE).splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            values[key] = value
+
+        release_paths = {"ANTRA_DIR", "ANTRA_PYTHON"}
+        path_keys = {
+            key for key in values
+            if key.endswith("_DIR") or key.endswith("_ROOT")
+            or key.endswith("_PATH") or key in {
+                "DB_PATH", "HOME", "PROVIDER_STATS_DB_PATH"
+            }
+        }
+        for key in sorted(path_keys):
             with self.subTest(key=key):
-                value = self.values[key]
-                self.assertTrue(value.startswith("/var/lib/homespotify-shadow/"), value)
+                value = values[key]
+                self.assertTrue(value.startswith("/"), key)
+                if key in release_paths:
+                    self.assertTrue(value.startswith("/opt/homespotify-api-shadow/"), key)
+                else:
+                    self.assertTrue(value.startswith("/var/lib/homespotify-shadow/"), key)
 
     def test_uses_real_config_variable_names(self) -> None:
         """`config.ts` lit AUDIO_CACHE_ROOT et OFFLINE_CACHE_DIR.

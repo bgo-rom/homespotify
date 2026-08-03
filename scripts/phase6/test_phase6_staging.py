@@ -38,6 +38,7 @@ ENV_TEMPLATE = HERE / "api-shadow.env.template"
 
 FAKE_SECRET_A = "A" * 64
 FAKE_SECRET_B = "B" * 96
+FAKE_SECRET_C = "premium-key-test-only"
 
 
 def read(path: Path) -> str:
@@ -373,7 +374,8 @@ class ShadowEnvironmentTest(unittest.TestCase):
         return shadow_env.render(read(ENV_TEMPLATE), {
             "AUDIO_REMOTE_SHARED_SECRET": FAKE_SECRET_A,
             "AUTH_TOKEN_SECRET": FAKE_SECRET_B,
-        })
+            "ANTRA_API_KEY": FAKE_SECRET_C,
+})
 
     def test_rendered_environment_is_complete_and_conformant(self) -> None:
         summary = shadow_env.summarize(self._rendered())
@@ -384,13 +386,13 @@ class ShadowEnvironmentTest(unittest.TestCase):
                      "cacheMinFree6GiB", "backupsDisabled", "allPathsAbsolute",
                      "noLucidaVariable"):
             self.assertTrue(summary[flag], flag)
-        self.assertEqual(summary["secretCount"], 2)
+        self.assertEqual(summary["secretCount"], 3)
         self.assertEqual(summary["secretsPrinted"], 0)
 
     def test_missing_secrets_are_refused(self) -> None:
         for secrets in ({}, {"AUTH_TOKEN_SECRET": FAKE_SECRET_B},
                         {"AUDIO_REMOTE_SHARED_SECRET": FAKE_SECRET_A},
-                        {"AUDIO_REMOTE_SHARED_SECRET": "", "AUTH_TOKEN_SECRET": ""}):
+                        {"AUDIO_REMOTE_SHARED_SECRET": "", "AUTH_TOKEN_SECRET": "", "ANTRA_API_KEY": FAKE_SECRET_C}):
             with self.assertRaises(shadow_env.EnvError):
                 shadow_env.render(read(ENV_TEMPLATE), secrets)
 
@@ -399,7 +401,8 @@ class ShadowEnvironmentTest(unittest.TestCase):
             shadow_env.render(read(ENV_TEMPLATE), {
                 "AUDIO_REMOTE_SHARED_SECRET": "trop-court",
                 "AUTH_TOKEN_SECRET": FAKE_SECRET_B,
-            })
+                "ANTRA_API_KEY": FAKE_SECRET_C,
+})
 
     def test_an_uninjected_template_never_validates(self) -> None:
         summary = shadow_env.summarize(read(ENV_TEMPLATE))
@@ -451,7 +454,9 @@ class ShadowEnvironmentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp) / "api-shadow.env"
             payload = json.dumps({"AUDIO_REMOTE_SHARED_SECRET": FAKE_SECRET_A,
-                                  "AUTH_TOKEN_SECRET": FAKE_SECRET_B})
+                                  "AUTH_TOKEN_SECRET": FAKE_SECRET_B,
+                                  "ANTRA_API_KEY": FAKE_SECRET_C,
+})
             result = subprocess.run(
                 [sys.executable, str(HERE / "phase6_env.py"),
                  "--template", str(ENV_TEMPLATE), "--out", str(out)],
@@ -475,7 +480,8 @@ class ShadowEnvironmentTest(unittest.TestCase):
             payload = "﻿" + json.dumps({
                 "AUDIO_REMOTE_SHARED_SECRET": FAKE_SECRET_A,
                 "AUTH_TOKEN_SECRET": FAKE_SECRET_B,
-            })
+                "ANTRA_API_KEY": FAKE_SECRET_C,
+})
             result = subprocess.run(
                 [sys.executable, str(HERE / "phase6_env.py"),
                  "--template", str(ENV_TEMPLATE), "--out", str(out)],
