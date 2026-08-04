@@ -96,5 +96,28 @@ class AntraLinuxRuntimeTest(unittest.TestCase):
         )
 
 
+
+class AntraVenvProbeRegressionTest(unittest.TestCase):
+    def test_venv_support_is_probed_by_real_creation(self) -> None:
+        script = (
+            __import__("pathlib").Path(__file__).with_name(
+                "vps_phase6_prepare_antra_runtime.sh"
+            )
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'VENV_PACKAGE="python${REQUIRED_PYTHON}-venv"',
+            script,
+        )
+        self.assertIn("probe_venv() {", script)
+        self.assertIn(
+            'probe_venv || need_packages+=("${VENV_PACKAGE}")',
+            script,
+        )
+        self.assertIn(
+            'probe_venv || fail VENV_ABSENT "${VENV_PACKAGE}"',
+            script,
+        )
+        self.assertNotIn("python3 -m venv --help", script)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

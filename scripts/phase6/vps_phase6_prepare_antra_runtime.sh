@@ -116,8 +116,21 @@ case "${MODE}" in
   *) fail MODE_INVALIDE "${MODE}" ;;
 esac
 
+VENV_PACKAGE="python${REQUIRED_PYTHON}-venv"
+
+probe_venv() {
+  local probe_root
+  probe_root="$(mktemp -d /tmp/homespotify-venv-probe.XXXXXX)"
+  if python3 -m venv "${probe_root}/venv" >/dev/null 2>&1; then
+    rm -rf -- "${probe_root}"
+    return 0
+  fi
+  rm -rf -- "${probe_root}"
+  return 1
+}
+
 need_packages=()
-python3 -m venv --help >/dev/null 2>&1 || need_packages+=(python3-venv)
+probe_venv || need_packages+=("${VENV_PACKAGE}")
 command -v ffmpeg >/dev/null 2>&1 || need_packages+=(ffmpeg)
 command -v ffprobe >/dev/null 2>&1 || need_packages+=(ffmpeg)
 
@@ -134,7 +147,7 @@ fi
 
 command -v ffmpeg >/dev/null 2>&1 || fail FFMPEG_ABSENT
 command -v ffprobe >/dev/null 2>&1 || fail FFPROBE_ABSENT
-python3 -m venv --help >/dev/null 2>&1 || fail VENV_ABSENT
+probe_venv || fail VENV_ABSENT "${VENV_PACKAGE}"
 
 PYTHON_VERSION="$(
   python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
