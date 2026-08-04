@@ -8,7 +8,7 @@
 
   - `dist` et le `package.json` réduit de l'API ;
   - les migrations Drizzle ;
-  - les 67 fichiers Antra suivis et qualifiés ;
+  - les 69 fichiers Antra suivis et qualifiés ;
   - un descripteur immuable du runtime Python ;
   - un lanceur qui cible le futur bundle Python Linux ;
   - le manifeste complet.
@@ -38,7 +38,7 @@ $ExpectedBranch = 'phase6/vps-final-c2'
 $ExpectedAntraBranch = 'homespotify/vps-linux-runtime'
 $ExpectedAntraCommit = 'dbce23c5960af504d672cc28c7c51ece0bea8e68'
 $ExpectedRequirementsSha256 = '6d0ced20523398f2d2b24d849588957006b4d721130989c9fd40c7a588e8a589'
-$ExpectedRuntimeFileCount = 67
+$ExpectedRuntimeFileCount = 69
 $PythonRuntimeId = 'py311-antra-dbce23c5-6d0ced20'
 
 function Fail([string] $Message) {
@@ -135,6 +135,7 @@ $runtimeFiles = @(
         ls-files `
         -- `
         'antra' `
+        'antra_shared' `
         'requirements-homespotify-vps.txt'
 )
 

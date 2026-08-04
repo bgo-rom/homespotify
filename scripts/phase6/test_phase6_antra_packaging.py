@@ -132,5 +132,46 @@ class AntraArtifactManifestTest(unittest.TestCase):
             self.assertIn(argument, text)
 
 
+
+class AntraSharedPackagingRegressionTest(unittest.TestCase):
+    # Défaut découvert pendant l'activation réelle du 2026-08-04.
+
+    def test_build_inventory_includes_antra_shared(self) -> None:
+        from pathlib import Path
+
+        build = Path(__file__).resolve().with_name(
+            "build_shadow_artifact.ps1"
+        )
+        text = build.read_text(encoding="utf-8-sig")
+        start = text.index("$runtimeFiles = @(")
+        end = text.index("if ($LASTEXITCODE -ne 0)", start)
+        inventory = text[start:end]
+        self.assertIn("'antra' `", inventory)
+        self.assertIn("'antra_shared' `", inventory)
+        self.assertIn("'requirements-homespotify-vps.txt'", inventory)
+
+    def test_runtime_contract_is_69_files(self) -> None:
+        from pathlib import Path
+
+        build = Path(__file__).resolve().with_name(
+            "build_shadow_artifact.ps1"
+        )
+        text = build.read_text(encoding="utf-8-sig")
+        self.assertIn("$ExpectedRuntimeFileCount = 69", text)
+        self.assertNotIn("$ExpectedRuntimeFileCount = 67", text)
+
+    def test_required_shared_module_exists_in_nested_repository(self) -> None:
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[2]
+        antra = repo / "tools" / "antra"
+        required = (
+            antra / "antra_shared" / "__init__.py",
+            antra / "antra_shared" / "filename_prefs.py",
+        )
+        for path in required:
+            with self.subTest(path=str(path)):
+                self.assertTrue(path.is_file(), str(path))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
