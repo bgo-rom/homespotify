@@ -571,6 +571,35 @@ class ActivateOrchestratorTest(unittest.TestCase):
         self.assertIn("empreinte de manifeste divergente", self.code)
         self.assertIn("manifestSha256", code_of(HERE / "vps_phase6_preinstall_check.sh"))
 
+    def test_activate_requires_explicit_stage_qualified_inputs(self) -> None:
+        self.assertIn("[string] $ReleaseId = ''", self.code)
+        self.assertIn("[int] $ExpectedFileCount = 0", self.code)
+        self.assertIn("[int] $ExpectedCoverFileCount = 0", self.code)
+        self.assertIn("'-ReleaseId requis en -Activate'", self.code)
+        self.assertIn("'-ExpectedFileCount requis en -Activate'", self.code)
+        self.assertIn("'-ExpectedCoverFileCount requis en -Activate'", self.code)
+        self.assertIn(
+            "'-TrackIdCached et -TrackIdUncached requis en -Activate'",
+            self.code,
+        )
+
+    def test_activate_uses_the_stage_qualified_cover_count(self) -> None:
+        self.assertIn(
+            "$pre.coverFiles -ne $ExpectedCoverFileCount",
+            self.code,
+        )
+        self.assertNotIn("$pre.coverFiles -ne 156", self.code)
+        self.assertIn("expectedCoverFileCount = $ExpectedCoverFileCount", self.code)
+
+    def test_activate_uses_the_stage_qualified_track_ids(self) -> None:
+        self.assertIn(
+            "--track-id $TrackIdCached --uncached-track-id $TrackIdUncached",
+            self.code,
+        )
+        self.assertNotIn("--track-id 119 --uncached-track-id 120", self.code)
+        self.assertIn("trackIdCached = $TrackIdCached", self.code)
+        self.assertIn("trackIdUncached = $TrackIdUncached", self.code)
+
     def test_activate_proves_production_is_untouched(self) -> None:
         self.assertIn("$prodBefore", self.code)
         self.assertIn("$prodDbAfter", self.code)

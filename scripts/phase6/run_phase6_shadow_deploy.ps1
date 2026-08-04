@@ -67,10 +67,11 @@ param(
     [switch] $CleanupStaging,
     # Phase 6.3 : installe le contenu qualifié, démarre le shadow, teste.
     [switch] $Activate,
-    [string] $ReleaseId = '20260728T185102Z-84c0e294-768af2fe',
-    # Controle de lisibilite, pas de securite : la preuve de contenu est
-    # l'empreinte du manifeste, portee par le release-id lui-meme.
-    [int] $ExpectedFileCount = 119,
+    [string] $ReleaseId = '',
+    # Contrôles explicites issus du rapport StageOnly qualifié. Aucun défaut
+    # historique ne doit pouvoir armer une autre release par accident.
+    [int] $ExpectedFileCount = 0,
+    [int] $ExpectedCoverFileCount = 0,
     [int] $MonitorSeconds = 900,
     [switch] $KeepStaging,
     [switch] $RollbackInstall,
@@ -797,6 +798,21 @@ if ($Activate) {
     $head = (git rev-parse HEAD)
     $dirty = (git status --porcelain)
     if ($dirty) { Fail 'arbre de travail non propre' }
+    if ([string]::IsNullOrWhiteSpace($ReleaseId)) {
+        Fail '-ReleaseId requis en -Activate'
+    }
+    if ($ExpectedFileCount -le 0) {
+        Fail '-ExpectedFileCount requis en -Activate'
+    }
+    if ($ExpectedCoverFileCount -le 0) {
+        Fail '-ExpectedCoverFileCount requis en -Activate'
+    }
+    if ($TrackIdCached -le 0 -or $TrackIdUncached -le 0) {
+        Fail '-TrackIdCached et -TrackIdUncached requis en -Activate'
+    }
+    if ($TrackIdCached -eq $TrackIdUncached) {
+        Fail 'les deux pistes de qualification doivent être distinctes'
+    }
     # L'invariant à protéger est « le code installé est le code qualifié »,
     # pas « rien n'a bougé dans le dépôt ». La Phase 6.3 écrit forcément son
     # propre outillage d'installation : exiger qu'il soit inchangé depuis la
@@ -854,7 +870,9 @@ if ($Activate) {
     if ($pre.commit -ne "$releaseCommit" -and -not $pre.commit.StartsWith($releaseCommit)) {
         Fail "commit de release inattendu : $($pre.commit)"
     }
-    if ($pre.coverFiles -ne 156) { Fail "pochettes inattendues : $($pre.coverFiles)" }
+    if ($pre.coverFiles -ne $ExpectedCoverFileCount) {
+        Fail "pochettes inattendues : $($pre.coverFiles) (attendu $ExpectedCoverFileCount)"
+    }
     if ($pre.envMode -ne '600') { Fail "permissions env inattendues : $($pre.envMode)" }
     # Le port ne peut être occupé que par NOTRE shadow, sur la release visée.
     if ($pre.port3002Listeners -ne 0 -and $pre.installedRelease -ne $ReleaseId) {
@@ -1012,7 +1030,7 @@ sudo -n node /opt/homespotify-api-shadow/tools/phase6_shadow_token.mjs \
     $tests = Invoke-Ssh -ScriptText @"
 set -Eeuo pipefail
 sudo -n python3 /opt/homespotify-api-shadow/tools/vps_phase6_shadow_tests.py \
-  --mode full --token-file '$tokenFile' --track-id 119 --uncached-track-id 120
+  --mode full --token-file '$tokenFile' --track-id $TrackIdCached --uncached-track-id $TrackIdUncached
 "@
     $testReport = Get-LastJson $tests.Output
     if ($null -eq $testReport) { Fail "tests illisibles : $($tests.Output)" }
@@ -1096,6 +1114,10 @@ printf '"bootEnabled":"%s","activeState":"%s"}\n' \
         ok = $verdict
         head = $head
         releaseId = $ReleaseId
+        expectedFileCount = $ExpectedFileCount
+        expectedCoverFileCount = $ExpectedCoverFileCount
+        trackIdCached = $TrackIdCached
+        trackIdUncached = $TrackIdUncached
         preInstall = $report['preInstall']
         systemd = $report['systemd']
         antraRuntime = $report['antraRuntime']
