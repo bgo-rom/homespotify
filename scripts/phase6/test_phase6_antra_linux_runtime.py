@@ -119,5 +119,58 @@ class AntraVenvProbeRegressionTest(unittest.TestCase):
         )
         self.assertNotIn("python3 -m venv --help", script)
 
+
+class AntraRuntimeFileCountContractRegressionTest(unittest.TestCase):
+    # Le build et le validateur Linux doivent partager le même contrat.
+
+    @staticmethod
+    def _build_count() -> int:
+        import re
+        from pathlib import Path
+        path = Path(__file__).resolve().with_name(
+            "build_shadow_artifact.ps1"
+        )
+        matches = re.findall(
+            r"\$ExpectedRuntimeFileCount\s*=\s*(\d+)",
+            path.read_text(encoding="utf-8-sig"),
+        )
+        if len(matches) != 1:
+            raise AssertionError(f"contrat build ambigu : {matches!r}")
+        return int(matches[0])
+
+    @staticmethod
+    def _prepare_count() -> int:
+        import re
+        from pathlib import Path
+        path = Path(__file__).resolve().with_name(
+            "vps_phase6_prepare_antra_runtime.sh"
+        )
+        lines = path.read_text(encoding="utf-8").splitlines()
+        found: list[int] = []
+        for marker_index, marker in enumerate(lines):
+            if "trackedRuntimeFileCount" not in marker:
+                continue
+            for line in lines[
+                max(0, marker_index - 3):
+                min(len(lines), marker_index + 4)
+            ]:
+                found.extend(
+                    int(value)
+                    for value in re.findall(
+                        r"(?<!\d)(67|69)(?!\d)", line
+                    )
+                )
+        unique = sorted(set(found))
+        if len(unique) != 1:
+            raise AssertionError(f"contrat prepare ambigu : {unique!r}")
+        return unique[0]
+
+    def test_build_and_prepare_counts_match(self) -> None:
+        self.assertEqual(self._build_count(), self._prepare_count())
+
+    def test_current_count_is_69(self) -> None:
+        self.assertEqual(self._build_count(), 69)
+        self.assertEqual(self._prepare_count(), 69)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

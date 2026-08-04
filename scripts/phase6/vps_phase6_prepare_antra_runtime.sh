@@ -73,7 +73,7 @@ if python_version != "3.11":
     raise SystemExit("requiredPythonVersion")
 if commands != ["ffmpeg", "ffprobe"]:
     raise SystemExit("requiredSystemCommands")
-if file_count != 67:
+if file_count != 69:
     raise SystemExit("trackedRuntimeFileCount")
 if manifest.get("antraRuntimeId") != runtime_id:
     raise SystemExit("manifest runtimeId")
