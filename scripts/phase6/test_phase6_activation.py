@@ -664,5 +664,39 @@ class ActivateOrchestratorTest(unittest.TestCase):
             self.assertIn(field, self.code, field)
 
 
+
+class NativeStderrRegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.code = code_of(ORCHESTRATOR)
+        start = self.code.index("function Invoke-Ssh")
+        end = self.code.index("function Invoke-Scp")
+        self.invoke_ssh = self.code[start:end]
+
+    def test_native_stderr_is_not_a_terminating_powershell_error(self) -> None:
+        self.assertIn(
+            "$previousErrorActionPreference = $ErrorActionPreference",
+            self.invoke_ssh,
+        )
+        self.assertIn(
+            "$ErrorActionPreference = 'Continue'",
+            self.invoke_ssh,
+        )
+        self.assertIn("$exitCode = $LASTEXITCODE", self.invoke_ssh)
+        self.assertIn(
+            "$ErrorActionPreference = $previousErrorActionPreference",
+            self.invoke_ssh,
+        )
+        self.assertIn(
+            "return @{ ExitCode = $exitCode;",
+            self.invoke_ssh,
+        )
+
+    def test_global_error_policy_remains_strict(self) -> None:
+        self.assertIn("$ErrorActionPreference = 'Stop'", self.code)
+        self.assertNotIn(
+            "$ErrorActionPreference = 'SilentlyContinue'",
+            self.invoke_ssh,
+        )
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

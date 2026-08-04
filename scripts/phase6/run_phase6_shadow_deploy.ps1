@@ -180,13 +180,26 @@ function Invoke-Ssh {
     $shell = if ($AsRoot) { 'sudo -n bash -s --' } else { 'bash -s --' }
     $command = "echo $encoded | base64 -d | $shell$remoteArgs"
     $target = "$VpsUser@$VpsHost"
-    $output = & ssh -o BatchMode=yes -o ConnectTimeout=15 `
-        -i $IdentityFile $target $command 2>&1
+    # PowerShell 5.1 transforme stderr natif redirigé en ErrorRecord.
+    # Sous la préférence globale `Stop`, un avertissement pip non fatal
+    # interrompait l'orchestrateur avant la lecture du vrai code de sortie.
+    # La tolérance reste strictement locale à cette invocation SSH.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $output = @()
+    $exitCode = 255
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & ssh -o BatchMode=yes -o ConnectTimeout=15 `
+            -i $IdentityFile $target $command 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     # `Out-String` replie les lignes à la largeur de la console : une ligne
     # JSON longue en ressort coupée en deux, et l'analyse échoue sur une
     # « chaîne inachevée » alors que la commande distante a parfaitement
     # réussi. Le tableau est donc joint tel quel.
-    return @{ ExitCode = $LASTEXITCODE; Output = (($output | ForEach-Object { "$_" }) -join "`n") }
+    return @{ ExitCode = $exitCode; Output = (($output | ForEach-Object { "$_" }) -join "`n") }
 }
 
 function Invoke-Scp {
