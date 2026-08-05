@@ -356,6 +356,34 @@ class ShadowTestsTest(unittest.TestCase):
         for forbidden in ("caddy", "wg-quick", "reboot"):
             self.assertNotIn(forbidden, self.code)
 
+    def test_t5_waits_boundedly_for_fill_completion_evidence(self) -> None:
+        # `code_of()` retire volontairement les commentaires. Les bornes T5/T6
+        # sont donc recherchées dans le texte brut, via le helper `read` déjà
+        # importé par ce fichier de tests.
+        source = read(TESTS)
+        start = source.index("# --- T5")
+        end = source.index("# --- T6", start)
+        section = source[start:end]
+        self.assertIn(
+            "fill_evidence_deadline = time.monotonic() + 15.0",
+            section,
+        )
+        self.assertIn(
+            'miss_events = journal_events(miss["requestId"])',
+            section,
+        )
+        self.assertIn("if FILL_COMPLETED in miss_events:", section)
+        self.assertIn(
+            "if time.monotonic() >= fill_evidence_deadline:",
+            section,
+        )
+        self.assertIn("time.sleep(0.25)", section)
+        # Le correctif attend seulement journald : il ne rejoue jamais le GET.
+        self.assertEqual(
+            section.count('miss = request("GET", stream, token)'),
+            1,
+        )
+
     def test_the_disposable_write_has_no_external_effect(self) -> None:
         # Un favori : écriture en base, rien d'autre. Aucun import réel,
         # aucune acquisition, aucun courriel, aucun traitement externe.

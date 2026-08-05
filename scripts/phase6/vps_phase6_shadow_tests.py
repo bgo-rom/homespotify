@@ -336,7 +336,19 @@ def run_full_suite(args, token: str, stream: str,
     # --- T5 : streaming MISS ------------------------------------------------
     expected = track_expectations(args.track_id)
     miss = request("GET", stream, token)
-    miss_events = journal_events(miss["requestId"])
+    # Le corps HTTP peut être complètement reçu quelques millisecondes
+    # avant que l'événement asynchrone de finalisation atteigne journald.
+    # On attend uniquement la PREUVE corrélée ; aucune requête audio
+    # supplémentaire n'est envoyée et l'attente reste strictement bornée.
+    miss_events = []
+    fill_evidence_deadline = time.monotonic() + 15.0
+    while True:
+        miss_events = journal_events(miss["requestId"])
+        if FILL_COMPLETED in miss_events:
+            break
+        if time.monotonic() >= fill_evidence_deadline:
+            break
+        time.sleep(0.25)
     results["T5"] = {
         "status": miss["status"], "sizeBytes": miss["sizeBytes"],
         "expectedSizeBytes": expected.get("sizeBytes"),
