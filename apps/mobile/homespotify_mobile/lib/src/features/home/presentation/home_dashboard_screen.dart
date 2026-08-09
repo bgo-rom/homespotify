@@ -4,9 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/navigation.dart';
-import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../../core/theme/home_design.dart';
+import '../../../core/widgets/app_avatar.dart';
+import '../../../core/widgets/artwork_thumb.dart';
 import '../../../core/widgets/home_ui_states.dart';
+import '../../../core/widgets/section_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../catalog/data/catalog_api.dart';
 import '../../library/presentation/track_removal.dart';
@@ -19,6 +24,10 @@ import '../../player/presentation/player_providers.dart';
 import '../application/home_sections.dart';
 import 'home_library_sections.dart';
 
+/// Accueil — « Direction 33, Clay Tactile Premium ».
+///
+/// Premier écran migré : il fait référence pour tous les suivants. Aucune
+/// couleur n'y est écrite en dur, tout vient de `context.colors`.
 class HomeDashboardScreen extends ConsumerStatefulWidget {
   const HomeDashboardScreen({super.key});
 
@@ -100,17 +109,19 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final displayName = ref.watch(
       authControllerProvider.select((state) => state.user?.displayName),
     );
     final library = ref.watch(libraryProvider);
 
     return Scaffold(
-      backgroundColor: HomeDesign.background,
+      backgroundColor: colors.background,
       body: SafeArea(
+        bottom: false,
         child: RefreshIndicator(
-          color: HomeDesign.accent,
-          backgroundColor: HomeDesign.surface,
+          color: colors.accent,
+          backgroundColor: colors.surface,
           onRefresh: () => ref.refresh(libraryProvider.future),
           child: CustomScrollView(
             key: const PageStorageKey<String>('home-dashboard-scroll'),
@@ -138,16 +149,6 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                   ),
                 ),
               ),
-              SliverToBoxAdapter(
-                child: _CenteredContent(
-                  child: QuickAccessGrid(
-                    onFavorites: () => openFavorites(context),
-                    onPlaylists: () => openPlaylists(context),
-                    onAlbums: () => openAlbums(context),
-                    onArtists: () => openArtists(context),
-                  ),
-                ),
-              ),
               ...library.when(
                 loading: () => const <Widget>[
                   SliverToBoxAdapter(
@@ -160,25 +161,33 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                   ),
                 ],
                 error: (error, _) => <Widget>[
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: HomeErrorState(
-                      message: error is LibraryApiException
-                          ? error.message
-                          : 'Une erreur inattendue est survenue.',
-                      onRetry: () => ref.invalidate(libraryProvider),
+                  SliverToBoxAdapter(
+                    child: _CenteredContent(
+                      child: SizedBox(
+                        height: 330,
+                        child: HomeErrorState(
+                          message: error is LibraryApiException
+                              ? error.message
+                              : 'Une erreur inattendue est survenue.',
+                          onRetry: () => ref.invalidate(libraryProvider),
+                        ),
+                      ),
                     ),
                   ),
                 ],
                 data: (tracks) => tracks.isEmpty
                     ? const <Widget>[
-                        SliverFillRemaining(
-                          hasScrollBody: false,
-                          child: HomeEmptyState(
-                            icon: Icons.library_music_outlined,
-                            title: 'Votre musique vous attend',
-                            message:
-                                'Les morceaux ajoutés à votre compte apparaîtront ici.',
+                        SliverToBoxAdapter(
+                          child: _CenteredContent(
+                            child: SizedBox(
+                              height: 330,
+                              child: HomeEmptyState(
+                                icon: Icons.library_music_outlined,
+                                title: 'Votre musique vous attend',
+                                message:
+                                    'Les morceaux ajoutés à votre compte apparaîtront ici.',
+                              ),
+                            ),
                           ),
                         ),
                       ]
@@ -210,6 +219,24 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                             ),
                           ),
                         ),
+                      ],
+              ),
+              SliverToBoxAdapter(
+                child: _CenteredContent(
+                  child: QuickAccessGrid(
+                    onFavorites: () => openFavorites(context),
+                    onPlaylists: () => openPlaylists(context),
+                    onAlbums: () => openAlbums(context),
+                    onArtists: () => openArtists(context),
+                  ),
+                ),
+              ),
+              ...library.when(
+                loading: () => const <Widget>[],
+                error: (_, _) => const <Widget>[],
+                data: (tracks) => tracks.isEmpty
+                    ? const <Widget>[]
+                    : <Widget>[
                         SliverToBoxAdapter(
                           child: _CenteredContent(
                             child: HomeLibrarySections(
@@ -225,7 +252,7 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                         ),
                       ],
               ),
-              const SliverToBoxAdapter(child: SizedBox(height: 32)),
+              const SliverToBoxAdapter(child: SizedBox(height: 24)),
             ],
           ),
         ),
@@ -297,7 +324,7 @@ class _CenteredContent extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: HomeDesign.maxContentWidth),
+        constraints: const BoxConstraints(maxWidth: AppLayout.maxContentWidth),
         child: _HomeReveal(child: child),
       ),
     );
@@ -344,6 +371,7 @@ class _HomeRevealState extends State<_HomeReveal> {
   }
 }
 
+/// En-tête : titre de page, recherche, avatar, puis salutation.
 class HomeHeader extends StatelessWidget {
   const HomeHeader({
     super.key,
@@ -365,66 +393,90 @@ class HomeHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final name = displayName?.trim() ?? '';
     final hasName = name.isNotEmpty;
     final initial = hasName ? name.substring(0, 1).toUpperCase() : 'H';
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter,
+        18,
+        AppLayout.gutter,
+        20,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _greeting,
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  hasName ? name : 'Bienvenue sur HomeSpotify',
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Accueil',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 27,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.5,
+                  style: theme.textTheme.displaySmall?.copyWith(
+                    color: colors.textPrimary,
                   ),
                 ),
-              ],
-            ),
-          ),
-          Semantics(
-            button: true,
-            label: 'Rechercher dans la bibliothèque',
-            child: IconButton.filledTonal(
-              key: const ValueKey('home-search-button'),
-              tooltip: 'Rechercher',
-              onPressed: onSearch,
-              icon: const Icon(Icons.search_rounded),
-            ),
-          ),
-          const SizedBox(width: HomeDesign.space8),
-          Semantics(
-            button: true,
-            label: 'Ouvrir le profil',
-            child: InkWell(
-              onTap: onProfile,
-              customBorder: const CircleBorder(),
-              child: CircleAvatar(
-                radius: 23,
-                backgroundColor: HomeDesign.accent,
-                foregroundColor: Colors.black,
-                child: Text(
-                  initial,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              SoftCircle(
+                key: const ValueKey('home-search-button'),
+                size: 46,
+                onTap: onSearch,
+                tooltip: 'Rechercher',
+                semanticLabel: 'Rechercher dans la bibliothèque',
+                child: Icon(
+                  Icons.search_rounded,
+                  size: 21,
+                  color: colors.textPrimary,
                 ),
               ),
+              const SizedBox(width: HomeDesign.space12),
+              AppAvatar(
+                initial: initial,
+                onTap: onProfile,
+                semanticLabel: 'Ouvrir le profil',
+              ),
+            ],
+          ),
+          const SizedBox(height: HomeDesign.space24),
+          // Salutation et nom restent DEUX `Text` distincts : le nom du compte
+          // doit rester repérable tel quel (accessibilité et tests d'écran).
+          Builder(
+            builder: (context) {
+              final style = theme.textTheme.headlineMedium?.copyWith(
+                color: colors.textPrimary,
+              );
+              if (!hasName) {
+                return Text(
+                  'Bienvenue sur HomeSpotify',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: style,
+                );
+              }
+              return Row(
+                children: [
+                  Text('$_greeting ', style: style),
+                  Flexible(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: style,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Que souhaitez-vous écouter aujourd’hui ?',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.textSecondary,
             ),
           ),
         ],
@@ -433,6 +485,8 @@ class HomeHeader extends StatelessWidget {
   }
 }
 
+/// « Reprendre l'écoute » : carte sculptée, visible seulement quand une piste
+/// est chargée dans le lecteur.
 class ContinueListeningCard extends ConsumerWidget {
   const ContinueListeningCard({super.key});
 
@@ -440,6 +494,8 @@ class ContinueListeningCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final mediaItem = ref.watch(mediaItemProvider).asData?.value;
     if (mediaItem == null) return const SizedBox.shrink();
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final playback = ref.watch(playbackStateProvider).asData?.value;
     final playing = playback?.playing ?? false;
     final busy =
@@ -447,107 +503,102 @@ class ContinueListeningCard extends ConsumerWidget {
         playback?.processingState == AudioProcessingState.buffering;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 22),
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter,
+        0,
+        AppLayout.gutter,
+        26,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionHeader(title: 'Reprendre l’écoute'),
+          const SectionHeader(title: 'Reprendre l’écoute'),
           const SizedBox(height: HomeDesign.space12),
-          Material(
-            color: HomeDesign.surfaceRaised,
-            borderRadius: BorderRadius.circular(HomeDesign.radiusLarge),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => openPlayer(context),
-              child: AnimatedSwitcher(
-                duration: HomeDesign.animationDuration(
-                  context,
-                  HomeDesign.stateAnimation,
+          SoftCard(
+            radius: AppRadius.tile,
+            onTap: () => openPlayer(context),
+            padding: const EdgeInsets.all(14),
+            child: AnimatedSwitcher(
+              duration: HomeDesign.animationDuration(
+                context,
+                HomeDesign.stateAnimation,
+              ),
+              switchInCurve: HomeDesign.animationCurve,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0.03, 0),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: child,
                 ),
-                switchInCurve: HomeDesign.animationCurve,
-                transitionBuilder: (child, animation) => FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0.03, 0),
-                      end: Offset.zero,
-                    ).animate(animation),
-                    child: child,
+              ),
+              child: Row(
+                key: ValueKey<String>('continue-${mediaItem.id}'),
+                children: [
+                  ArtworkThumb(
+                    size: 82,
+                    identity: 'continue-${mediaItem.id}',
+                    artUri: mediaItem.artUri,
                   ),
-                ),
-                child: Padding(
-                  key: ValueKey<String>('continue-${mediaItem.id}'),
-                  padding: const EdgeInsets.all(HomeDesign.space16),
-                  child: Row(
-                    children: [
-                      _DashboardArtwork(
-                        trackId: mediaItem.id,
-                        artUri: mediaItem.artUri,
-                        size: 88,
-                      ),
-                      const SizedBox(width: HomeDesign.space16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              mediaItem.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                                height: 1.15,
-                              ),
-                            ),
-                            const SizedBox(height: 5),
-                            Text(
-                              mediaItem.artist ?? 'Artiste inconnu',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 13,
-                              ),
-                            ),
-                            const SizedBox(height: HomeDesign.space12),
-                            const _ContinueProgress(),
-                          ],
+                  const SizedBox(width: HomeDesign.space16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          mediaItem.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontSize: 17,
+                            color: colors.textPrimary,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: HomeDesign.space8),
-                      IconButton.filled(
-                        tooltip: playing ? 'Mettre en pause' : 'Reprendre',
-                        onPressed: busy
-                            ? null
-                            : () {
-                                final handler = ref.read(audioHandlerProvider);
-                                playing ? handler.pause() : handler.play();
-                              },
-                        style: IconButton.styleFrom(
-                          backgroundColor: HomeDesign.accent,
-                          foregroundColor: Colors.black,
-                          minimumSize: const Size(48, 48),
+                        const SizedBox(height: 4),
+                        Text(
+                          mediaItem.artist ?? 'Artiste inconnu',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.textSecondary,
+                          ),
                         ),
-                        icon: busy
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.2,
-                                  color: Colors.black,
-                                ),
-                              )
-                            : Icon(
-                                playing
-                                    ? Icons.pause_rounded
-                                    : Icons.play_arrow_rounded,
-                              ),
-                      ),
-                    ],
+                        const SizedBox(height: HomeDesign.space12),
+                        const _ContinueProgress(),
+                      ],
+                    ),
                   ),
-                ),
+                  const SizedBox(width: HomeDesign.space12),
+                  SoftCircle(
+                    size: 50,
+                    color: colors.playSurface,
+                    onTap: busy
+                        ? null
+                        : () {
+                            final handler = ref.read(audioHandlerProvider);
+                            playing ? handler.pause() : handler.play();
+                          },
+                    tooltip: playing ? 'Mettre en pause' : 'Reprendre',
+                    child: busy
+                        ? SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.2,
+                              color: colors.playInk,
+                            ),
+                          )
+                        : Icon(
+                            playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            color: colors.playInk,
+                            size: 28,
+                          ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -562,23 +613,26 @@ class _ContinueProgress extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final data = ref.watch(positionDataProvider).asData?.value;
     final totalMs = data?.duration.inMilliseconds ?? 0;
     final progress = totalMs <= 0
         ? 0.0
         : ((data?.position.inMilliseconds ?? 0) / totalMs).clamp(0.0, 1.0);
     return ClipRRect(
-      borderRadius: BorderRadius.circular(2),
+      borderRadius: BorderRadius.circular(3),
       child: LinearProgressIndicator(
-        minHeight: 3,
+        minHeight: 4,
         value: progress,
-        backgroundColor: Colors.white12,
-        valueColor: const AlwaysStoppedAnimation<Color>(HomeDesign.accent),
+        backgroundColor: colors.surfaceSunken,
+        valueColor: AlwaysStoppedAnimation<Color>(colors.accent),
       ),
     );
   }
 }
 
+/// Accès rapides — les quatre destinations existantes, présentées dans le
+/// langage « clay » des planches (pas de nouvelle fonctionnalité).
 class QuickAccessGrid extends StatelessWidget {
   const QuickAccessGrid({
     super.key,
@@ -595,18 +649,49 @@ class QuickAccessGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = [
-      _QuickAccessItem('Favoris', Icons.favorite_rounded, onFavorites),
-      _QuickAccessItem('Playlists', Icons.queue_music_rounded, onPlaylists),
-      _QuickAccessItem('Albums', Icons.album_rounded, onAlbums),
-      _QuickAccessItem('Artistes', Icons.groups_rounded, onArtists),
+    final colors = context.colors;
+    final items = <_QuickAccessItem>[
+      _QuickAccessItem(
+        'Favoris',
+        Icons.favorite_rounded,
+        colors.clayTerracotta,
+        colors.clayTerracottaInk,
+        onFavorites,
+      ),
+      _QuickAccessItem(
+        'Playlists',
+        Icons.queue_music_rounded,
+        colors.clayBlue,
+        colors.clayBlueInk,
+        onPlaylists,
+      ),
+      _QuickAccessItem(
+        'Albums',
+        Icons.album_rounded,
+        colors.claySand,
+        colors.claySandInk,
+        onAlbums,
+      ),
+      _QuickAccessItem(
+        'Artistes',
+        Icons.groups_rounded,
+        colors.clayMauve,
+        colors.clayMauveInk,
+        onArtists,
+      ),
     ];
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter,
+        0,
+        AppLayout.gutter,
+        26,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionHeader(title: 'Accès rapides'),
+          const SectionHeader(title: 'Accès rapides'),
           const SizedBox(height: HomeDesign.space12),
           LayoutBuilder(
             builder: (context, constraints) {
@@ -634,9 +719,17 @@ class QuickAccessGrid extends StatelessWidget {
 }
 
 class _QuickAccessItem {
-  const _QuickAccessItem(this.label, this.icon, this.onTap);
+  const _QuickAccessItem(
+    this.label,
+    this.icon,
+    this.surface,
+    this.ink,
+    this.onTap,
+  );
   final String label;
   final IconData icon;
+  final Color surface;
+  final Color ink;
   final VoidCallback onTap;
 }
 
@@ -646,42 +739,28 @@ class _QuickAccessCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: HomeDesign.surface,
-      borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-      child: InkWell(
-        onTap: item.onTap,
-        borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 68),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            child: Row(
-              children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: HomeDesign.accent.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Icon(item.icon, color: HomeDesign.accent, size: 21),
-                ),
-                const SizedBox(width: HomeDesign.space12),
-                Expanded(
-                  child: Text(
-                    item.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
+    final theme = Theme.of(context);
+    return SoftCard(
+      color: item.surface,
+      radius: AppRadius.tile,
+      onTap: item.onTap,
+      semanticLabel: item.label,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 104),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(item.icon, size: 27, color: item.ink),
+            const SizedBox(height: HomeDesign.space16),
+            Text(
+              item.label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleMedium?.copyWith(color: item.ink),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -714,13 +793,13 @@ class RecentTracksSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final visible = entries.take(10).toList(growable: false);
     return Padding(
-      padding: const EdgeInsets.only(bottom: HomeDesign.space24),
+      padding: const EdgeInsets.only(bottom: 26),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: _SectionHeader(
+            padding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
+            child: SectionHeader(
               title: 'Ajouts récents',
               actionLabel: 'Tout voir',
               onAction: onSeeAll,
@@ -728,16 +807,18 @@ class RecentTracksSection extends StatelessWidget {
           ),
           const SizedBox(height: HomeDesign.space12),
           SizedBox(
-            // Hauteur = pochette (132) + titre + artiste + bouton « Ajouter ».
+            // Hauteur = pochette (146) + titre + artiste + action « Ajouter ».
             // Marge volontaire pour les grandes polices Android.
-            height: 206,
+            height: 236,
             child: ListView.separated(
               key: const PageStorageKey<String>('recent-tracks-scroll'),
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppLayout.gutter,
+                vertical: 4,
+              ),
               itemCount: visible.length,
-              separatorBuilder: (_, _) =>
-                  const SizedBox(width: HomeDesign.space12),
+              separatorBuilder: (_, _) => const SizedBox(width: 14),
               itemBuilder: (context, index) {
                 final entry = visible[index];
                 return _RecentTrackCard(
@@ -770,60 +851,75 @@ class _RecentTrackCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final track = entry.track;
     final artUri = track.hasCover
         ? ref.read(libraryApiProvider).coverUri(track.id)
         : null;
+
     return SizedBox(
-      width: 132,
+      width: 146,
       child: Semantics(
         button: true,
         label: 'Lire ${track.title} de ${track.artist}',
         child: InkWell(
           onTap: loading ? null : onTap,
-          borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
+          borderRadius: AppRadius.artworkRadius,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Stack(
-                children: [
-                  _DashboardArtwork(
-                    trackId: '${track.id}',
-                    artUri: artUri,
-                    size: 132,
-                  ),
-                  if (loading)
-                    const Positioned.fill(
-                      child: ColoredBox(
-                        color: Color(0x66000000),
-                        child: Center(
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            color: HomeDesign.accent,
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: AppRadius.artworkRadius,
+                  boxShadow: colors.clayShadow,
+                ),
+                child: Stack(
+                  children: [
+                    ArtworkThumb(
+                      size: 146,
+                      identity: 'recent-${track.id}',
+                      artUri: artUri,
+                    ),
+                    if (loading)
+                      Positioned.fill(
+                        child: ClipRRect(
+                          borderRadius: AppRadius.artworkRadius,
+                          child: ColoredBox(
+                            color: colors.scrim,
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: colors.accent,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 7),
+              const SizedBox(height: 10),
               Text(
                 track.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontSize: 14.5,
+                  color: colors.textPrimary,
                 ),
               ),
+              const SizedBox(height: 2),
               Text(
                 track.artist,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white54, fontSize: 11.5),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 12.5,
+                  color: colors.textSecondary,
+                ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               // Ajout explicite à SA bibliothèque. Aucune identité de
               // l'importateur n'est affichée — seulement l'état pour ce compte.
               _AddToLibraryButton(inMyLibrary: entry.inMyLibrary, onAdd: onAdd),
@@ -845,19 +941,24 @@ class _AddToLibraryButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final style = Theme.of(
+      context,
+    ).textTheme.labelSmall?.copyWith(fontSize: 11.5);
+
     if (inMyLibrary) {
       return Semantics(
         label: 'Dans votre bibliothèque',
-        child: const Row(
+        child: Row(
           children: [
-            Icon(Icons.check_rounded, size: 14, color: HomeDesign.accent),
-            SizedBox(width: 4),
+            Icon(Icons.check_rounded, size: 14, color: colors.accent),
+            const SizedBox(width: 4),
             Expanded(
               child: Text(
                 'Dans votre bibliothèque',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: HomeDesign.accent, fontSize: 11),
+                style: style?.copyWith(color: colors.accent),
               ),
             ),
           ],
@@ -869,19 +970,23 @@ class _AddToLibraryButton extends StatelessWidget {
       label: 'Ajouter à ma bibliothèque',
       child: InkWell(
         onTap: onAdd,
-        borderRadius: BorderRadius.circular(6),
-        child: const Padding(
-          padding: EdgeInsets.symmetric(vertical: 2),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
           child: Row(
             children: [
-              Icon(Icons.library_add_outlined, size: 14, color: Colors.white70),
-              SizedBox(width: 4),
+              Icon(
+                Icons.library_add_outlined,
+                size: 14,
+                color: colors.textSecondary,
+              ),
+              const SizedBox(width: 4),
               Expanded(
                 child: Text(
                   'Ajouter',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: Colors.white70, fontSize: 11),
+                  style: style?.copyWith(color: colors.textSecondary),
                 ),
               ),
             ],
@@ -898,6 +1003,8 @@ class _LibrarySnapshot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final albums = tracks
         .map((track) => track.album.trim())
         .where((album) => album.isNotEmpty)
@@ -908,105 +1015,39 @@ class _LibrarySnapshot extends StatelessWidget {
         .where((artist) => artist.isNotEmpty)
         .toSet()
         .length;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Material(
-        color: HomeDesign.surface,
-        borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-        child: Padding(
-          padding: const EdgeInsets.all(HomeDesign.space16),
-          child: Row(
-            children: [
-              const Icon(Icons.library_music_rounded, color: HomeDesign.accent),
-              const SizedBox(width: HomeDesign.space12),
-              Expanded(
-                child: Text(
-                  '${tracks.length} titres · $albums albums · $artists artistes',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
+      padding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
+      child: SoftCard(
+        padding: const EdgeInsets.all(HomeDesign.space16),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: colors.accentSoft,
+                borderRadius: AppRadius.chipRadius,
+              ),
+              child: Icon(
+                Icons.library_music_rounded,
+                color: colors.accent,
+                size: 21,
+              ),
+            ),
+            const SizedBox(width: HomeDesign.space12),
+            Expanded(
+              child: Text(
+                '${tracks.length} titres · $albums albums · $artists artistes',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: colors.textSecondary,
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, this.actionLabel, this.onAction});
-
-  final String title;
-  final String? actionLabel;
-  final VoidCallback? onAction;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            title,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
             ),
-          ),
+          ],
         ),
-        if (actionLabel != null && onAction != null)
-          TextButton(onPressed: onAction, child: Text(actionLabel!)),
-      ],
-    );
-  }
-}
-
-class _DashboardArtwork extends StatelessWidget {
-  const _DashboardArtwork({
-    required this.trackId,
-    required this.artUri,
-    required this.size,
-  });
-
-  final String trackId;
-  final Uri? artUri;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    final placeholder = ColoredBox(
-      color: HomeDesign.surfaceMuted,
-      child: Icon(
-        Icons.music_note_rounded,
-        color: Colors.white24,
-        size: size * 0.34,
-      ),
-    );
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-      child: SizedBox(
-        width: size,
-        height: size,
-        child: artUri == null
-            ? placeholder
-            : AuthenticatedNetworkImage(
-                artUri.toString(),
-                key: ValueKey<String>('home-art-$trackId-$artUri'),
-                fit: BoxFit.cover,
-                cacheWidth: (size * 2).round(),
-                cacheHeight: (size * 2).round(),
-                filterQuality: FilterQuality.low,
-                gaplessPlayback: true,
-                loadingBuilder: (context, child, progress) =>
-                    progress == null ? child : placeholder,
-                errorBuilder: (_, _, _) => placeholder,
-              ),
       ),
     );
   }

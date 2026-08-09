@@ -12,7 +12,8 @@ import 'src/core/logging/app_logger.dart';
 import 'src/core/logging/provider_logger.dart';
 import 'src/core/network/api_client.dart';
 import 'src/core/network/authenticated_artwork_cache.dart';
-import 'src/core/theme/home_design.dart';
+import 'src/core/theme/app_colors.dart';
+import 'src/core/theme/app_theme.dart';
 import 'src/features/auth/application/auth_controller.dart';
 import 'src/features/auth/data/auth_session_manager.dart';
 import 'src/features/auth/data/token_store.dart';
@@ -58,8 +59,9 @@ Future<void> main() async {
     });
     return true;
   };
-  // À la place de l'écran rouge : UI d'erreur sombre avec retour bibliothèque.
-  ErrorWidget.builder = (details) => _DarkErrorScreen(details: details);
+  // À la place de l'écran rouge : UI d'erreur Direction 33 (claire ou sombre
+  // selon le téléphone) avec retour à l'accueil.
+  ErrorWidget.builder = (details) => _AppErrorScreen(details: details);
 
   // Session auth : tokens dans le Keystore Android, refresh single-flight.
   // L'intercepteur Bearer est posé sur le Dio partagé AVANT le premier appel.
@@ -237,37 +239,6 @@ bool _hasUsableNetwork(List<ConnectivityResult> results) {
 class HomeSpotifyMobileApp extends ConsumerWidget {
   const HomeSpotifyMobileApp({super.key});
 
-  static final ThemeData _darkTheme = ThemeData(
-    brightness: Brightness.dark,
-    scaffoldBackgroundColor: HomeDesign.background,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: HomeDesign.accent,
-      brightness: Brightness.dark,
-      surface: HomeDesign.surface,
-    ),
-    appBarTheme: const AppBarTheme(
-      backgroundColor: HomeDesign.background,
-      foregroundColor: Colors.white,
-      surfaceTintColor: Colors.transparent,
-      elevation: 0,
-    ),
-    navigationBarTheme: const NavigationBarThemeData(
-      backgroundColor: HomeDesign.surface,
-      elevation: 0,
-      labelTextStyle: WidgetStatePropertyAll(
-        TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
-      ),
-    ),
-    filledButtonTheme: FilledButtonThemeData(
-      style: FilledButton.styleFrom(
-        backgroundColor: HomeDesign.accent,
-        foregroundColor: Colors.black,
-        minimumSize: const Size(48, 48),
-      ),
-    ),
-    visualDensity: VisualDensity.standard,
-  );
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authStatus = ref.watch(
@@ -285,7 +256,9 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
       return MaterialApp(
         title: 'HomeSpotify',
         debugShowCheckedModeBanner: false,
-        theme: _darkTheme,
+        // Le parcours d'authentification n'est pas encore migré en
+        // Direction 33 : il reste figé sur le thème sombre historique.
+        theme: AppTheme.legacyDark,
         home: const AuthFlowScreen(),
       );
     }
@@ -308,9 +281,11 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
     return MaterialApp.router(
       title: 'HomeSpotify',
       debugShowCheckedModeBanner: false,
-      // Thème sombre global : aucune surface blanche possible, y compris
-      // pendant les transitions de routes ou avant le premier build d'écran.
-      theme: _darkTheme,
+      // « Direction 33 » clair et sombre : DEUX FACES DU MÊME design system.
+      // Le choix suit le réglage du téléphone, sans sélecteur manuel.
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: ThemeMode.system,
       routerConfig: appRouter,
       // Bandeau discret « Mode hors connexion » au-dessus de toute l'app.
       builder: (context, child) => OfflineAwareShell(child: child),
@@ -318,12 +293,14 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
   }
 }
 
-/// Écran d'erreur sombre affiché à la place de l'écran rouge Flutter.
+/// Écran d'erreur affiché à la place de l'écran rouge Flutter.
 ///
 /// Volontairement sans widget Material (peut être monté au-dessus de tout
-/// MaterialApp) ; le bouton ramène à la bibliothèque via le routeur global.
-class _DarkErrorScreen extends StatelessWidget {
-  const _DarkErrorScreen({required this.details});
+/// MaterialApp, donc sans `Theme` accessible) ; la palette est choisie
+/// directement sur la luminosité du système, et le bouton ramène à l'accueil
+/// via le routeur global.
+class _AppErrorScreen extends StatelessWidget {
+  const _AppErrorScreen({required this.details});
 
   final FlutterErrorDetails details;
 
@@ -332,19 +309,24 @@ class _DarkErrorScreen extends StatelessWidget {
     final message = kReleaseMode
         ? 'Une erreur inattendue est survenue.'
         : details.exceptionAsString();
+    final colors =
+        PlatformDispatcher.instance.platformBrightness == Brightness.dark
+        ? AppColors.dark
+        : AppColors.light;
+
     return Directionality(
       textDirection: TextDirection.ltr,
       child: ColoredBox(
-        color: const Color(0xFF0D0D10),
+        color: colors.background,
         child: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
+                Icon(
                   Icons.error_outline_rounded,
-                  color: Color(0xFFE57373),
+                  color: colors.danger,
                   size: 48,
                 ),
                 const SizedBox(height: 16),
@@ -353,7 +335,11 @@ class _DarkErrorScreen extends StatelessWidget {
                   textAlign: TextAlign.center,
                   maxLines: 6,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 13,
+                    fontFamily: 'Sora',
+                  ),
                 ),
                 const SizedBox(height: 20),
                 GestureDetector(
@@ -364,15 +350,16 @@ class _DarkErrorScreen extends StatelessWidget {
                       vertical: 10,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1DB954),
+                      color: colors.accent,
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Text(
+                    child: Text(
                       'Revenir à l’accueil',
                       style: TextStyle(
-                        color: Colors.black,
+                        color: colors.onAccent,
                         fontSize: 14,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'Sora',
                       ),
                     ),
                   ),

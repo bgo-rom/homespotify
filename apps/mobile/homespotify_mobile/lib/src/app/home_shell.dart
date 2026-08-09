@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../core/theme/home_design.dart';
+import '../core/widgets/pill_nav_bar.dart';
 import '../features/player/presentation/widgets/mini_player.dart';
 import 'main_navigation_state.dart';
 
@@ -38,8 +38,9 @@ class HomeShell extends StatelessWidget {
           _selectDestination(HomeDestination.home);
         }
       },
+      // Le fond vient du thème (clair ou sombre selon le téléphone) : les
+      // écrans encore en ancien design repeignent le leur par-dessus.
       child: Scaffold(
-        backgroundColor: HomeDesign.background,
         body: navigationShell,
         bottomNavigationBar: Column(
           mainAxisSize: MainAxisSize.min,
@@ -56,6 +57,8 @@ class HomeShell extends StatelessWidget {
   }
 }
 
+/// Les QUATRE destinations métier de l'application. Le design change, pas
+/// l'architecture de navigation.
 class HomeBottomNavigation extends StatelessWidget {
   const HomeBottomNavigation({
     super.key,
@@ -68,46 +71,34 @@ class HomeBottomNavigation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return NavigationBar(
+    return PillNavBar(
       key: const ValueKey('home-bottom-navigation'),
-      height: 72,
       selectedIndex: selectedIndex,
       onDestinationSelected: onDestinationSelected,
-      backgroundColor: HomeDesign.surface,
-      indicatorColor: HomeDesign.accent.withValues(alpha: 0.2),
-      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      animationDuration: HomeDesign.animationDuration(
-        context,
-        HomeDesign.stateAnimation,
-      ),
       destinations: const [
-        NavigationDestination(
-          key: ValueKey('destination-home'),
-          icon: Icon(Icons.home_outlined),
-          selectedIcon: Icon(Icons.home_rounded),
+        PillNavDestination(
+          itemKey: ValueKey('destination-home'),
+          icon: Icons.home_outlined,
+          selectedIcon: Icons.home_rounded,
           label: 'Accueil',
-          tooltip: 'Accueil',
         ),
-        NavigationDestination(
-          key: ValueKey('destination-library'),
-          icon: Icon(Icons.library_music_outlined),
-          selectedIcon: Icon(Icons.library_music_rounded),
+        PillNavDestination(
+          itemKey: ValueKey('destination-library'),
+          icon: Icons.library_music_outlined,
+          selectedIcon: Icons.library_music_rounded,
           label: 'Bibliothèque',
-          tooltip: 'Bibliothèque',
         ),
-        NavigationDestination(
-          key: ValueKey('destination-discover'),
-          icon: Icon(Icons.explore_outlined),
-          selectedIcon: Icon(Icons.explore_rounded),
+        PillNavDestination(
+          itemKey: ValueKey('destination-discover'),
+          icon: Icons.explore_outlined,
+          selectedIcon: Icons.explore_rounded,
           label: 'Découvrir',
-          tooltip: 'Découvrir',
         ),
-        NavigationDestination(
-          key: ValueKey('destination-profile'),
-          icon: Icon(Icons.person_outline_rounded),
-          selectedIcon: Icon(Icons.person_rounded),
+        PillNavDestination(
+          itemKey: ValueKey('destination-profile'),
+          icon: Icons.person_outline_rounded,
+          selectedIcon: Icons.person_rounded,
           label: 'Profil',
-          tooltip: 'Profil',
         ),
       ],
     );

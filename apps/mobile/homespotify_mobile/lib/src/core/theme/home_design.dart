@@ -1,6 +1,16 @@
 import 'package:flutter/material.dart';
 
 /// Jetons visuels partagés par les surfaces principales HomeSpotify.
+///
+/// ÉTAT DE LA MIGRATION « Direction 33 » :
+/// - Les COULEURS ci-dessous sont HISTORIQUES (thème sombre unique, accent vert
+///   Spotify). Elles ne servent plus qu'aux écrans pas encore refondus, rendus
+///   sous `AppTheme.legacyDark`. Interdit dans un écran migré : utiliser
+///   `context.colors` (`AppColors`).
+/// - Les ESPACEMENTS, DURÉES et COURBES restent valables partout : ils sont
+///   indépendants du thème et n'ont pas été redéfinis.
+/// - Les RAYONS historiques sont conservés pour les écrans non migrés ; les
+///   écrans refondus utilisent `AppRadius`.
 abstract final class HomeDesign {
   static const Color background = Color(0xFF0D0D10);
   static const Color surface = Color(0xFF17171D);

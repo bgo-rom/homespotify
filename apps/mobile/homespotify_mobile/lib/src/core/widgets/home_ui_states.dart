@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_colors.dart';
+import '../theme/app_shapes.dart';
 import '../theme/home_design.dart';
 
 class HomeEmptyState extends StatelessWidget {
@@ -20,6 +22,8 @@ class HomeEmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
@@ -28,25 +32,21 @@ class HomeEmptyState extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 58, color: Colors.white24),
+              Icon(icon, size: 58, color: colors.textTertiary),
               const SizedBox(height: HomeDesign.space16),
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  color: colors.textPrimary,
                 ),
               ),
               const SizedBox(height: HomeDesign.space8),
               Text(
                 message,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 14,
-                  height: 1.4,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colors.textSecondary,
                 ),
               ),
               if (actionLabel != null && onAction != null) ...[
@@ -113,14 +113,15 @@ class _SkeletonRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Row(
       children: [
         Container(
           width: 56,
           height: 56,
           decoration: BoxDecoration(
-            color: HomeDesign.surfaceRaised,
-            borderRadius: BorderRadius.circular(HomeDesign.radiusSmall),
+            color: colors.surfaceSunken,
+            borderRadius: AppRadius.chipRadius,
           ),
         ),
         const SizedBox(width: HomeDesign.space12),
@@ -132,7 +133,7 @@ class _SkeletonRow extends StatelessWidget {
                 height: 13,
                 width: 190,
                 decoration: BoxDecoration(
-                  color: HomeDesign.surfaceRaised,
+                  color: colors.surfaceSunken,
                   borderRadius: BorderRadius.circular(6),
                 ),
               ),
@@ -141,7 +142,7 @@ class _SkeletonRow extends StatelessWidget {
                 height: 11,
                 width: 130,
                 decoration: BoxDecoration(
-                  color: HomeDesign.surface,
+                  color: colors.surface,
                   borderRadius: BorderRadius.circular(6),
                 ),
               ),

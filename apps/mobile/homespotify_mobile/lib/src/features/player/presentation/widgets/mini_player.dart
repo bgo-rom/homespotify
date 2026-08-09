@@ -5,13 +5,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/navigation.dart';
 import '../../../../core/logging/app_logger.dart';
-import '../../../../core/network/authenticated_network_image.dart';
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 import '../../../../core/theme/home_design.dart';
+import '../../../../core/widgets/artwork_thumb.dart';
+import '../../../../core/widgets/soft_surface.dart';
 import '../../audio/homespotify_audio_handler.dart';
 import '../player_providers.dart';
 
 String? _lastMiniArtworkTrace;
-final Set<String> _miniArtworkErrors = <String>{};
 
 void _traceMiniArtwork(MediaItem mediaItem) {
   if (!kDebugMode) return;
@@ -30,6 +32,8 @@ void _traceMiniArtwork(MediaItem mediaItem) {
 
 /// Mini-player réactif partagé par les pages principales et les écrans détail.
 /// Les ticks de position sont isolés dans [_MiniProgress].
+///
+/// Direction 33 : carte flottante sculptée, plus de bandeau plein cadre.
 class MiniPlayer extends ConsumerWidget {
   const MiniPlayer({super.key, this.safeAreaBottom = true});
 
@@ -41,6 +45,8 @@ class MiniPlayer extends ConsumerWidget {
     if (mediaItem == null) return const SizedBox.shrink();
     _traceMiniArtwork(mediaItem);
 
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final playback = ref.watch(playbackStateProvider).asData?.value;
     final playing = playback?.playing ?? false;
     final speed = playback?.speed ?? 1;
@@ -66,82 +72,86 @@ class MiniPlayer extends ConsumerWidget {
     return SafeArea(
       top: false,
       bottom: safeAreaBottom,
-      child: Material(
-        color: HomeDesign.surfaceRaised,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              height: 64,
-              child: LayoutBuilder(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+        child: SoftCard(
+          radius: AppRadius.tile,
+          shadows: colors.clayShadowFloating,
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LayoutBuilder(
                 builder: (context, constraints) {
-                  final showPrevious = constraints.maxWidth >= 370;
+                  final showPrevious = constraints.maxWidth >= 330;
                   return Row(
                     children: [
                       Expanded(
                         child: InkWell(
+                          borderRadius: AppRadius.chipRadius,
                           onTap: () {
                             logUi('tap mini-player (ouvrir lecteur complet)');
                             openPlayer(context);
                           },
-                          child: Padding(
-                            padding: const EdgeInsets.only(left: 12),
-                            child: Row(
-                              children: [
-                                _MiniArtwork(
-                                  trackId: mediaItem.id,
-                                  artUri: mediaItem.artUri,
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: AnimatedSwitcher(
-                                    duration: HomeDesign.animationDuration(
-                                      context,
-                                      HomeDesign.stateAnimation,
-                                    ),
-                                    switchInCurve: HomeDesign.animationCurve,
-                                    transitionBuilder: (child, animation) =>
-                                        FadeTransition(
-                                          opacity: animation,
-                                          child: child,
-                                        ),
-                                    child: Column(
-                                      key: ValueKey<String>(
-                                        'mini-metadata-${mediaItem.id}',
+                          child: Row(
+                            children: [
+                              ArtworkThumb(
+                                size: 46,
+                                radius: 14,
+                                identity: 'mini-${mediaItem.id}',
+                                artUri: mediaItem.artUri,
+                                traceLabel:
+                                    'mini-player trackId=${mediaItem.id}',
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: AnimatedSwitcher(
+                                  duration: HomeDesign.animationDuration(
+                                    context,
+                                    HomeDesign.stateAnimation,
+                                  ),
+                                  switchInCurve: HomeDesign.animationCurve,
+                                  transitionBuilder: (child, animation) =>
+                                      FadeTransition(
+                                        opacity: animation,
+                                        child: child,
                                       ),
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          mediaItem.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 13.5,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          speed == 1
-                                              ? (mediaItem.artist ?? '—')
-                                              : '${mediaItem.artist ?? '—'} · ${speed.toStringAsFixed(2)}x',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 11.5,
-                                          ),
-                                        ),
-                                      ],
+                                  child: Column(
+                                    key: ValueKey<String>(
+                                      'mini-metadata-${mediaItem.id}',
                                     ),
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        mediaItem.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.titleMedium
+                                            ?.copyWith(
+                                              fontSize: 14.5,
+                                              color: colors.textPrimary,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        speed == 1
+                                            ? (mediaItem.artist ?? '—')
+                                            : '${mediaItem.artist ?? '—'} · ${speed.toStringAsFixed(2)}x',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              fontSize: 12,
+                                              color: colors.textSecondary,
+                                            ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -156,41 +166,23 @@ class MiniPlayer extends ConsumerWidget {
                                       .skipToPrevious();
                                 }
                               : null,
-                          color: Colors.white,
-                          disabledColor: Colors.white24,
-                          iconSize: 25,
+                          color: colors.textSecondary,
+                          disabledColor: colors.textTertiary,
+                          iconSize: 24,
                           visualDensity: VisualDensity.compact,
                           icon: const Icon(Icons.skip_previous_rounded),
                         ),
-                      IconButton(
-                        tooltip: playing ? 'Pause' : 'Lecture',
-                        onPressed: isBusy
-                            ? null
-                            : () {
-                                logUi(
-                                  'tap mini-player: '
-                                  '${playing ? 'pause' : 'lecture'}',
-                                );
-                                final handler = ref.read(audioHandlerProvider);
-                                playing ? handler.pause() : handler.play();
-                              },
-                        color: Colors.white,
-                        disabledColor: Colors.white38,
-                        iconSize: 30,
-                        icon: isBusy
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.4,
-                                  color: HomeDesign.accent,
-                                ),
-                              )
-                            : Icon(
-                                playing
-                                    ? Icons.pause_rounded
-                                    : Icons.play_arrow_rounded,
-                              ),
+                      _MiniPlayButton(
+                        playing: playing,
+                        busy: isBusy,
+                        onPressed: () {
+                          logUi(
+                            'tap mini-player: '
+                            '${playing ? 'pause' : 'lecture'}',
+                          );
+                          final handler = ref.read(audioHandlerProvider);
+                          playing ? handler.pause() : handler.play();
+                        },
                       ),
                       IconButton(
                         tooltip: 'Piste suivante',
@@ -200,21 +192,62 @@ class MiniPlayer extends ConsumerWidget {
                                 ref.read(audioHandlerProvider).skipToNext();
                               }
                             : null,
-                        color: Colors.white,
-                        disabledColor: Colors.white24,
-                        iconSize: 25,
+                        color: colors.textSecondary,
+                        disabledColor: colors.textTertiary,
+                        iconSize: 24,
                         visualDensity: VisualDensity.compact,
                         icon: const Icon(Icons.skip_next_rounded),
                       ),
-                      const SizedBox(width: 4),
                     ],
                   );
                 },
               ),
-            ),
-            const _MiniProgress(),
-          ],
+              const SizedBox(height: 8),
+              const _MiniProgress(),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+/// Bouton de lecture sculpté : crème en clair, argile en sombre.
+class _MiniPlayButton extends StatelessWidget {
+  const _MiniPlayButton({
+    required this.playing,
+    required this.busy,
+    required this.onPressed,
+  });
+
+  final bool playing;
+  final bool busy;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: SoftCircle(
+        size: 46,
+        color: colors.playSurface,
+        onTap: busy ? null : onPressed,
+        tooltip: playing ? 'Pause' : 'Lecture',
+        child: busy
+            ? SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  color: colors.playInk,
+                ),
+              )
+            : Icon(
+                playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                color: colors.playInk,
+                size: 26,
+              ),
       ),
     );
   }
@@ -225,6 +258,7 @@ class _MiniProgress extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final position = ref.watch(positionDataProvider).asData?.value;
     final durationMs = position?.duration.inMilliseconds ?? 0;
     final value = durationMs <= 0
@@ -233,72 +267,15 @@ class _MiniProgress extends ConsumerWidget {
             0.0,
             1.0,
           );
-    return LinearProgressIndicator(
-      key: const ValueKey('mini-player-progress'),
-      minHeight: 2,
-      value: value,
-      backgroundColor: Colors.white10,
-      valueColor: const AlwaysStoppedAnimation<Color>(HomeDesign.accent),
-    );
-  }
-}
-
-class _MiniArtwork extends StatelessWidget {
-  const _MiniArtwork({required this.trackId, this.artUri});
-
-  final String trackId;
-  final Uri? artUri;
-
-  @override
-  Widget build(BuildContext context) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: SizedBox(
-        width: 44,
-        height: 44,
-        child: artUri == null
-            ? const _MiniArtworkPlaceholder()
-            : AuthenticatedNetworkImage(
-                artUri.toString(),
-                key: ValueKey('mini_${trackId}_$artUri'),
-                artworkTraceLabel: 'mini-player trackId=$trackId',
-                fit: BoxFit.cover,
-                cacheWidth: 88,
-                cacheHeight: 88,
-                filterQuality: FilterQuality.low,
-                gaplessPlayback: true,
-                errorBuilder: (_, error, stackTrace) {
-                  final key = '$trackId|$artUri|$error';
-                  if (kDebugMode && _miniArtworkErrors.add(key)) {
-                    final stack = stackTrace
-                        ?.toString()
-                        .split('\n')
-                        .take(3)
-                        .join(' | ');
-                    debugPrint(
-                      '[ARTWORK_TRACE] G mini-player trackId=$trackId '
-                      'uri=$artUri errorType=${error.runtimeType} '
-                      'message=$error stack=${stack ?? 'none'}',
-                    );
-                  }
-                  return const _MiniArtworkPlaceholder();
-                },
-                loadingBuilder: (context, child, progress) =>
-                    progress == null ? child : const _MiniArtworkPlaceholder(),
-              ),
+      borderRadius: BorderRadius.circular(3),
+      child: LinearProgressIndicator(
+        key: const ValueKey('mini-player-progress'),
+        minHeight: 3,
+        value: value,
+        backgroundColor: colors.surfaceSunken,
+        valueColor: AlwaysStoppedAnimation<Color>(colors.accent),
       ),
-    );
-  }
-}
-
-class _MiniArtworkPlaceholder extends StatelessWidget {
-  const _MiniArtworkPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return const ColoredBox(
-      color: HomeDesign.surfaceMuted,
-      child: Icon(Icons.music_note_rounded, color: Colors.white24, size: 20),
     );
   }
 }

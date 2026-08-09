@@ -1,0 +1,173 @@
+import 'package:flutter/material.dart';
+
+import 'app_colors.dart';
+import 'app_shapes.dart';
+import 'app_typography.dart';
+import 'home_design.dart';
+
+/// Thèmes de l'application.
+///
+/// - [light] / [dark] : « Direction 33 — Clay Tactile Premium ». Ce sont les
+///   deux faces du MÊME design system, sélectionnées par `ThemeMode.system`.
+/// - [legacyDark] : thème sombre HISTORIQUE, conservé à l'identique pour les
+///   écrans pas encore migrés. Il disparaîtra quand le dernier écran sera
+///   passé en Direction 33 (cf. `LegacyDarkTheme`).
+abstract final class AppTheme {
+  static final ThemeData light = _build(AppColors.light);
+  static final ThemeData dark = _build(AppColors.dark);
+
+  static ThemeData _build(AppColors colors) {
+    final isDark = colors.brightness == Brightness.dark;
+    final textTheme = AppTypography.textTheme(
+      colors.textPrimary,
+      colors.textSecondary,
+    );
+
+    return ThemeData(
+      useMaterial3: true,
+      brightness: colors.brightness,
+      fontFamily: AppTypography.fontFamily,
+      fontFamilyFallback: AppTypography.fallback,
+      scaffoldBackgroundColor: colors.background,
+      canvasColor: colors.background,
+      textTheme: textTheme,
+      colorScheme: ColorScheme(
+        brightness: colors.brightness,
+        primary: colors.accent,
+        onPrimary: colors.onAccent,
+        primaryContainer: colors.accentSoft,
+        onPrimaryContainer: colors.accent,
+        secondary: colors.clayTerracotta,
+        onSecondary: colors.clayTerracottaInk,
+        tertiary: colors.clayBlue,
+        onTertiary: colors.clayBlueInk,
+        error: colors.danger,
+        onError: colors.onAccent,
+        surface: colors.surface,
+        onSurface: colors.textPrimary,
+        surfaceContainerHighest: colors.surfaceRaised,
+        onSurfaceVariant: colors.textSecondary,
+        outline: colors.textTertiary,
+        outlineVariant: colors.surfaceSunken,
+        shadow: colors.shadowDrop,
+        scrim: colors.scrim,
+        inverseSurface: colors.textPrimary,
+        onInverseSurface: colors.surface,
+        inversePrimary: colors.accent,
+      ),
+      // Aucune bordure Material dure : la séparation passe par le relief.
+      dividerTheme: DividerThemeData(
+        color: colors.surfaceSunken,
+        thickness: 1,
+        space: 1,
+      ),
+      appBarTheme: AppBarTheme(
+        backgroundColor: colors.background,
+        foregroundColor: colors.textPrimary,
+        surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
+        elevation: 0,
+        centerTitle: false,
+        titleTextStyle: textTheme.headlineSmall,
+      ),
+      iconTheme: IconThemeData(color: colors.textPrimary, size: 24),
+      listTileTheme: ListTileThemeData(
+        textColor: colors.textPrimary,
+        iconColor: colors.textSecondary,
+        subtitleTextStyle: textTheme.bodySmall,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          backgroundColor: colors.accent,
+          foregroundColor: colors.onAccent,
+          minimumSize: const Size(48, 48),
+          textStyle: textTheme.titleSmall,
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: colors.link,
+          textStyle: textTheme.labelLarge,
+          minimumSize: const Size(0, 40),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        color: colors.accent,
+        linearTrackColor: colors.surfaceSunken,
+        circularTrackColor: Colors.transparent,
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: colors.surfaceRaised,
+        contentTextStyle: textTheme.bodyMedium?.copyWith(
+          color: colors.textPrimary,
+        ),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
+      ),
+      splashColor: colors.accentSoft,
+      highlightColor: isDark
+          ? const Color(0x0DFFFFFF)
+          : const Color(0x0A000000),
+      visualDensity: VisualDensity.standard,
+      extensions: <ThemeExtension<dynamic>>[colors],
+    );
+  }
+
+  /// Thème sombre HISTORIQUE — identique à celui d'avant la refonte.
+  ///
+  /// Il n'existe que pour figer l'apparence des écrans non migrés pendant la
+  /// migration page par page : sans lui, un téléphone en mode clair rendrait
+  /// illisibles les écrans qui s'appuient sur les valeurs par défaut sombres.
+  /// La palette [AppColors.dark] y est tout de même attachée, pour que les
+  /// composants DÉJÀ migrés (mini-player) s'y affichent correctement.
+  static final ThemeData legacyDark = ThemeData(
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: HomeDesign.background,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: HomeDesign.accent,
+      brightness: Brightness.dark,
+      surface: HomeDesign.surface,
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: HomeDesign.background,
+      foregroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+    ),
+    navigationBarTheme: const NavigationBarThemeData(
+      backgroundColor: HomeDesign.surface,
+      elevation: 0,
+      labelTextStyle: WidgetStatePropertyAll(
+        TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: HomeDesign.accent,
+        foregroundColor: Colors.black,
+        minimumSize: const Size(48, 48),
+      ),
+    ),
+    visualDensity: VisualDensity.standard,
+    extensions: const <ThemeExtension<dynamic>>[AppColors.dark],
+  );
+}
+
+/// Fige un sous-arbre dans le thème sombre historique.
+///
+/// TEMPORAIRE — un usage est supprimé à chaque écran migré en Direction 33.
+/// Quand il n'en reste plus aucun, ce widget et [AppTheme.legacyDark] partent
+/// avec.
+class LegacyDarkTheme extends StatelessWidget {
+  const LegacyDarkTheme({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) =>
+      Theme(data: AppTheme.legacyDark, child: child);
+}

@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/logging/app_logger.dart';
+import '../core/theme/app_theme.dart';
 import '../features/home/presentation/home_dashboard_screen.dart';
 import '../features/profile/presentation/profile_screen.dart';
 import 'home_shell.dart';
@@ -31,15 +32,21 @@ import '../features/settings/presentation/settings_screen.dart';
 import '../features/listening/presentation/listening_activity_screen.dart';
 import '../features/offline/presentation/downloads_screen.dart';
 
-/// Transition custom sombre commune : fade + léger slide vertical, à la place
-/// de la transition Material par défaut (flash clair sur thème non sombre).
+/// Transition custom commune : fade + léger slide vertical, à la place de la
+/// transition Material par défaut.
+///
+/// MIGRATION DIRECTION 33 : tant qu'un écran empilé n'est pas refondu, il est
+/// figé dans le thème sombre historique par [LegacyDarkTheme]. Sinon, un
+/// téléphone en mode clair rendrait illisibles les écrans qui s'appuient sur
+/// les valeurs par défaut sombres. Chaque lot de refonte sortira son écran de
+/// ce repli.
 CustomTransitionPage<void> _darkTransitionPage({
   required LocalKey key,
   required Widget child,
 }) {
   return CustomTransitionPage<void>(
     key: key,
-    child: child,
+    child: LegacyDarkTheme(child: child),
     transitionDuration: const Duration(milliseconds: 240),
     reverseTransitionDuration: const Duration(milliseconds: 200),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
@@ -140,7 +147,9 @@ final GoRouter appRouter = GoRouter(
             GoRoute(
               path: '/library',
               name: 'library',
-              builder: (context, state) => const LibraryScreen(),
+              // Pas encore migré en Direction 33 → thème sombre historique.
+              builder: (context, state) =>
+                  const LegacyDarkTheme(child: LibraryScreen()),
             ),
           ],
         ),
@@ -150,7 +159,9 @@ final GoRouter appRouter = GoRouter(
             GoRoute(
               path: '/discover',
               name: 'discover',
-              builder: (context, state) => const DiscoverScreen(),
+              // Pas encore migré en Direction 33 → thème sombre historique.
+              builder: (context, state) =>
+                  const LegacyDarkTheme(child: DiscoverScreen()),
             ),
           ],
         ),
@@ -160,7 +171,9 @@ final GoRouter appRouter = GoRouter(
             GoRoute(
               path: '/profile',
               name: 'profile',
-              builder: (context, state) => const ProfileScreen(),
+              // Pas encore migré en Direction 33 → thème sombre historique.
+              builder: (context, state) =>
+                  const LegacyDarkTheme(child: ProfileScreen()),
             ),
           ],
         ),
