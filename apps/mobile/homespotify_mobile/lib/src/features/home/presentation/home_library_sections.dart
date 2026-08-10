@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/navigation.dart';
+import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/home_design.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../remote_download/data/remote_download_api.dart';
 import '../../remote_download/domain/remote_download_models.dart';
 import '../../library/domain/local_playlist.dart';
@@ -189,6 +191,7 @@ class HomeInstallationsSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final active = ref.watch(_activeInstallsProvider).asData?.value ?? const [];
     if (active.isEmpty) return const SizedBox.shrink();
 
@@ -206,63 +209,60 @@ class HomeInstallationsSection extends ConsumerWidget {
             key: const ValueKey('home-installations'),
             children: [
               for (final job in active.take(3))
-                Container(
+                Padding(
                   key: ValueKey('home-install-${job.id}'),
-                  margin: const EdgeInsets.only(bottom: HomeDesign.space8),
-                  padding: const EdgeInsets.all(HomeDesign.space12),
-                  decoration: BoxDecoration(
-                    color: HomeDesign.surface,
-                    borderRadius: BorderRadius.circular(
-                      HomeDesign.radiusMedium,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: HomeDesign.accent,
-                        ),
-                      ),
-                      const SizedBox(width: HomeDesign.space12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              job.displayLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            Text(
-                              job.status.label,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white38,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (job.progress > 0)
-                        Text(
-                          '${job.progress} %',
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 12,
+                  padding: const EdgeInsets.only(bottom: HomeDesign.space8),
+                  child: SoftCard(
+                    padding: const EdgeInsets.all(HomeDesign.space12),
+                    shadows: colors.clayShadowSmall,
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: colors.accent,
                           ),
                         ),
-                    ],
+                        const SizedBox(width: HomeDesign.space12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                job.displayLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: colors.textPrimary,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Text(
+                                job.status.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: colors.textSecondary,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (job.progress > 0)
+                          Text(
+                            '${job.progress} %',
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              fontSize: 12,
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
             ],
@@ -282,6 +282,7 @@ class HomeRecommendationsTeaser extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         HomeDesign.space16,
@@ -289,25 +290,20 @@ class HomeRecommendationsTeaser extends StatelessWidget {
         HomeDesign.space16,
         0,
       ),
-      child: InkWell(
+      child: SoftCard(
         key: const ValueKey('home-recommendations'),
         onTap: () => openDiscover(context),
-        borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-        child: Container(
-          padding: const EdgeInsets.all(HomeDesign.space16),
-          decoration: BoxDecoration(
-            color: HomeDesign.surface,
-            borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-          ),
-          child: Row(
+        padding: const EdgeInsets.all(HomeDesign.space16),
+        shadows: colors.clayShadowSmall,
+        child: Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.auto_awesome_rounded,
-                color: HomeDesign.accent,
+                color: colors.accent,
                 size: 22,
               ),
               const SizedBox(width: HomeDesign.space12),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
@@ -315,21 +311,23 @@ class HomeRecommendationsTeaser extends StatelessWidget {
                     Text(
                       'Recommandations',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: colors.textPrimary,
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     Text(
                       'Des titres choisis à partir de vos écoutes',
-                      style: TextStyle(color: Colors.white38, fontSize: 12),
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right_rounded, color: Colors.white38),
+              Icon(Icons.chevron_right_rounded, color: colors.textTertiary),
             ],
-          ),
         ),
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
 import '../../auth/application/auth_controller.dart';
 
 /// Enveloppe l'application principale et affiche un bandeau discret quand la
@@ -34,26 +35,30 @@ class OfflineModeBanner extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     return Material(
-      color: const Color(0xFF2A2A33),
+      color: colors.surfaceRaised,
       child: SafeArea(
         bottom: false,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
           child: Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.cloud_off_rounded,
                 size: 16,
-                color: Colors.white70,
+                color: colors.textSecondary,
               ),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Mode hors connexion — musiques téléchargées uniquement',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: Colors.white70, fontSize: 12.5),
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 12.5,
+                  ),
                 ),
               ),
               TextButton(
@@ -65,9 +70,9 @@ class OfflineModeBanner extends ConsumerWidget {
                 onPressed: () => ref
                     .read(authControllerProvider.notifier)
                     .attemptOnlineRestore(),
-                child: const Text(
+                child: Text(
                   'Réessayer',
-                  style: TextStyle(color: Color(0xFF1DB954), fontSize: 12.5),
+                  style: TextStyle(color: colors.accent, fontSize: 12.5),
                 ),
               ),
             ],
