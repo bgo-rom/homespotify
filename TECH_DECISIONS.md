@@ -1109,3 +1109,41 @@ empêcher HomeSpotify de démarrer. Toute panne de vérification automatique
 (timeout, DNS, JSON invalide, 5xx) est silencieuse ; une erreur n'est affichée
 que sur vérification demandée par l'utilisateur. Vérification automatique
 throttlée à 30 minutes ; la vérification manuelle des Paramètres l'ignore.
+
+## TD-Version-Identity (2026-08-10) — L'identité de version est une barrière, pas un score
+
+**Décision (définitive)** : deux enregistrements ne désignent la même musique que
+si leur **empreinte de version** est identique. L'empreinte est produite par
+`services/api/src/lib/version-identity.ts`, **source unique** du projet.
+
+- Toute copie locale du motif de marqueurs est interdite. Quatre copies
+  divergentes ont fait installer `addiction (Slowed)` à la place de `addiction`
+  en production (cf. `LESSONS.md` L-126).
+- La famille vitesse/tonalité (`slowed`, `ultra slowed`, `sped up`, `speed up`,
+  `nightcore`, `slowed + reverb`) est traitée exactement comme `live`, `remix`
+  ou `instrumental` : ce sont des musiques différentes.
+- La comparaison est **stricte et symétrique** : `''` (studio) ne correspond
+  jamais à `'slowed'`, et réciproquement.
+
+**Application, en deux barrières indépendantes** :
+
+1. `TrackCandidateResolver.resolve` écarte les pistes d'une autre version
+   **avant tout score** (fail-closed). Conséquence assumée : quand la seule
+   source disponible est une autre version, la réponse est `no_match` — ne rien
+   installer est préférable à installer la mauvaise piste.
+2. `RemoteDownloadedFileImporter.importDownloadedFile` compare la version du
+   fichier RÉELLEMENT téléchargé à la version demandée par l'utilisateur, avant
+   toute écriture (objet durable, SQLite, index). Ce contrôle est placé sur le
+   chemin distant `AUDIO_STORAGE_MODE=cached`, celui de la production, et non
+   dans le seul `UserImportService`.
+
+La référence de la version demandée est la **requête de l'utilisateur**
+(`download_jobs.query`), jamais le titre du candidat choisi : un candidat mal
+résolu ne peut pas se valider lui-même. Une demande par URL directe n'exprime
+aucune intention de version — le contrôle 2 est alors omis.
+
+**Publication d'index** : `RemoteStorageIndexPublisher` réessaie
+`INDEX_PUBLISH_ATTEMPTS` fois (250 ms puis 1 s). La publication est idempotente
+— document adressé par son SHA-256, `generatedAt` identique accepté — donc un
+réessai ne peut rien corrompre. Un échec définitif reste un échec du job : la
+piste est en base mais l'index ne la référence pas, et le message le dit.

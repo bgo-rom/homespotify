@@ -8,6 +8,7 @@ import { runMigrations } from '../db/migrate.js';
 import { tracks, userTracks, users } from '../db/schema.js';
 import { makeFlac } from '../test/flac.js';
 import {
+  INDEX_PUBLISH_ATTEMPTS,
   RemoteDownloadedFileImporter,
   RemoteDownloadedFileImportError,
   type RemoteStorageWriteClient,
@@ -209,7 +210,9 @@ describe('RemoteDownloadedFileImporter', () => {
     });
     expect(retried.status).toBe('REUSED');
     expect(client.objects).toHaveLength(2);
-    expect(client.indexes).toHaveLength(2);
+    // Le premier import épuise ses tentatives de publication avant d'échouer ;
+    // la reprise en consomme une seule, réussie.
+    expect(client.indexes).toHaveLength(INDEX_PUBLISH_ATTEMPTS + 1);
     expect(handle.db.select().from(tracks).all()).toHaveLength(1);
   });
 });

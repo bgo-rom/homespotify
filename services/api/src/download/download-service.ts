@@ -39,8 +39,12 @@ import type {
   DownloadTrackInfo,
   ProviderHealth,
 } from './download-provider.js';
+import { versionFingerprint } from '../lib/version-identity.js';
 import { sanitizeMessage, sanitizeShortField } from './log-sanitizer.js';
-import type { RemoteDownloadedFileImportResult } from './remote-downloaded-file-importer.js';
+import {
+  RemoteDownloadedFileImportError,
+  type RemoteDownloadedFileImportResult,
+} from './remote-downloaded-file-importer.js';
 
 /** Borne dure : chaque unité = un interpréteur Python complet. */
 export const MAX_CONCURRENT_DOWNLOADS = 4;
@@ -66,6 +70,7 @@ export interface DownloadRemoteImportService {
     userId: number;
     filePath: string;
     requestId?: string;
+    expectedVersionFingerprint?: string;
   }): Promise<RemoteDownloadedFileImportResult>;
 }
 
@@ -1027,12 +1032,25 @@ export class DownloadService {
     let importedTrackId: number | null = null;
     let reused = false;
 
+    // Version DEMANDÉE, lue sur la requête de l'utilisateur et non sur les
+    // métadonnées choisies par le catalogue : un candidat mal résolu ne peut
+    // pas se valider lui-même. Une demande par URL directe n'exprime aucune
+    // intention de version — le contrôle est alors omis.
+    const job = this.repository.getJobForUser(item.jobId, item.userId);
+    const expectedVersionFingerprint =
+      job === null || job.query === null
+        ? undefined
+        : versionFingerprint(job.query);
+
     try {
       for (const file of files) {
         const result = await remote.importDownloadedFile({
           userId: item.userId,
           filePath: file,
           requestId: `download-${item.jobId}`,
+          ...(expectedVersionFingerprint === undefined
+            ? {}
+            : { expectedVersionFingerprint }),
         });
         if (result.status === 'WAITING_FOR_OWNER_MATCH') {
           this.finish(item.jobId, {
@@ -1054,6 +1072,23 @@ export class DownloadService {
         await rm(file, { force: true });
       }
     } catch (error) {
+      // Mauvaise version : ce n'est pas une panne de transfert mais un refus
+      // délibéré. Le message doit le dire, sinon une reprise automatique
+      // réinstallerait la même erreur.
+      if (
+        error instanceof RemoteDownloadedFileImportError &&
+        error.code === 'version_mismatch'
+      ) {
+        this.finish(item.jobId, {
+          status: 'failed',
+          stage: 'remote_import_failed',
+          message: 'La source ne proposait pas la version demandée.',
+          errorCode: 'REMOTE_IMPORT_VERSION_MISMATCH',
+          errorMessage:
+            'Le fichier obtenu n’est pas la version demandée : rien n’a été ajouté à la bibliothèque.',
+        });
+        return false;
+      }
       const safeMessage =
         sanitizeMessage(error instanceof Error ? error.message : String(error)) ??
         'Le transfert vers le stockage Windows a échoué.';

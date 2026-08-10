@@ -11,6 +11,7 @@ import type {
 } from '../storage/remote/storage-agent-client.js';
 import { makeFlac } from '../test/flac.js';
 import {
+  INDEX_PUBLISH_ATTEMPTS,
   RemoteDownloadedFileImporter,
   type RemoteStorageWriteClient,
 } from './remote-downloaded-file-importer.js';
@@ -211,7 +212,9 @@ describe('RemoteDownloadedFileImporter — matrice de pannes', () => {
 
   it('reprend après une réponse index perdue sans créer une seconde piste', async () => {
     const client = new FaultClient();
-    client.indexResponseLosses = 1;
+    // Toutes les tentatives internes échouent : sinon la reprise automatique
+    // masquerait la panne et ce cas ne testerait plus l'idempotence.
+    client.indexResponseLosses = INDEX_PUBLISH_ATTEMPTS;
     const service = importer(client);
     const filePath = audioFile();
 
@@ -219,7 +222,7 @@ describe('RemoteDownloadedFileImporter — matrice de pannes', () => {
       service.importDownloadedFile({ userId: ownerId, filePath }),
     ).rejects.toMatchObject({ code: 'index_publish_failed' });
     expect(handle.db.select().from(tracks).all()).toHaveLength(1);
-    expect(client.indexCalls).toHaveLength(1);
+    expect(client.indexCalls).toHaveLength(INDEX_PUBLISH_ATTEMPTS);
 
     const retried = await service.importDownloadedFile({
       userId: ownerId,
@@ -228,7 +231,7 @@ describe('RemoteDownloadedFileImporter — matrice de pannes', () => {
     expect(retried.status).toBe('REUSED');
     expect(handle.db.select().from(tracks).all()).toHaveLength(1);
     expect(client.objectCalls).toHaveLength(2);
-    expect(client.indexCalls).toHaveLength(2);
+    expect(client.indexCalls).toHaveLength(INDEX_PUBLISH_ATTEMPTS + 1);
   });
 
   it('garde l’objet orphelin récupérable après échec SQLite', async () => {

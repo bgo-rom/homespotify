@@ -11,20 +11,19 @@
  * Chaque résultat fusionné conserve les références de TOUS les providers.
  */
 
+import { versionFingerprint as fingerprintOf } from '../../lib/version-identity.js';
 import { normalizeForMatch } from '../preview-provider.js';
 import type { CatalogSearchResult, MatchConfidenceLevel } from './types.js';
 
-const ALT_VERSION_RE =
-  /\b(live|en\s+concert|unplugged|remix|rmx|mashup|bootleg|cover|tribute|karaoke|karaoké|instrumental|acoustic|acoustique|re-?recorded|demo|clean|censored)\b/iu;
-
-/** Empreinte de VERSION : distingue remix/live/instrumental du studio. */
+/**
+ * Empreinte de VERSION : distingue remix/live/instrumental/ralenti du studio.
+ *
+ * Le motif vient de `lib/version-identity` — copie locale interdite : c'est une
+ * liste incomplète ici qui a fusionné `addiction` et `addiction (Slowed)` en
+ * production, puis fait installer la version ralentie (LESSONS L-081).
+ */
 function versionFingerprint(result: CatalogSearchResult): string {
-  const raw = `${result.title} ${result.album ?? ''}`;
-  const markers: string[] = [];
-  const re = new RegExp(ALT_VERSION_RE.source, 'giu');
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(raw)) !== null) markers.push(match[0].toLowerCase());
-  return markers.sort().join('+');
+  return fingerprintOf(result.title, result.album);
 }
 
 function identityKey(result: CatalogSearchResult): string {

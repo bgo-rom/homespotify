@@ -16,12 +16,13 @@ import type {
   CatalogSearchResult,
   DiscoveryProviderId,
 } from '../discovery/catalog/types.js';
+import {
+  hasAltVersionMarker,
+  sameVersion,
+  versionFingerprint,
+} from '../lib/version-identity.js';
 import { parseDownloadUrl } from './download-url.js';
 import { sanitizeShortField } from './log-sanitizer.js';
-
-/** Marqueurs de version alternative — mêmes termes que le pipeline média. */
-const ALT_VERSION_RE =
-  /\b(live|en\s+concert|unplugged|remix|rmx|mashup|bootleg|cover|tribute|karaoke|karaoké|instrumental|acoustic|acoustique|re-?recorded|demo|sped\s*up|slowed|nightcore)\b/iu;
 
 /**
  * Ordre de préférence des hôtes pour le TÉLÉCHARGEMENT — distinct de l'ordre
@@ -128,7 +129,7 @@ function tokens(value: string): string[] {
 }
 
 function hasAltVersion(value: string): boolean {
-  return ALT_VERSION_RE.test(value);
+  return hasAltVersionMarker(value);
 }
 
 function primaryArtist(result: CatalogSearchResult): string {
@@ -362,7 +363,18 @@ export class TrackCandidateResolver {
       expectedDurationSeconds?: number | null;
     } = {},
   ): CandidateResolution {
-    const scored = results
+    // Barrière de VERSION, fail-closed et antérieure à tout score : une piste
+    // dont l'empreinte de version diffère de l'intention n'est pas une piste
+    // « moins bonne », c'est une AUTRE musique. Aucun score ne peut la
+    // rattraper, donc elle est retirée du jeu plutôt que pénalisée.
+    // `normal` ne peut donc jamais aboutir à `slowed`, `sped up`, `live` ou
+    // `remix` — ni l'inverse.
+    const intentVersion = versionFingerprint(intent.query, intent.title);
+    const sameVersionAsIntent = results.filter((result) =>
+      sameVersion(versionFingerprint(result.title), intentVersion),
+    );
+
+    const scored = sameVersionAsIntent
       .map((result) => ({
         result,
         score: scoreTrackMatch(result, intent, options),

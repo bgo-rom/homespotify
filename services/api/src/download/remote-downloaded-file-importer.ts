@@ -14,6 +14,7 @@ import {
   type AudioFileAnalysis,
 } from '../import/import-service.js';
 import { findExistingTrack } from '../import/track-match.js';
+import { sameVersion, versionFingerprint } from '../lib/version-identity.js';
 import type { RemoteLogger } from '../storage/remote/storage-agent-client.js';
 import {
   StorageAgentClient,
@@ -47,6 +48,7 @@ export class RemoteDownloadedFileImportError extends Error {
   constructor(
     readonly code:
       | 'invalid_file'
+      | 'version_mismatch'
       | 'durability_not_confirmed'
       | 'database_failed'
       | 'index_publish_failed',
@@ -158,6 +160,11 @@ async function persistCover(
   return relativePath;
 }
 
+/** Tentatives de publication de l'index, la première comprise. */
+export const INDEX_PUBLISH_ATTEMPTS = 3;
+/** Attente avant la n-ième tentative (index 0 = avant la deuxième). */
+export const INDEX_PUBLISH_BACKOFF_MS = [250, 1_000] as const;
+
 class RemoteStorageIndexPublisher {
   private tail: Promise<void> = Promise.resolve();
 
@@ -165,6 +172,10 @@ class RemoteStorageIndexPublisher {
     private readonly handle: DbHandle,
     private readonly client: RemoteStorageWriteClient,
     private readonly logger: RemoteLogger,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms).unref?.();
+      }),
   ) {}
 
   publish(requestId?: string): Promise<DurableIndexReceipt> {
@@ -180,28 +191,59 @@ class RemoteStorageIndexPublisher {
           'REMOTE_STORAGE_INDEX_ENTRIES_OMITTED',
         );
       }
-      const receipt = await this.client.putIndex({
-        body: document.body,
-        contentSha256: document.contentSha256,
-        ...(requestId === undefined ? {} : { requestId }),
-      });
-      if (
-        receipt.durable !== true ||
-        receipt.contentSha256 !== document.contentSha256 ||
-        receipt.entryCount !== document.entryCount
-      ) {
-        throw new RemoteDownloadedFileImportError(
-          'index_publish_failed',
-          'Le reçu durable de l’index est incohérent.',
-        );
+
+      // La publication est IDEMPOTENTE : le document est adressé par son
+      // SHA-256 et l'agent accepte un `generatedAt` identique. Réessayer ne
+      // peut donc rien corrompre — et une indisponibilité passagère du poste
+      // Windows ne doit pas transformer un import réussi en échec.
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= INDEX_PUBLISH_ATTEMPTS; attempt += 1) {
+        try {
+          return await this.putIndexOnce(document, requestId);
+        } catch (error) {
+          lastError = error;
+          if (attempt === INDEX_PUBLISH_ATTEMPTS) break;
+          this.logger.warn(
+            {
+              event: 'REMOTE_STORAGE_INDEX_PUBLISH_RETRY',
+              attempt,
+              maxAttempts: INDEX_PUBLISH_ATTEMPTS,
+              ...(requestId === undefined ? {} : { requestId }),
+            },
+            'REMOTE_STORAGE_INDEX_PUBLISH_RETRY',
+          );
+          await this.sleep(INDEX_PUBLISH_BACKOFF_MS[attempt - 1] ?? 1_000);
+        }
       }
-      return receipt;
+      throw lastError;
     });
     this.tail = operation.then(
       () => undefined,
       () => undefined,
     );
     return operation;
+  }
+
+  private async putIndexOnce(
+    document: ReturnType<typeof buildRemoteStorageIndexDocument>,
+    requestId?: string,
+  ): Promise<DurableIndexReceipt> {
+    const receipt = await this.client.putIndex({
+      body: document.body,
+      contentSha256: document.contentSha256,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+    if (
+      receipt.durable !== true ||
+      receipt.contentSha256 !== document.contentSha256 ||
+      receipt.entryCount !== document.entryCount
+    ) {
+      throw new RemoteDownloadedFileImportError(
+        'index_publish_failed',
+        'Le reçu durable de l’index est incohérent.',
+      );
+    }
+    return receipt;
   }
 }
 
@@ -253,6 +295,11 @@ export class RemoteDownloadedFileImporter {
     userId: number;
     filePath: string;
     requestId?: string;
+    /**
+     * Empreinte de version DEMANDÉE par l'utilisateur (`''` = studio).
+     * Absente = intention inconnue (URL collée) : aucun contrôle possible.
+     */
+    expectedVersionFingerprint?: string;
   }): Promise<RemoteDownloadedFileImportResult> {
     const lowerExtension = extname(input.filePath).toLowerCase();
     if (lowerExtension !== '.flac' && lowerExtension !== '.wav') {
@@ -269,6 +316,21 @@ export class RemoteDownloadedFileImporter {
         error,
       );
     });
+
+    // Dernière barrière avant TOUTE écriture : le fichier réellement obtenu
+    // doit porter la version demandée. Elle est placée ici, sur le chemin
+    // distant réel (`AUDIO_STORAGE_MODE=cached`), et non dans le seul
+    // `UserImportService` : c'est ce chemin qui a installé `addiction (Slowed)`
+    // à la place de `addiction` en production (LESSONS L-081).
+    if (input.expectedVersionFingerprint !== undefined) {
+      const downloadedVersion = versionFingerprint(analysis.title);
+      if (!sameVersion(downloadedVersion, input.expectedVersionFingerprint)) {
+        throw new RemoteDownloadedFileImportError(
+          'version_mismatch',
+          'Le fichier obtenu n’est pas la version demandée.',
+        );
+      }
+    }
     const extension = analysis.kind;
     const [contentHash, fileInfo] = await Promise.all([
       hashFile(input.filePath),

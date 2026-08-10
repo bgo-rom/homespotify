@@ -1122,3 +1122,41 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
   BOM**, sinon Windows PowerShell 5.1 le lit en ANSI. Contrôle rapide avant
   toute exécution :
   `[System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$null,[ref]$errs)`.
+
+### L-126 — Une même règle métier dupliquée en quatre motifs finit par diverger (2026-08-10)
+
+- **Contexte** : demande d'installation `LONOWN — addiction` (version normale)
+  depuis le téléphone. Le backend a téléchargé et proposé `addiction (Slowed)`,
+  deux fois (jobs `b481f6e0…` et `9a394fd8…`, 2026-08-10 17:42 UTC).
+- **Cause** : `normalizeForMatch` supprime les parenthèses, donc
+  `addiction (Slowed)` et `addiction` ont la MÊME clé d'identité. Seule
+  l'empreinte de version les sépare — et le motif `ALT_VERSION_RE` existait en
+  **quatre copies divergentes** (`catalog/merge.ts`, `download/candidate-resolver.ts`,
+  `discovery/preview-provider.ts`, `discovery/apple-music-catalog-provider.ts`).
+  Celle de la FUSION ignorait `slowed`, `sped up` et `nightcore` : les deux
+  pistes ont fusionné en une seule carte, les cinq URL (dont celle de la version
+  normale) ont hérité du titre de la version ralentie, et la version normale est
+  devenue **inatteignable** — aucun score en aval ne pouvait la rattraper.
+- **Conséquence** : motif unique dans `services/api/src/lib/version-identity.ts`,
+  interdiction d'en refaire une copie locale. Et surtout : une identité de
+  version est une **barrière fail-closed** (le candidat est retiré du jeu), pas
+  une pénalité de score — un score se rattrape, une identité non.
+
+### L-127 — Le compte de service virtuel n'hérite d'aucun droit d'écriture sous `ProgramData` (2026-08-10)
+
+- **Contexte** : `PUT /internal/storage/index` du Storage Agent répondait 500
+  (`INDEX_WRITE_FAILED`) — et n'avait en réalité **jamais** abouti depuis sa mise
+  en service (0 `STORAGE_AGENT_INDEX_PUBLISHED` dans tout le journal). Le
+  symptôme côté téléphone : « SQLite est à jour mais l'index distant n'a pas été
+  publié », alors que l'index servi était correct.
+- **Cause** : le service tourne sous `NT SERVICE\HomeSpotifyStorageAgent`, qui
+  n'a que les droits hérités de `BUILTIN\Utilisateurs` : `(RX)` sur
+  `data\index.json`, et sur le dossier `(WD,AD,WEA,WA)` — donc **création
+  autorisée, remplacement interdit**. L'écriture atomique
+  (fichier `.part` → `rename` sur la cible) échoue au `rename`, faute de DELETE
+  sur le fichier existant. L'index restait vivant uniquement parce que le script
+  de rafraîchissement officiel l'écrit **en contexte élevé**, hors agent.
+- **Conséquence** : un compte de service virtuel a besoin d'un ACE **explicite**
+  `(M)` sur le dossier ET sur le fichier qu'il remplace ; l'héritage `ProgramData`
+  ne suffit jamais. Corollaire : un `rename` atomique n'est pas testé tant qu'il
+  n'a pas écrasé une cible EXISTANTE appartenant à quelqu'un d'autre.
