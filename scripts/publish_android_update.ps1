@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Construit, vérifie et publie une mise à jour Android HomeSpotify.
 
@@ -128,9 +128,12 @@ $gitStatus = @(git -C $RepoRoot status --porcelain)
 $gitCommit = (git -C $RepoRoot rev-parse HEAD).Trim()
 $gitBranch = (git -C $RepoRoot branch --show-current).Trim()
 if ($gitStatus.Count -gt 0 -and -not $AllowDirty) {
-    Fail "worktree non propre ($($gitStatus.Count) entrées) — committer d'abord, ou -AllowDirty"
+    Fail "worktree non propre ($($gitStatus.Count) entrees) - committer d'abord, ou -AllowDirty"
 }
-Step "git     : $gitBranch @ $($gitCommit.Substring(0,8))$(if ($gitStatus.Count -gt 0) { ' (SALE)' })"
+$gitDirtyLabel = ''
+if ($gitStatus.Count -gt 0) { $gitDirtyLabel = ' (SALE)' }
+$gitShort = $gitCommit.Substring(0, 8)
+Step "git     : $gitBranch @ $gitShort$gitDirtyLabel"
 
 # --- 5. Qualité : analyse et tests ------------------------------------------
 Push-Location $FlutterRoot
@@ -222,9 +225,9 @@ $newState = [ordered]@{
 $newState | ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding utf8
 
 # --- 8. Contrôle de l'APK produite -----------------------------------------
-Step 'lecture des métadonnées réelles de l’APK'
+Step "lecture des métadonnées réelles de l'APK"
 $badging = & $aapt2 dump badging $apkPath 2>&1
-if ($LASTEXITCODE -ne 0) { Fail 'aapt2 n’a pas pu lire l’APK' }
+if ($LASTEXITCODE -ne 0) { Fail "aapt2 n'a pas pu lire l'APK" }
 $packageLine = $badging | Where-Object { $_ -like 'package:*' } | Select-Object -First 1
 if ($packageLine -notmatch "name='([^']+)'\s+versionCode='(\d+)'\s+versionName='([^']*)'") {
     Fail 'ligne package illisible dans aapt2 badging'
@@ -234,21 +237,21 @@ $apkVersionCode = [int] $Matches[2]
 $apkVersionName = $Matches[3]
 
 if ($apkPackage -ne $ExpectedPackageName) { Fail "packageName inattendu : $apkPackage" }
-if ($apkVersionCode -ne $VersionCode) { Fail "versionCode de l’APK ($apkVersionCode) != demandé ($VersionCode)" }
-if ($apkVersionName -ne $VersionName) { Fail "versionName de l’APK ($apkVersionName) != demandé ($VersionName)" }
+if ($apkVersionCode -ne $VersionCode) { Fail "versionCode de l'APK ($apkVersionCode) != demandé ($VersionCode)" }
+if ($apkVersionName -ne $VersionName) { Fail "versionName de l'APK ($apkVersionName) != demandé ($VersionName)" }
 
 Step 'contrôle du certificat de signature'
 $certs = & $apksigner verify --print-certs -v $apkPath 2>&1
 if ($LASTEXITCODE -ne 0) {
     $certs | ForEach-Object { Write-Host $_ }
-    Fail 'apksigner refuse l’APK'
+    Fail "apksigner refuse l'APK"
 }
 $certLine = $certs | Where-Object { $_ -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]{64})' } | Select-Object -First 1
 if (-not $certLine) { Fail 'empreinte de certificat introuvable' }
 $null = $certLine -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]{64})'
 $apkCert = $Matches[1].ToLowerInvariant()
 if ($apkCert -ne $ExpectedCertSha256.ToLowerInvariant()) {
-    Fail "CERTIFICAT INATTENDU ($apkCert). Android refuserait la mise à jour par-dessus l’application installée."
+    Fail "CERTIFICAT INATTENDU ($apkCert). Android refuserait la mise à jour par-dessus l'application installée."
 }
 
 $apkItem = Get-Item -LiteralPath $apkPath
@@ -282,7 +285,7 @@ $manifestPath = Join-Path $stagingDir "$VersionCode.json"
 )
 
 if ($BuildOnly) {
-    Step 'BuildOnly : rien n’est publié.'
+    Step "BuildOnly : rien n'est publié."
     [pscustomobject]@{
         published   = $false
         apkPath     = $apkPath

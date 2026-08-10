@@ -1106,3 +1106,19 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
   vérification automatique, l'instant de la dernière vérification est mémorisé
   pour les contrôles manuels AUSSI, et le contrôleur appelle `ref.keepAlive()`
   pour survivre au remontage de son observateur.
+
+### L-125 — PowerShell traite l'apostrophe typographique comme un délimiteur de chaîne (2026-08-10)
+
+- **Contexte** : `scripts/publish_android_update.ps1` refusait de se charger avec
+  des erreurs de syntaxe absurdes (« l'opérateur < est réservé », accolade
+  manquante) sur des lignes parfaitement valides, situées bien après la vraie
+  cause.
+- **Cause** : PowerShell accepte `’` (U+2019) et `‘` comme délimiteurs de chaîne
+  au même titre que `'`. Une apostrophe typographique écrite DANS une chaîne
+  simple la ferme prématurément — `'... de l’APK'` devient deux chaînes — et le
+  parseur se désynchronise pour tout le reste du fichier.
+- **Conséquence** : aucun caractère typographique dans un script PowerShell.
+  Corollaire : un `.ps1` contenant des accents doit être écrit en **UTF-8 AVEC
+  BOM**, sinon Windows PowerShell 5.1 le lit en ANSI. Contrôle rapide avant
+  toute exécution :
+  `[System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$null,[ref]$errs)`.
