@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
 import '../application/auth_controller.dart';
 import 'auth_widgets.dart';
 import 'bootstrap_screen.dart';
@@ -35,9 +36,10 @@ class _AuthLoadingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: authBackground,
-      body: Center(child: CircularProgressIndicator(color: authAccent)),
+    final colors = context.colors;
+    return Scaffold(
+      backgroundColor: colors.background,
+      body: Center(child: CircularProgressIndicator(color: colors.accent)),
     );
   }
 }
@@ -49,11 +51,12 @@ class _AuthErrorScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     return AuthScaffold(
       title: 'HomeSpotify',
       subtitle: 'Connexion au serveur impossible',
       children: [
-        const Icon(Icons.cloud_off_rounded, color: Colors.white38, size: 40),
+        Icon(Icons.cloud_off_rounded, color: colors.textTertiary, size: 40),
         const SizedBox(height: 12),
         AuthErrorText(message ?? 'Serveur HomeSpotify inaccessible.'),
         AuthSubmitButton(

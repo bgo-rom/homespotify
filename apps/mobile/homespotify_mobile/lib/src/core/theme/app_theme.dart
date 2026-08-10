@@ -3,17 +3,11 @@ import 'package:flutter/material.dart';
 import 'app_colors.dart';
 import 'app_shapes.dart';
 import 'app_typography.dart';
-import 'home_design.dart';
 
-/// Thèmes de l'application.
-///
-/// - [light] / [dark] : « Direction 33 — Clay Tactile Premium ». Ce sont les
-///   deux faces du MÊME design system, sélectionnées par `ThemeMode.system`.
-///   Toutes les routes de `appRouter` s'y appuient désormais.
-/// - [legacyDark] : thème sombre HISTORIQUE. Les écrans applicatifs sont
-///   entièrement migrés ; ce thème reste uniquement le thème du parcours
-///   d'authentification (`AuthFlowScreen`, monté hors de `appRouter` avant
-///   connexion), lui-même pas encore refondu en Direction 33.
+/// Thèmes de l'application — [light] / [dark] : « Direction 33 — Clay
+/// Tactile Premium ». Ce sont les deux faces du MÊME design system,
+/// sélectionnées par `ThemeMode.system`. Toute l'application s'y appuie,
+/// du parcours d'authentification pré-connexion à `appRouter`.
 abstract final class AppTheme {
   static final ThemeData light = _build(AppColors.light);
   static final ThemeData dark = _build(AppColors.dark);
@@ -118,43 +112,4 @@ abstract final class AppTheme {
       extensions: <ThemeExtension<dynamic>>[colors],
     );
   }
-
-  /// Thème sombre HISTORIQUE — identique à celui d'avant la refonte.
-  ///
-  /// Toutes les routes de `appRouter` sont désormais en Direction 33 ; ce
-  /// thème ne sert plus qu'au parcours d'authentification pré-connexion
-  /// (`AuthFlowScreen`, monté directement par `main.dart`, hors `appRouter`).
-  /// La palette [AppColors.dark] y est tout de même attachée, pour que les
-  /// composants DÉJÀ migrés (mini-player) s'y affichent correctement.
-  static final ThemeData legacyDark = ThemeData(
-    brightness: Brightness.dark,
-    scaffoldBackgroundColor: HomeDesign.background,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: HomeDesign.accent,
-      brightness: Brightness.dark,
-      surface: HomeDesign.surface,
-    ),
-    appBarTheme: const AppBarTheme(
-      backgroundColor: HomeDesign.background,
-      foregroundColor: Colors.white,
-      surfaceTintColor: Colors.transparent,
-      elevation: 0,
-    ),
-    navigationBarTheme: const NavigationBarThemeData(
-      backgroundColor: HomeDesign.surface,
-      elevation: 0,
-      labelTextStyle: WidgetStatePropertyAll(
-        TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
-      ),
-    ),
-    filledButtonTheme: FilledButtonThemeData(
-      style: FilledButton.styleFrom(
-        backgroundColor: HomeDesign.accent,
-        foregroundColor: Colors.black,
-        minimumSize: const Size(48, 48),
-      ),
-    ),
-    visualDensity: VisualDensity.standard,
-    extensions: const <ThemeExtension<dynamic>>[AppColors.dark],
-  );
 }

@@ -257,9 +257,11 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
       return MaterialApp(
         title: 'HomeSpotify',
         debugShowCheckedModeBanner: false,
-        // Le parcours d'authentification n'est pas encore migré en
-        // Direction 33 : il reste figé sur le thème sombre historique.
-        theme: AppTheme.legacyDark,
+        // « Direction 33 » clair et sombre, comme l'application principale :
+        // le parcours d'authentification suit désormais le même thème.
+        theme: AppTheme.light,
+        darkTheme: AppTheme.dark,
+        themeMode: ThemeMode.system,
         // L'assistant de mise à jour couvre AUSSI l'écran de connexion : une
         // version trop ancienne pour ouvrir une session doit pouvoir se mettre
         // à jour (cf. features/app_update).

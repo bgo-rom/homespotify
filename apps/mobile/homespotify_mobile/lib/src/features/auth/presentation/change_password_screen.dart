@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
 import '../application/auth_controller.dart';
 import 'auth_widgets.dart';
 
@@ -38,6 +39,7 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final state = ref.watch(authControllerProvider);
     return AuthScaffold(
       title: 'Nouveau mot de passe requis',
@@ -77,9 +79,9 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
           onPressed: state.busy
               ? null
               : () => ref.read(authControllerProvider.notifier).logout(),
-          child: const Text(
+          child: Text(
             'Se déconnecter',
-            style: TextStyle(color: Colors.white54),
+            style: TextStyle(color: colors.textSecondary),
           ),
         ),
       ],

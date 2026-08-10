@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
 import '../application/auth_controller.dart';
 import 'auth_widgets.dart';
 
@@ -11,13 +12,14 @@ class LockScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final state = ref.watch(authControllerProvider);
     final controller = ref.read(authControllerProvider.notifier);
     return AuthScaffold(
       title: 'HomeSpotify verrouillé',
       subtitle: 'Déverrouillez avec votre empreinte ou votre visage.',
       children: [
-        const Icon(Icons.fingerprint_rounded, color: authAccent, size: 64),
+        Icon(Icons.fingerprint_rounded, color: colors.accent, size: 64),
         const SizedBox(height: 16),
         AuthSubmitButton(
           label: 'Déverrouiller',
@@ -27,9 +29,9 @@ class LockScreen extends ConsumerWidget {
         const SizedBox(height: 10),
         TextButton(
           onPressed: state.busy ? null : controller.usePasswordInstead,
-          child: const Text(
+          child: Text(
             'Se reconnecter avec le mot de passe',
-            style: TextStyle(color: Colors.white54),
+            style: TextStyle(color: colors.textSecondary),
           ),
         ),
       ],

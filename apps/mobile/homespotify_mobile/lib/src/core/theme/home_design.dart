@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 ///
 /// ÉTAT DE LA MIGRATION « Direction 33 » :
 /// - Les COULEURS ci-dessous sont HISTORIQUES (thème sombre unique, accent vert
-///   Spotify). Elles ne servent plus qu'aux écrans pas encore refondus, rendus
-///   sous `AppTheme.legacyDark`. Interdit dans un écran migré : utiliser
+///   Spotify). Elles ne servent plus qu'aux quelques widgets pas encore
+///   refondus (famille Accueil). Interdit dans un écran migré : utiliser
 ///   `context.colors` (`AppColors`).
 /// - Les ESPACEMENTS, DURÉES et COURBES restent valables partout : ils sont
 ///   indépendants du thème et n'ont pas été redéfinis.

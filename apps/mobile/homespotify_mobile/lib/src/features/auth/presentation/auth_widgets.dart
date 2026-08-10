@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
-const authBackground = Color(0xFF0D0D10);
-const authCard = Color(0xFF1A1A22);
-const authAccent = Color(0xFF1DB954);
-const authErrorColor = Color(0xFFE57373);
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/soft_surface.dart';
 
-/// Gabarit commun des écrans d'authentification : fond sombre, logo, carte.
+/// Gabarit commun des écrans d'authentification — Direction 33. Fond de page,
+/// badge sculpté, carte unique pour le formulaire ; même grammaire que le
+/// reste de l'application (`SoftCard`, `SoftCircle`, `context.colors`).
 class AuthScaffold extends StatelessWidget {
   const AuthScaffold({
     super.key,
@@ -20,53 +21,59 @@ class AuthScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: authBackground,
+      backgroundColor: colors.background,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Icon(
-                  Icons.music_note_rounded,
-                  color: authAccent,
-                  size: 56,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  title,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: SoftCircle(
+                      size: 76,
+                      color: colors.accent,
+                      shadows: colors.clayShadow,
+                      child: Icon(
+                        Icons.music_note_rounded,
+                        color: colors.onAccent,
+                        size: 36,
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  subtitle,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white54, height: 1.4),
-                ),
-                const SizedBox(height: 24),
-                DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: authCard,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Colors.white10),
+                  const SizedBox(height: 18),
+                  Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      color: colors.textPrimary,
+                    ),
                   ),
-                  child: Padding(
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colors.textSecondary,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  SoftCard(
                     padding: const EdgeInsets.all(20),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: children,
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -97,6 +104,7 @@ class AuthTextField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: TextField(
@@ -108,23 +116,27 @@ class AuthTextField extends StatelessWidget {
         onSubmitted: onSubmitted,
         autocorrect: false,
         enableSuggestions: !obscure,
-        style: const TextStyle(color: Colors.white),
+        style: TextStyle(color: colors.textPrimary),
         decoration: InputDecoration(
           labelText: label,
-          labelStyle: const TextStyle(color: Colors.white54),
+          labelStyle: TextStyle(color: colors.textSecondary),
           filled: true,
-          fillColor: authBackground,
+          fillColor: colors.surfaceSunken,
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Colors.white10),
+            borderRadius: AppRadius.chipRadius,
+            borderSide: BorderSide.none,
           ),
           enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Colors.white10),
+            borderRadius: AppRadius.chipRadius,
+            borderSide: BorderSide.none,
           ),
           focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: authAccent),
+            borderRadius: AppRadius.chipRadius,
+            borderSide: BorderSide(color: colors.accent, width: 1.5),
+          ),
+          disabledBorder: OutlineInputBorder(
+            borderRadius: AppRadius.chipRadius,
+            borderSide: BorderSide.none,
           ),
         ),
       ),
@@ -140,16 +152,13 @@ class AuthErrorText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (message == null || message!.isEmpty) return const SizedBox.shrink();
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Text(
         message!,
         textAlign: TextAlign.center,
-        style: const TextStyle(
-          color: authErrorColor,
-          fontSize: 13,
-          height: 1.3,
-        ),
+        style: TextStyle(color: colors.danger, fontSize: 13, height: 1.3),
       ),
     );
   }
@@ -169,20 +178,22 @@ class AuthSubmitButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return FilledButton(
       style: FilledButton.styleFrom(
-        backgroundColor: authAccent,
-        foregroundColor: Colors.black,
+        backgroundColor: colors.accent,
+        foregroundColor: colors.onAccent,
         padding: const EdgeInsets.symmetric(vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
       ),
       onPressed: busy ? null : onPressed,
       child: busy
-          ? const SizedBox(
+          ? SizedBox(
               width: 18,
               height: 18,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: Colors.black54,
+                color: colors.onAccent,
               ),
             )
           : Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
