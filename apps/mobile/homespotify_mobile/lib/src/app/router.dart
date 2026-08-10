@@ -330,7 +330,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/downloads',
       name: 'downloads',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const DownloadsScreen(),
       ),
