@@ -2,3 +2,11 @@ packages:
   - "apps/*"
   - "services/*"
   - "packages/*"
+
+# Correctifs de sécurité sur dépendances transitives (audit pnpm) : figées au
+# minimum patché tant que Fastify ne les remonte pas dans notre plage semver.
+#   - find-my-way <=9.6.0 : DoS HTTP/2 (GHSA-c96f-x56v-gq3h)
+#   - fast-uri <3.1.5     : host confusion (GHSA-7p8r-x3mc-p8w7)
+overrides:
+  find-my-way: ">=9.7.0"
+  fast-uri: ">=3.1.5"

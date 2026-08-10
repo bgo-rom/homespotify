@@ -15,9 +15,18 @@
     -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!--
+      usesCleartextTraffic="false" : le HTTP en clair est interdit en release,
+      explicitement plutôt que par simple défaut du targetSdk. La variante debug
+      le réautorise via son propre network_security_config (tools:replace), qui
+      prime sur cet attribut UNIQUEMENT en debug. La build release, elle, ne
+      parle qu'en HTTPS — vers music.romainbegot.fr comme vers le point de mise
+      à jour.
+    -->
     <application
         android:label="homespotify_mobile"
         android:name="${applicationName}"
+        android:usesCleartextTraffic="false"
         android:icon="@mipmap/ic_launcher">
         
         <activity

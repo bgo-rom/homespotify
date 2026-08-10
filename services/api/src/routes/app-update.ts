@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { parseRangeHeader } from '../lib/range.js';
+import { createRateLimiter, APP_UPDATE_RATE_LIMIT } from '../lib/rate-limit.js';
 import {
   AndroidReleaseCatalog,
   AndroidReleaseManifestError,
@@ -81,6 +82,11 @@ export function registerAppUpdateRoutes(app: FastifyInstance): void {
   const androidDir = app.config.appUpdate?.androidDir;
   const catalog = androidDir === undefined ? null : new AndroidReleaseCatalog(androidDir);
 
+  // Ces deux routes sont publiques (cf. en-tête de fichier). Un limiteur borne
+  // l'abus sans gêner le rythme de sondage normal du client : une seule IP ne
+  // peut pas transformer le point de mise à jour en amplificateur de trafic.
+  const rateLimit = createRateLimiter(APP_UPDATE_RATE_LIMIT);
+
   /**
    * Dernière version publiée. `currentVersionCode` est facultatif : sans lui,
    * le serveur ne prétend pas savoir si une mise à jour s'applique et renvoie
@@ -88,6 +94,7 @@ export function registerAppUpdateRoutes(app: FastifyInstance): void {
    */
   app.get<{ Querystring: { currentVersionCode?: string } }>(
     '/api/app-update/android/latest',
+    { preHandler: rateLimit },
     async (request, reply) => {
       if (catalog === null) return unconfigured(reply);
 
@@ -147,6 +154,7 @@ export function registerAppUpdateRoutes(app: FastifyInstance): void {
    */
   app.get<{ Params: { versionCode: string } }>(
     '/api/app-update/android/download/:versionCode',
+    { preHandler: rateLimit },
     async (request, reply) => {
       if (catalog === null) return unconfigured(reply);
 

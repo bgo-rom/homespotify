@@ -18,6 +18,7 @@ import {
 import { recordAudit } from '../auth/audit.js';
 import { backfillOwnerLibrary } from '../library/user-library-service.js';
 import { signAccessToken, type AuthGuards } from '../auth/guards.js';
+import { createRateLimiter, AUTH_RATE_LIMIT } from '../lib/rate-limit.js';
 import {
   hashPassword,
   validatePassword,
@@ -78,6 +79,12 @@ export function registerAuthRoutes(
 ): void {
   const handle = app.dbHandle;
 
+  // Limiteur partagé par les routes d'authentification non authentifiées
+  // (bourrage d'identifiants) et le changement de mot de passe. Clé = IP réelle
+  // du client (cf. lib/rate-limit.ts). Fenêtre large, seuil hors d'atteinte
+  // pour un humain, mais fatal à une automatisation.
+  const authRateLimit = createRateLimiter(AUTH_RATE_LIMIT);
+
   function issueAuthPayload(user: UserRow, issued: IssuedSession) {
     return {
       user: toPublicUser(user),
@@ -93,7 +100,10 @@ export function registerAuthRoutes(
     bootstrapRequired: countUsers(handle) === 0,
   }));
 
-  app.post<{ Body: BootstrapBody }>('/api/auth/bootstrap', async (request, reply) => {
+  app.post<{ Body: BootstrapBody }>(
+    '/api/auth/bootstrap',
+    { preHandler: authRateLimit },
+    async (request, reply) => {
     const body = request.body ?? {};
     const username = normalizeUsername(body.username);
     if (!username) {
@@ -170,9 +180,13 @@ export function registerAuthRoutes(
       metadata: { username: created.username, role: created.role },
     });
     return reply.code(201).send(issueAuthPayload(created, issued));
-  });
+    },
+  );
 
-  app.post<{ Body: CredentialsBody }>('/api/auth/login', async (request, reply) => {
+  app.post<{ Body: CredentialsBody }>(
+    '/api/auth/login',
+    { preHandler: authRateLimit },
+    async (request, reply) => {
     const body = request.body ?? {};
     const username = normalizeUsername(body.username);
     const password = typeof body.password === 'string' ? body.password : '';
@@ -232,9 +246,13 @@ export function registerAuthRoutes(
     });
     hooks.onLoginSuccess?.(user.id);
     return issueAuthPayload({ ...user, lastLoginAt: now }, issued);
-  });
+    },
+  );
 
-  app.post<{ Body: RefreshBody }>('/api/auth/refresh', async (request, reply) => {
+  app.post<{ Body: RefreshBody }>(
+    '/api/auth/refresh',
+    { preHandler: authRateLimit },
+    async (request, reply) => {
     const refreshToken = typeof request.body?.refreshToken === 'string' ? request.body.refreshToken : '';
     if (refreshToken.length === 0) return invalidCredentials(reply);
 
@@ -249,7 +267,8 @@ export function registerAuthRoutes(
     }
 
     return issueAuthPayload(user, rotated);
-  });
+    },
+  );
 
   app.post<{ Body: RefreshBody }>('/api/auth/logout', async (request, reply) => {
     const refreshToken = typeof request.body?.refreshToken === 'string' ? request.body.refreshToken : '';
@@ -285,7 +304,7 @@ export function registerAuthRoutes(
 
   app.post<{ Body: ChangePasswordBody }>(
     '/api/auth/change-password',
-    { preHandler: guards.requireAuth({ allowPendingPasswordChange: true }) },
+    { preHandler: [authRateLimit, guards.requireAuth({ allowPendingPasswordChange: true })] },
     async (request, reply) => {
       const body = request.body ?? {};
       const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : '';
