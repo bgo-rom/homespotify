@@ -1160,3 +1160,26 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
   `(M)` sur le dossier ET sur le fichier qu'il remplace ; l'héritage `ProgramData`
   ne suffit jamais. Corollaire : un `rename` atomique n'est pas testé tant qu'il
   n'a pas écrasé une cible EXISTANTE appartenant à quelqu'un d'autre.
+
+### L-128 — Un checkpoint (SHA) ne désigne pas un worktree ; vérifier HEAD avant de lancer une vague (2026-08-10)
+
+- **Contexte** : démarrage de la Vague 4 Direction 33, censée continuer depuis
+  le checkpoint `1927db5`. Le worktree ouvert par défaut pour la tâche
+  (`homespotify-cutover-d1-3eb1be`, branche `claude/wave-4-direction-33-a1f932`)
+  était en réalité sur `f09cc53`, un ancêtre STRICT de `1927db5` — le design
+  system Direction 33 (ClayHeader, SoftCard, AppColors…) et les vagues 1-3
+  n'y existaient tout simplement pas.
+- **Leçon** : un SHA de checkpoint est un point dans l'historique global du
+  dépôt, pas une garantie sur l'état du worktree où l'agent démarre. Plusieurs
+  worktrees peuvent référencer des branches ayant divergé bien avant ou après
+  ce SHA (ici, fusionner `1927db5` aurait aussi ramené ~50 commits backend/
+  Antra/VPS totalement hors sujet, interdits par `CLAUDE.md` dans ce
+  worktree). Le bon réflexe : `git log --oneline -5` + `git merge-base HEAD
+  <checkpoint>` AVANT toute lecture de code, pour confirmer que le worktree
+  courant contient bien le travail attendu plutôt que de supposer que le SHA
+  cité suffit à le prouver.
+- **Conséquence** : la Vague 4 a été exécutée dans
+  `homespotify-c2-db-handoff-66ad37` (déjà sur `1927db5`), pas dans le
+  worktree ouvert par défaut. Toujours confirmer avec l'utilisateur avant de
+  changer de worktree en cours de tâche plutôt que de merger/cherry-picker
+  silencieusement pour combler l'écart.
