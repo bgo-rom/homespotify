@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 
 import '../../../../app/navigation.dart';
-import '../../../../core/theme/home_design.dart';
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 
 class LibrarySectionNavigation extends StatelessWidget {
   const LibrarySectionNavigation({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final destinations = <_LibraryDestination>[
       const _LibraryDestination('Titres', Icons.music_note_rounded, null),
       _LibraryDestination('Albums', Icons.album_outlined, () {
@@ -28,28 +31,26 @@ class LibrarySectionNavigation extends StatelessWidget {
       child: ListView.separated(
         key: const PageStorageKey<String>('library-section-navigation'),
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
         itemCount: destinations.length,
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           final destination = destinations[index];
           final selected = destination.onTap == null;
+          final ink = selected ? colors.onAccent : colors.textSecondary;
           return ChoiceChip(
             selected: selected,
             showCheckmark: false,
-            avatar: Icon(
-              destination.icon,
-              size: 18,
-              color: selected ? Colors.black : Colors.white70,
-            ),
+            avatar: Icon(destination.icon, size: 18, color: ink),
             label: Text(destination.label),
-            labelStyle: TextStyle(
-              color: selected ? Colors.black : Colors.white70,
+            labelStyle: theme.textTheme.labelLarge?.copyWith(
+              color: ink,
               fontWeight: FontWeight.w600,
             ),
-            selectedColor: HomeDesign.accent,
-            backgroundColor: HomeDesign.surface,
+            selectedColor: colors.accent,
+            backgroundColor: colors.surface,
             side: BorderSide.none,
+            shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
             onSelected: (_) => destination.onTap?.call(),
           );
         },

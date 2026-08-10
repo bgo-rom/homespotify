@@ -251,7 +251,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('EN LECTURE'), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.arrow_back_rounded));
+    await tester.tap(find.byIcon(Icons.expand_more_rounded));
     await tester.pumpAndSettle();
 
     expect(find.text('bibliotheque'), findsOneWidget);

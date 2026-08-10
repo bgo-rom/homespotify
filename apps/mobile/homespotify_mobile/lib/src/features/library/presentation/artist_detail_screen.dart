@@ -4,6 +4,10 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/navigation.dart';
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/home_ui_states.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../player/presentation/widgets/mini_player.dart';
 import '../data/library_api.dart';
@@ -14,9 +18,6 @@ import 'library_playback_controller.dart';
 import 'track_actions_bottom_sheet.dart';
 import 'widgets/album_tile.dart';
 import 'widgets/artist_tile.dart';
-
-const Color _bg = Color(0xFF0D0D10);
-const Color _accent = Color(0xFF1DB954);
 
 class ArtistDetailScreen extends ConsumerStatefulWidget {
   const ArtistDetailScreen({
@@ -48,6 +49,8 @@ class _ArtistDetailScreenState extends ConsumerState<ArtistDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final library = ref.watch(libraryProvider);
     final artists = ref.watch(artistsProvider);
     final artist = _findArtist(artists);
@@ -67,80 +70,86 @@ class _ArtistDetailScreenState extends ConsumerState<ArtistDetailScreen> {
     }
 
     return Scaffold(
-      backgroundColor: _bg,
-      appBar: AppBar(
-        backgroundColor: _bg,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: Text(
-          artist?.name ?? 'Artiste',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-      ),
-      body: library.when(
-        loading: () =>
-            const Center(child: CircularProgressIndicator(color: _accent)),
-        error: (error, _) => _ArtistLoadError(
-          message: error is LibraryApiException
-              ? error.message
-              : 'Erreur inattendue.',
-        ),
-        data: (_) => artist == null
-            ? const _ArtistNotFound()
-            : ListView(
-                padding: const EdgeInsets.only(bottom: 16),
-                children: [
-                  _ArtistHeader(
-                    artist: artist,
-                    onPlay: _loadingTrackId == null
-                        ? () => _playArtist(
-                            context,
-                            artist,
-                            initialIndex: 0,
-                            playAll: true,
-                          )
-                        : null,
-                  ),
-                  if (artist.albums.isNotEmpty)
-                    _ArtistAlbumsSection(
-                      key: _albumsSectionKey,
-                      artist: artist,
-                    ),
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
-                    child: Text(
-                      'Titres',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  for (var index = 0; index < artist.tracks.length; index++)
-                    _ArtistTrackTile(
-                      index: index,
-                      track: artist.tracks[index],
-                      isLoading: _loadingTrackId == artist.tracks[index].id,
-                      onTap: _loadingTrackId == artist.tracks[index].id
-                          ? null
-                          : () => _playArtist(
-                              context,
-                              artist,
-                              initialIndex: index,
-                              playAll: false,
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            ClayHeader(
+              title: artist?.name ?? 'Artiste',
+              titleStyle: theme.textTheme.headlineSmall,
+              onBack: () => Navigator.of(context).maybePop(),
+            ),
+            Expanded(
+              child: library.when(
+                loading: () => const HomeLoadingSkeleton(rows: 7),
+                error: (error, _) => HomeErrorState(
+                  message: error is LibraryApiException
+                      ? error.message
+                      : 'Erreur inattendue.',
+                  onRetry: () => ref.invalidate(libraryProvider),
+                ),
+                data: (_) => artist == null
+                    ? _ArtistNotFound()
+                    : ListView(
+                        padding: const EdgeInsets.only(bottom: 18),
+                        children: [
+                          _ArtistHeader(
+                            artist: artist,
+                            onPlay: _loadingTrackId == null
+                                ? () => _playArtist(
+                                    context,
+                                    artist,
+                                    initialIndex: 0,
+                                    playAll: true,
+                                  )
+                                : null,
+                          ),
+                          if (artist.albums.isNotEmpty)
+                            _ArtistAlbumsSection(
+                              key: _albumsSectionKey,
+                              artist: artist,
                             ),
-                      onLongPress: () => showTrackActionsBottomSheet(
-                        context,
-                        ref,
-                        track: artist.tracks[index],
-                        origin: 'Artiste',
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(
+                              AppLayout.gutter, 18, AppLayout.gutter, 6),
+                            child: Text(
+                              'Titres',
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                color: colors.textPrimary,
+                              ),
+                            ),
+                          ),
+                          for (var index = 0;
+                              index < artist.tracks.length;
+                              index++)
+                            _ArtistTrackTile(
+                              index: index,
+                              track: artist.tracks[index],
+                              isLoading:
+                                  _loadingTrackId == artist.tracks[index].id,
+                              onTap:
+                                  _loadingTrackId == artist.tracks[index].id
+                                  ? null
+                                  : () => _playArtist(
+                                      context,
+                                      artist,
+                                      initialIndex: index,
+                                      playAll: false,
+                                    ),
+                              onLongPress: () => showTrackActionsBottomSheet(
+                                context,
+                                ref,
+                                track: artist.tracks[index],
+                                origin: 'Artiste',
+                              ),
+                            ),
+                        ],
                       ),
-                    ),
-                ],
               ),
+            ),
+          ],
+        ),
       ),
       bottomNavigationBar: const MiniPlayer(),
     );
@@ -201,32 +210,38 @@ class _ArtistHeader extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final api = ref.read(libraryApiProvider);
     final trackLabel = artist.trackCount > 1 ? 'pistes' : 'piste';
     final albumLabel = artist.albumCount > 1 ? 'albums' : 'album';
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 8, 24, 4),
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 8, AppLayout.gutter, 4),
       child: Column(
         children: [
-          SizedBox(
-            width: 176,
-            height: 176,
-            child: ArtistArtwork(
-              url: artist.coverTrackId == null
-                  ? null
-                  : api.coverUri(artist.coverTrackId!).toString(),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: colors.clayShadow,
+            ),
+            child: SizedBox(
+              width: 180,
+              height: 180,
+              child: ArtistArtwork(
+                url: artist.coverTrackId == null
+                    ? null
+                    : api.coverUri(artist.coverTrackId!).toString(),
+              ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           Text(
             artist.name,
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.w800,
+            style: theme.textTheme.headlineSmall?.copyWith(
+              color: colors.textPrimary,
             ),
           ),
           const SizedBox(height: 6),
@@ -237,21 +252,21 @@ class _ArtistHeader extends ConsumerWidget {
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colors.textSecondary,
+            ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
           FilledButton.icon(
             style: FilledButton.styleFrom(
-              backgroundColor: _accent,
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 12),
+              backgroundColor: colors.accent,
+              foregroundColor: colors.onAccent,
+              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 13),
+              shape: RoundedRectangleBorder(borderRadius: AppRadius.pillRadius),
             ),
             onPressed: onPlay,
             icon: const Icon(Icons.play_arrow_rounded),
-            label: const Text(
-              'Lire',
-              style: TextStyle(fontWeight: FontWeight.w700),
-            ),
+            label: const Text('Lire'),
           ),
         ],
       ),
@@ -266,38 +281,38 @@ class _ArtistAlbumsSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final api = ref.read(libraryApiProvider);
     return Padding(
       padding: const EdgeInsets.only(top: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
             child: Text(
               'Albums',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
+              style: theme.textTheme.titleLarge?.copyWith(
+                color: colors.textPrimary,
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           SizedBox(
-            height: 154,
+            height: 160,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
               itemCount: artist.albums.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              separatorBuilder: (_, _) => const SizedBox(width: 14),
               itemBuilder: (context, index) {
                 final album = artist.albums[index];
                 return SizedBox(
-                  width: 112,
+                  width: 118,
                   child: InkWell(
                     key: ValueKey<String>('artist-album-${album.key}'),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: AppRadius.artworkRadius,
                     onTap: () {
                       logUi(
                         'tap album artiste "${album.title}" '
@@ -308,24 +323,31 @@ class _ArtistAlbumsSection extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SizedBox(
-                          width: 112,
-                          height: 112,
-                          child: AlbumCover(
-                            url: album.coverTrackId == null
-                                ? null
-                                : api.coverUri(album.coverTrackId!).toString(),
-                            borderRadius: 8,
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: AppRadius.artworkRadius,
+                            boxShadow: colors.clayShadowSmall,
+                          ),
+                          child: SizedBox(
+                            width: 118,
+                            height: 118,
+                            child: AlbumCover(
+                              url: album.coverTrackId == null
+                                  ? null
+                                  : api
+                                      .coverUri(album.coverTrackId!)
+                                      .toString(),
+                              borderRadius: AppRadius.artwork,
+                            ),
                           ),
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 8),
                         Text(
                           album.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.textSecondary,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -359,21 +381,22 @@ class _ArtistTrackTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final album = track.album.trim().isEmpty ? unknownAlbumTitle : track.album;
     return ListTile(
       onTap: onTap,
       onLongPress: onLongPress,
       dense: true,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
       leading: SizedBox(
         width: 26,
         child: Text(
           '${index + 1}',
           textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: Colors.white38,
-            fontSize: 13,
-            fontFeatures: [FontFeature.tabularFigures()],
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colors.textTertiary,
+            fontFeatures: const [FontFeature.tabularFigures()],
           ),
         ),
       ),
@@ -381,98 +404,45 @@ class _ArtistTrackTile extends StatelessWidget {
         track.title,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14.5,
-          fontWeight: FontWeight.w500,
-        ),
+        style: theme.textTheme.titleSmall?.copyWith(color: colors.textPrimary),
       ),
       subtitle: Text(
-        isLoading ? 'Préparation de la lecture...' : album,
+        isLoading ? 'Préparation de la lecture…' : album,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: isLoading ? _accent : Colors.white54,
-          fontSize: 12,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: isLoading ? colors.accent : colors.textSecondary,
         ),
       ),
       trailing: isLoading
-          ? const SizedBox(
+          ? SizedBox(
               width: 20,
               height: 20,
               child: CircularProgressIndicator(
                 strokeWidth: 2.2,
-                color: _accent,
+                color: colors.accent,
               ),
             )
           : Text(
               _formatTrackDuration(track.duration),
-              style: const TextStyle(
-                color: Colors.white38,
-                fontSize: 12,
-                fontFeatures: [FontFeature.tabularFigures()],
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.textTertiary,
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
-    );
-  }
-}
-
-class _ArtistLoadError extends StatelessWidget {
-  const _ArtistLoadError({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Text(
-          message,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white70, fontSize: 15),
-        ),
-      ),
     );
   }
 }
 
 class _ArtistNotFound extends StatelessWidget {
-  const _ArtistNotFound();
-
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.person_off_outlined,
-              size: 64,
-              color: Colors.white24,
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Artiste introuvable dans la bibliothèque chargée.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white70, fontSize: 15),
-            ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              style: FilledButton.styleFrom(
-                backgroundColor: _accent,
-                foregroundColor: Colors.black,
-              ),
-              onPressed: () =>
-                  context.canPop() ? context.pop() : context.go('/artists'),
-              icon: const Icon(Icons.arrow_back_rounded),
-              label: const Text('Retour'),
-            ),
-          ],
-        ),
-      ),
+    return HomeEmptyState(
+      icon: Icons.person_off_outlined,
+      title: 'Artiste introuvable',
+      message: 'Cet artiste n’est pas dans la bibliothèque chargée.',
+      actionLabel: 'Retour',
+      onAction: () => context.canPop() ? context.pop() : context.go('/artists'),
     );
   }
 }

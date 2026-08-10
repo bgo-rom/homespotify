@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/network/authenticated_network_image.dart';
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 import '../../../../core/theme/home_design.dart';
 import '../../../offline/application/offline_index.dart';
 import '../../domain/track.dart';
 import 'current_track_indicator.dart';
 import 'track_favorite_button.dart';
 
+/// Ligne de piste « Direction 33 ». Toutes les couleurs viennent de
+/// `context.colors` ; la logique (favori, indicateur de lecture, badge hors
+/// ligne, détails techniques, état de chargement) est inchangée.
 class LibraryTrackTile extends ConsumerWidget {
   const LibraryTrackTile({
     super.key,
@@ -26,6 +31,8 @@ class LibraryTrackTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final active = ref.watch(isTrackPlayingProvider('${track.id}'));
     // Badge hors ligne : lu depuis l'index mémoire partagé (une seule lecture
     // SQLite par session, jamais une requête par piste).
@@ -44,148 +51,156 @@ class LibraryTrackTile extends ConsumerWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
+        color: active ? colors.accentSoft : Colors.transparent,
+        borderRadius: AppRadius.cardRadius,
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           key: ValueKey<int>(track.id),
           onTap: onTap,
           onLongPress: onLongPress,
-          borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
+          borderRadius: AppRadius.cardRadius,
           child: Semantics(
             button: true,
             label: 'Lire ${track.title} de ${track.artist}',
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 76),
-              child: Row(
-                children: [
-                  AnimatedContainer(
-                    duration: HomeDesign.animationDuration(
-                      context,
-                      HomeDesign.microAnimation,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    AnimatedContainer(
+                      duration: HomeDesign.animationDuration(
+                        context,
+                        HomeDesign.microAnimation,
+                      ),
+                      width: 3,
+                      height: active ? 44 : 20,
+                      decoration: BoxDecoration(
+                        color: active ? colors.accent : Colors.transparent,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
                     ),
-                    width: 3,
-                    height: active ? 44 : 20,
-                    decoration: BoxDecoration(
-                      color: active ? HomeDesign.accent : Colors.transparent,
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                  ),
-                  const SizedBox(width: 9),
-                  _TrackArtwork(url: localCoverUrl ?? coverUrl, active: active),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        AnimatedDefaultTextStyle(
-                          duration: HomeDesign.animationDuration(
-                            context,
-                            HomeDesign.microAnimation,
+                    const SizedBox(width: 9),
+                    _TrackArtwork(url: localCoverUrl ?? coverUrl, active: active),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          AnimatedDefaultTextStyle(
+                            duration: HomeDesign.animationDuration(
+                              context,
+                              HomeDesign.microAnimation,
+                            ),
+                            style: (theme.textTheme.titleMedium ??
+                                    const TextStyle())
+                                .copyWith(
+                              color: active
+                                  ? colors.accent
+                                  : colors.textPrimary,
+                            ),
+                            child: Text(
+                              track.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          style: TextStyle(
-                            color: active ? HomeDesign.accent : Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          child: Text(
-                            track.title,
+                          const SizedBox(height: 3),
+                          Text(
+                            isLoading
+                                ? 'Préparation de la lecture…'
+                                : secondary,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: isLoading
+                                  ? colors.accent
+                                  : colors.textSecondary,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          isLoading ? 'Préparation de la lecture…' : secondary,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: isLoading
-                                ? HomeDesign.accent
-                                : Colors.white54,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                        if (details.isNotEmpty || offlineProfile != null) ...[
-                          const SizedBox(height: 3),
-                          Row(
-                            children: [
-                              if (offlineProfile != null) ...[
-                                Icon(
-                                  Icons.download_done_rounded,
-                                  key: ValueKey('offline-badge-${track.id}'),
-                                  size: 12,
-                                  color: HomeDesign.accent,
-                                ),
-                                const SizedBox(width: 3),
-                                Text(
-                                  offlineProfile,
-                                  style: const TextStyle(
-                                    color: HomeDesign.accent,
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w700,
+                          if (details.isNotEmpty ||
+                              offlineProfile != null) ...[
+                            const SizedBox(height: 3),
+                            Row(
+                              children: [
+                                if (offlineProfile != null) ...[
+                                  Icon(
+                                    Icons.download_done_rounded,
+                                    key: ValueKey('offline-badge-${track.id}'),
+                                    size: 12,
+                                    color: colors.accent,
                                   ),
-                                ),
-                                if (details.isNotEmpty)
-                                  const Text(
-                                    ' · ',
-                                    style: TextStyle(
-                                      color: Colors.white30,
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    offlineProfile,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: colors.accent,
                                       fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
-                              ],
-                              Flexible(
-                                child: Text(
-                                  details,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white30,
-                                    fontSize: 10.5,
-                                    fontFeatures: [
-                                      FontFeature.tabularFigures(),
-                                    ],
+                                  if (details.isNotEmpty)
+                                    Text(
+                                      ' · ',
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(
+                                        color: colors.textTertiary,
+                                        fontSize: 10.5,
+                                      ),
+                                    ),
+                                ],
+                                Flexible(
+                                  child: Text(
+                                    details,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: colors.textTertiary,
+                                      fontSize: 10.5,
+                                      fontFeatures: const [
+                                        FontFeature.tabularFigures(),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
+                              ],
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
-                  ),
-                  if (isLoading)
-                    const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.2,
-                          color: HomeDesign.accent,
+                    if (isLoading)
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: colors.accent,
+                          ),
+                        ),
+                      )
+                    else ...[
+                      CurrentTrackIndicator(trackId: '${track.id}'),
+                      TrackFavoriteButton(
+                        trackId: track.id,
+                        iconSize: 22,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      IconButton(
+                        tooltip: 'Actions pour ${track.title}',
+                        onPressed: onLongPress,
+                        icon: Icon(
+                          Icons.more_vert_rounded,
+                          color: colors.textSecondary,
                         ),
                       ),
-                    )
-                  else ...[
-                    CurrentTrackIndicator(trackId: '${track.id}'),
-                    TrackFavoriteButton(
-                      trackId: track.id,
-                      iconSize: 22,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    IconButton(
-                      tooltip: 'Actions pour ${track.title}',
-                      onPressed: onLongPress,
-                      icon: const Icon(
-                        Icons.more_vert_rounded,
-                        color: Colors.white54,
-                      ),
-                    ),
+                    ],
+                    const SizedBox(width: 2),
                   ],
-                  const SizedBox(width: 2),
-                ],
+                ),
               ),
             ),
           ),
@@ -203,9 +218,14 @@ class _TrackArtwork extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final placeholder = const ColoredBox(
-      color: HomeDesign.surfaceRaised,
-      child: Icon(Icons.music_note_rounded, color: Colors.white24, size: 24),
+    final colors = context.colors;
+    final placeholder = ColoredBox(
+      color: colors.surfaceSunken,
+      child: Icon(
+        Icons.music_note_rounded,
+        color: colors.textTertiary,
+        size: 24,
+      ),
     );
     return AnimatedScale(
       scale: active ? 1.04 : 1,
@@ -213,24 +233,30 @@ class _TrackArtwork extends StatelessWidget {
         context,
         HomeDesign.microAnimation,
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(HomeDesign.radiusSmall),
-        child: SizedBox(
-          width: 54,
-          height: 54,
-          child: url == null
-              ? placeholder
-              : AuthenticatedNetworkImage(
-                  url!,
-                  fit: BoxFit.cover,
-                  cacheWidth: 108,
-                  cacheHeight: 108,
-                  filterQuality: FilterQuality.low,
-                  gaplessPlayback: true,
-                  loadingBuilder: (context, child, progress) =>
-                      progress == null ? child : placeholder,
-                  errorBuilder: (_, _, _) => placeholder,
-                ),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadius.chip),
+          boxShadow: colors.clayShadowSmall,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.chip),
+          child: SizedBox(
+            width: 54,
+            height: 54,
+            child: url == null
+                ? placeholder
+                : AuthenticatedNetworkImage(
+                    url!,
+                    fit: BoxFit.cover,
+                    cacheWidth: 108,
+                    cacheHeight: 108,
+                    filterQuality: FilterQuality.low,
+                    gaplessPlayback: true,
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null ? child : placeholder,
+                    errorBuilder: (_, _, _) => placeholder,
+                  ),
+          ),
         ),
       ),
     );

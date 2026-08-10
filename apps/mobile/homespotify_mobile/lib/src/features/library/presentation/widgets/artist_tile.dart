@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/network/authenticated_network_image.dart';
+import '../../../../core/theme/app_colors.dart';
 
 import '../library_artists.dart';
 
@@ -18,11 +19,13 @@ class ArtistTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final trackLabel = artist.trackCount > 1 ? 'pistes' : 'piste';
     final albumLabel = artist.albumCount > 1 ? 'albums' : 'album';
     return ListTile(
       onTap: onTap,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
       leading: SizedBox(
         width: 64,
         height: 64,
@@ -32,10 +35,8 @@ class ArtistTile extends StatelessWidget {
         artist.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 15.5,
-          fontWeight: FontWeight.w700,
+        style: theme.textTheme.titleMedium?.copyWith(
+          color: colors.textPrimary,
         ),
       ),
       subtitle: Padding(
@@ -46,10 +47,12 @@ class ArtistTile extends StatelessWidget {
           '${formatArtistDuration(artist.totalDuration)}',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Colors.white54, fontSize: 12),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colors.textSecondary,
+          ),
         ),
       ),
-      trailing: const Icon(Icons.chevron_right_rounded, color: Colors.white38),
+      trailing: Icon(Icons.chevron_right_rounded, color: colors.textTertiary),
     );
   }
 }
@@ -82,7 +85,7 @@ class ArtistArtwork extends StatelessWidget {
                 progress == null ? child : const _ArtistPlaceholder(),
           );
     if (circular) return ClipOval(child: image);
-    return ClipRRect(borderRadius: BorderRadius.circular(12), child: image);
+    return ClipRRect(borderRadius: BorderRadius.circular(16), child: image);
   }
 }
 
@@ -91,10 +94,11 @@ class _ArtistPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const ColoredBox(
-      color: Color(0xFF282832),
+    final colors = context.colors;
+    return ColoredBox(
+      color: colors.surfaceSunken,
       child: Center(
-        child: Icon(Icons.person_rounded, color: Colors.white24, size: 34),
+        child: Icon(Icons.person_rounded, color: colors.textTertiary, size: 34),
       ),
     );
   }

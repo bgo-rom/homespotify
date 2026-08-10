@@ -3,6 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/home_ui_states.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../player/presentation/widgets/mini_player.dart';
 import '../../offline/domain/offline_models.dart';
@@ -13,9 +18,6 @@ import 'library_albums.dart';
 import 'library_playback_controller.dart';
 import 'track_actions_bottom_sheet.dart';
 import 'widgets/album_tile.dart';
-
-const Color _bg = Color(0xFF0D0D10);
-const Color _accent = Color(0xFF1DB954);
 
 /// Détail d'un album : entête (pochette, méta, bouton Lire) + pistes.
 ///
@@ -35,66 +37,76 @@ class _AlbumDetailScreenState extends ConsumerState<AlbumDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final albums = ref.watch(albumsProvider);
     final album = _findAlbum(albums);
 
     return Scaffold(
-      backgroundColor: _bg,
-      appBar: AppBar(
-        backgroundColor: _bg,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: Text(
-          album?.title ?? 'Album',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        actions: [
-          if (album != null && album.tracks.isNotEmpty)
-            IconButton(
-              key: const ValueKey('album-download-all'),
-              tooltip: 'Télécharger l’album',
-              onPressed: () => showOfflineGroupDownloadSheet(
-                context,
-                type: OfflineGroupType.album,
-                sourceId: album.key,
-                title: album.title,
-                tracks: album.tracks,
-              ),
-              icon: const Icon(Icons.download_for_offline_outlined),
-            ),
-        ],
-      ),
-      body: album == null
-          ? const _AlbumNotFound()
-          : ListView(
-              padding: const EdgeInsets.only(bottom: 16),
-              children: [
-                _AlbumHeader(
-                  album: album,
-                  onPlay: _loadingTrackId == null
-                      ? () => _playAlbum(context, album, 0)
-                      : null,
-                ),
-                const SizedBox(height: 8),
-                for (var i = 0; i < album.tracks.length; i++)
-                  _AlbumTrackTile(
-                    index: i,
-                    track: album.tracks[i],
-                    isLoading: _loadingTrackId == album.tracks[i].id,
-                    onTap: _loadingTrackId == album.tracks[i].id
-                        ? null
-                        : () => _playAlbum(context, album, i),
-                    onLongPress: () => showTrackActionsBottomSheet(
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            ClayHeader(
+              title: album?.title ?? 'Album',
+              titleStyle: Theme.of(context).textTheme.headlineSmall,
+              onBack: () => Navigator.of(context).maybePop(),
+              actions: [
+                if (album != null && album.tracks.isNotEmpty)
+                  SoftCircle(
+                    key: const ValueKey('album-download-all'),
+                    size: 46,
+                    onTap: () => showOfflineGroupDownloadSheet(
                       context,
-                      ref,
-                      track: album.tracks[i],
-                      origin: 'Album',
+                      type: OfflineGroupType.album,
+                      sourceId: album.key,
+                      title: album.title,
+                      tracks: album.tracks,
+                    ),
+                    tooltip: 'Télécharger l’album',
+                    semanticLabel: 'Télécharger l’album',
+                    child: Icon(
+                      Icons.download_for_offline_outlined,
+                      size: 21,
+                      color: colors.textPrimary,
                     ),
                   ),
               ],
             ),
+            Expanded(
+              child: album == null
+                  ? _AlbumNotFound()
+                  : ListView(
+                      padding: const EdgeInsets.only(bottom: 18),
+                      children: [
+                        _AlbumHeader(
+                          album: album,
+                          onPlay: _loadingTrackId == null
+                              ? () => _playAlbum(context, album, 0)
+                              : null,
+                        ),
+                        const SizedBox(height: 8),
+                        for (var i = 0; i < album.tracks.length; i++)
+                          _AlbumTrackTile(
+                            index: i,
+                            track: album.tracks[i],
+                            isLoading: _loadingTrackId == album.tracks[i].id,
+                            onTap: _loadingTrackId == album.tracks[i].id
+                                ? null
+                                : () => _playAlbum(context, album, i),
+                            onLongPress: () => showTrackActionsBottomSheet(
+                              context,
+                              ref,
+                              track: album.tracks[i],
+                              origin: 'Album',
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
       bottomNavigationBar: const MiniPlayer(),
     );
   }
@@ -155,6 +167,8 @@ class _AlbumHeader extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final api = ref.read(libraryApiProvider);
     final meta = [
       album.artist,
@@ -164,29 +178,33 @@ class _AlbumHeader extends ConsumerWidget {
     ].join(' · ');
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 8, AppLayout.gutter, 0),
       child: Column(
         children: [
-          SizedBox(
-            width: 180,
-            height: 180,
-            child: AlbumCover(
-              url: album.coverTrackId == null
-                  ? null
-                  : api.coverUri(album.coverTrackId!).toString(),
-              borderRadius: 14,
+          DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: AppRadius.cardRadius,
+              boxShadow: colors.clayShadow,
+            ),
+            child: SizedBox(
+              width: 190,
+              height: 190,
+              child: AlbumCover(
+                url: album.coverTrackId == null
+                    ? null
+                    : api.coverUri(album.coverTrackId!).toString(),
+                borderRadius: AppRadius.card,
+              ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           Text(
             album.title,
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
+            style: theme.textTheme.headlineSmall?.copyWith(
+              color: colors.textPrimary,
             ),
           ),
           const SizedBox(height: 6),
@@ -195,21 +213,21 @@ class _AlbumHeader extends ConsumerWidget {
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colors.textSecondary,
+            ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
           FilledButton.icon(
             style: FilledButton.styleFrom(
-              backgroundColor: _accent,
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+              backgroundColor: colors.accent,
+              foregroundColor: colors.onAccent,
+              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 13),
+              shape: RoundedRectangleBorder(borderRadius: AppRadius.pillRadius),
             ),
             onPressed: onPlay,
             icon: const Icon(Icons.play_arrow_rounded),
-            label: const Text(
-              'Lire',
-              style: TextStyle(fontWeight: FontWeight.w700),
-            ),
+            label: const Text('Lire'),
           ),
         ],
       ),
@@ -234,20 +252,21 @@ class _AlbumTrackTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return ListTile(
       onTap: onTap,
       onLongPress: onLongPress,
       dense: true,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
       leading: SizedBox(
         width: 24,
         child: Text(
           '${index + 1}',
           textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: Colors.white38,
-            fontSize: 13,
-            fontFeatures: [FontFeature.tabularFigures()],
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colors.textTertiary,
+            fontFeatures: const [FontFeature.tabularFigures()],
           ),
         ),
       ),
@@ -255,36 +274,30 @@ class _AlbumTrackTile extends StatelessWidget {
         track.title,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14.5,
-          fontWeight: FontWeight.w500,
-        ),
+        style: theme.textTheme.titleSmall?.copyWith(color: colors.textPrimary),
       ),
       subtitle: Text(
-        isLoading ? 'Préparation de la lecture...' : track.artist,
+        isLoading ? 'Préparation de la lecture…' : track.artist,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: isLoading ? _accent : Colors.white54,
-          fontSize: 12,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: isLoading ? colors.accent : colors.textSecondary,
         ),
       ),
       trailing: isLoading
-          ? const SizedBox(
+          ? SizedBox(
               width: 20,
               height: 20,
               child: CircularProgressIndicator(
                 strokeWidth: 2.2,
-                color: _accent,
+                color: colors.accent,
               ),
             )
           : Text(
               _formatTrackDuration(track.duration),
-              style: const TextStyle(
-                color: Colors.white38,
-                fontSize: 12,
-                fontFeatures: [FontFeature.tabularFigures()],
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.textTertiary,
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
     );
@@ -292,37 +305,14 @@ class _AlbumTrackTile extends StatelessWidget {
 }
 
 class _AlbumNotFound extends StatelessWidget {
-  const _AlbumNotFound();
-
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.album_outlined, size: 64, color: Colors.white24),
-            const SizedBox(height: 16),
-            const Text(
-              'Album introuvable dans la bibliothèque chargée.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white70, fontSize: 15),
-            ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              style: FilledButton.styleFrom(
-                backgroundColor: _accent,
-                foregroundColor: Colors.black,
-              ),
-              onPressed: () =>
-                  context.canPop() ? context.pop() : context.go('/'),
-              icon: const Icon(Icons.arrow_back_rounded),
-              label: const Text('Retour'),
-            ),
-          ],
-        ),
-      ),
+    return HomeEmptyState(
+      icon: Icons.album_outlined,
+      title: 'Album introuvable',
+      message: 'Cet album n’est pas dans la bibliothèque chargée.',
+      actionLabel: 'Retour',
+      onAction: () => context.canPop() ? context.pop() : context.go('/'),
     );
   }
 }

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/app_colors.dart';
+
 /// Barre de progression tactile.
 ///
 /// Robuste : ne plante jamais si la durée est nulle ou inconnue (barre désactivée).
@@ -50,15 +52,22 @@ class _SeekBarState extends State<SeekBar> {
       microseconds: (rawRemaining.inMicroseconds / safeSpeed).round(),
     );
 
+    final colors = context.colors;
+    final timeStyle =
+        (Theme.of(context).textTheme.labelMedium ?? const TextStyle()).copyWith(
+      color: colors.textSecondary,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+
     return Column(
       children: [
         SliderTheme(
           data: SliderTheme.of(context).copyWith(
             trackHeight: 3,
-            activeTrackColor: const Color(0xFF1DB954),
-            inactiveTrackColor: Colors.white24,
-            thumbColor: Colors.white,
-            overlayColor: const Color(0x291DB954),
+            activeTrackColor: colors.accent,
+            inactiveTrackColor: colors.surfaceSunken,
+            thumbColor: colors.accent,
+            overlayColor: colors.accentSoft,
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
           ),
@@ -83,20 +92,14 @@ class _SeekBarState extends State<SeekBar> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_format(displayed), style: _timeStyle),
-              Text('-${_format(remaining)}', style: _timeStyle),
+              Text(_format(displayed), style: timeStyle),
+              Text('-${_format(remaining)}', style: timeStyle),
             ],
           ),
         ),
       ],
     );
   }
-
-  static const TextStyle _timeStyle = TextStyle(
-    color: Colors.white54,
-    fontSize: 12,
-    fontFeatures: [FontFeature.tabularFigures()],
-  );
 
   static String _format(Duration d) {
     if (d < Duration.zero) return '0:00';

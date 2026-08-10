@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/theme/app_colors.dart';
 import '../../../player/presentation/player_providers.dart';
 
 final currentPlayingTrackIdProvider = Provider<String?>((ref) {
@@ -36,12 +37,12 @@ class CurrentTrackIndicator extends ConsumerWidget {
     return Tooltip(
       key: ValueKey<String>('current-track-indicator-$trackId'),
       message: 'En lecture',
-      child: const SizedBox(
+      child: SizedBox(
         width: 20,
         height: 20,
         child: Icon(
           Icons.graphic_eq_rounded,
-          color: Color(0xFF1DB954),
+          color: context.colors.accent,
           size: 18,
         ),
       ),

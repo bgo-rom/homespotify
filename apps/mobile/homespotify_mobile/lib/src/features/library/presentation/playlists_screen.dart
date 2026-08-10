@@ -3,12 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/navigation.dart';
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/home_ui_states.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../player/presentation/widgets/mini_player.dart';
 import 'library_playlists.dart';
 import 'playlist_dialogs.dart';
-
-const Color _bg = Color(0xFF0D0D10);
-const Color _accent = Color(0xFF1DB954);
 
 class PlaylistsScreen extends ConsumerStatefulWidget {
   const PlaylistsScreen({super.key});
@@ -26,111 +28,132 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final playlists = ref.watch(playlistsProvider);
     return Scaffold(
-      backgroundColor: _bg,
-      appBar: AppBar(
-        backgroundColor: _bg,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: const Text(
-          'Playlists',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Créer une playlist',
-            onPressed: () => showCreatePlaylistDialog(context),
-            icon: const Icon(Icons.add_rounded),
-          ),
-        ],
-      ),
-      body: playlists.when(
-        loading: () =>
-            const Center(child: CircularProgressIndicator(color: _accent)),
-        error: (_, _) => const Center(
-          child: Text(
-            'Impossible de charger les playlists du compte.',
-            style: TextStyle(color: Colors.white70),
-          ),
-        ),
-        data: (items) => items.isEmpty
-            ? const _EmptyPlaylists()
-            : ListView.builder(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                itemCount: items.length,
-                itemBuilder: (context, index) {
-                  final playlist = items[index];
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 5,
-                    ),
-                    leading: const CircleAvatar(
-                      backgroundColor: Color(0xFF282832),
-                      foregroundColor: _accent,
-                      child: Icon(Icons.queue_music_rounded),
-                    ),
-                    title: Text(
-                      playlist.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    subtitle: Text(
-                      '${playlist.trackCount} '
-                      '${playlist.trackCount > 1 ? 'pistes' : 'piste'}',
-                      style: const TextStyle(color: Colors.white54),
-                    ),
-                    trailing: const Icon(
-                      Icons.chevron_right_rounded,
-                      color: Colors.white38,
-                    ),
-                    onTap: () {
-                      logUi(
-                        'tap playlist: id=${playlist.id} '
-                        'nom="${playlist.name}"',
-                      );
-                      openPlaylistDetail(context, playlist.id);
-                    },
-                  );
-                },
-              ),
-      ),
-      bottomNavigationBar: const MiniPlayer(),
-    );
-  }
-}
-
-class _EmptyPlaylists extends StatelessWidget {
-  const _EmptyPlaylists();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(32),
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.queue_music_rounded, size: 64, color: Colors.white24),
-            SizedBox(height: 16),
-            Text(
-              'Aucune playlist',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
+            ClayHeader(
+              title: 'Playlists',
+              onBack: () => Navigator.of(context).maybePop(),
+              actions: [
+                SoftCircle(
+                  size: 46,
+                  onTap: () => showCreatePlaylistDialog(context),
+                  tooltip: 'Créer une playlist',
+                  semanticLabel: 'Créer une playlist',
+                  child: Icon(
+                    Icons.add_rounded,
+                    size: 22,
+                    color: colors.textPrimary,
+                  ),
+                ),
+              ],
             ),
-            SizedBox(height: 8),
-            Text(
-              'Crée une playlist pour organiser tes pistes.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white38, fontSize: 13),
+            Expanded(
+              child: playlists.when(
+                loading: () => const HomeLoadingSkeleton(rows: 6),
+                error: (_, _) => HomeErrorState(
+                  message: 'Impossible de charger les playlists du compte.',
+                  onRetry: () => ref.invalidate(playlistsProvider),
+                ),
+                data: (items) => items.isEmpty
+                    ? const HomeEmptyState(
+                        icon: Icons.queue_music_rounded,
+                        title: 'Aucune playlist',
+                        message: 'Crée une playlist pour organiser tes pistes.',
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(
+                          AppLayout.gutter,
+                          6,
+                          AppLayout.gutter,
+                          18,
+                        ),
+                        itemCount: items.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          final playlist = items[index];
+                          return Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(
+                                maxWidth: AppLayout.maxContentWidth,
+                              ),
+                              child: SoftCard(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                onTap: () {
+                                  logUi(
+                                    'tap playlist: id=${playlist.id} '
+                                    'nom="${playlist.name}"',
+                                  );
+                                  openPlaylistDetail(context, playlist.id);
+                                },
+                                semanticLabel: playlist.name,
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 48,
+                                      height: 48,
+                                      decoration: BoxDecoration(
+                                        color: colors.clayBlue,
+                                        borderRadius: AppRadius.chipRadius,
+                                      ),
+                                      child: Icon(
+                                        Icons.queue_music_rounded,
+                                        color: colors.clayBlueInk,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            playlist.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: theme.textTheme.titleMedium
+                                                ?.copyWith(
+                                              color: colors.textPrimary,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '${playlist.trackCount} '
+                                            '${playlist.trackCount > 1 ? 'pistes' : 'piste'}',
+                                            style: theme.textTheme.bodySmall
+                                                ?.copyWith(
+                                              color: colors.textSecondary,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Icon(
+                                      Icons.chevron_right_rounded,
+                                      color: colors.textTertiary,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
             ),
           ],
         ),
       ),
+      bottomNavigationBar: const MiniPlayer(),
     );
   }
 }

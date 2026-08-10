@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../../core/theme/home_design.dart';
 import '../../../core/widgets/home_ui_states.dart';
 import '../../offline/application/offline_index.dart';
@@ -55,11 +57,13 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       _scheduleArtworkSync(offlineIndex);
     }
 
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: HomeDesign.background,
+      backgroundColor: colors.background,
       body: RefreshIndicator(
-        color: HomeDesign.accent,
-        backgroundColor: HomeDesign.surface,
+        color: colors.accent,
+        backgroundColor: colors.surface,
         onRefresh: () => ref.refresh(libraryProvider.future),
         child: CustomScrollView(
           key: const PageStorageKey<String>('library-tracks-scroll'),
@@ -68,31 +72,26 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             SliverAppBar(
               pinned: true,
               automaticallyImplyLeading: false,
-              backgroundColor: HomeDesign.background,
-              surfaceTintColor: HomeDesign.background,
-              toolbarHeight: 72,
-              titleSpacing: 16,
+              backgroundColor: colors.background,
+              surfaceTintColor: colors.background,
+              toolbarHeight: 76,
+              titleSpacing: AppLayout.gutter,
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
+                  Text(
                     'Bibliothèque',
                     maxLines: 1,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 25,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.4,
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      color: colors.textPrimary,
                     ),
                   ),
                   if (trackCount != null)
                     Text(
                       '$trackCount ${trackCount > 1 ? 'morceaux' : 'morceau'}',
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.textSecondary,
                       ),
                     ),
                 ],
@@ -283,11 +282,12 @@ class _DownloadedFilterChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final downloadedIds = ref.watch(offlineAvailableTrackIdsProvider);
     final selected = ref.watch(libraryDownloadedOnlyProvider);
     if (downloadedIds.isEmpty && !selected) return const SizedBox.shrink();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 2, AppLayout.gutter, 2),
       child: Align(
         alignment: Alignment.centerLeft,
         child: FilterChip(
@@ -295,11 +295,16 @@ class _DownloadedFilterChip extends ConsumerWidget {
           avatar: Icon(
             Icons.download_done_rounded,
             size: 16,
-            color: selected ? HomeDesign.accent : Colors.white54,
+            color: selected ? colors.accent : colors.textSecondary,
           ),
           label: Text('Téléchargées (${downloadedIds.length})'),
+          labelStyle: TextStyle(color: colors.textPrimary),
+          backgroundColor: colors.surface,
           selected: selected,
-          selectedColor: HomeDesign.accent.withValues(alpha: 0.22),
+          selectedColor: colors.accentSoft,
+          checkmarkColor: colors.accent,
+          side: BorderSide.none,
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
           onSelected: (_) =>
               ref.read(libraryDownloadedOnlyProvider.notifier).toggle(),
         ),

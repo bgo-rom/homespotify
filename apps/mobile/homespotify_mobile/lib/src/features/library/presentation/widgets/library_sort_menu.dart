@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 import '../library_filters.dart';
 
 /// Menu de tri de la bibliothèque (AppBar). Le choix vit dans
@@ -10,12 +12,15 @@ class LibrarySortMenu extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final current = ref.watch(librarySortProvider);
 
     return PopupMenuButton<LibrarySort>(
       tooltip: 'Trier',
-      icon: const Icon(Icons.sort_rounded),
-      color: const Color(0xFF23232B),
+      icon: Icon(Icons.sort_rounded, color: colors.textPrimary),
+      color: colors.surfaceRaised,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
       onSelected: (value) => ref.read(librarySortProvider.notifier).set(value),
       itemBuilder: (context) => [
         for (final sort in LibrarySort.values)
@@ -26,9 +31,7 @@ class LibrarySortMenu extends ConsumerWidget {
                 Icon(
                   Icons.check_rounded,
                   size: 18,
-                  color: sort == current
-                      ? const Color(0xFF1DB954)
-                      : Colors.transparent,
+                  color: sort == current ? colors.accent : Colors.transparent,
                 ),
                 const SizedBox(width: 10),
                 Flexible(
@@ -36,9 +39,10 @@ class LibrarySortMenu extends ConsumerWidget {
                     sort.label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: sort == current ? Colors.white : Colors.white70,
-                      fontSize: 14,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: sort == current
+                          ? colors.textPrimary
+                          : colors.textSecondary,
                       fontWeight: sort == current
                           ? FontWeight.w600
                           : FontWeight.w400,

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/network/authenticated_network_image.dart';
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 
 import '../library_albums.dart';
 
-/// Carte d'album (grille des albums) : pochette, titre, artiste, méta.
+/// Carte d'album (grille des albums) : pochette sculptée, titre, artiste, méta.
 class AlbumTile extends StatelessWidget {
   const AlbumTile({
     super.key,
@@ -19,22 +21,31 @@ class AlbumTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: AppRadius.artworkRadius,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: AlbumCover(url: coverUrl, borderRadius: 10)),
-          const SizedBox(height: 8),
+          Expanded(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: AppRadius.artworkRadius,
+                boxShadow: colors.clayShadow,
+              ),
+              child: AlbumCover(url: coverUrl, borderRadius: AppRadius.artwork),
+            ),
+          ),
+          const SizedBox(height: 10),
           Text(
             album.title,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 13.5,
-              fontWeight: FontWeight.w600,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontSize: 14.5,
+              color: colors.textPrimary,
             ),
           ),
           const SizedBox(height: 2),
@@ -42,7 +53,10 @@ class AlbumTile extends StatelessWidget {
             album.artist,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white54, fontSize: 11.5),
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontSize: 12,
+              color: colors.textSecondary,
+            ),
           ),
           const SizedBox(height: 2),
           Text(
@@ -51,7 +65,10 @@ class AlbumTile extends StatelessWidget {
             '${formatAlbumDuration(album.totalDuration)}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white38, fontSize: 10.5),
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontSize: 10.5,
+              color: colors.textTertiary,
+            ),
           ),
         ],
       ),
@@ -59,9 +76,9 @@ class AlbumTile extends StatelessWidget {
   }
 }
 
-/// Pochette carrée avec placeholder sombre.
+/// Pochette carrée avec placeholder sculpté.
 class AlbumCover extends StatelessWidget {
-  const AlbumCover({super.key, required this.url, this.borderRadius = 10});
+  const AlbumCover({super.key, required this.url, this.borderRadius = 20});
 
   final String? url;
   final double borderRadius;
@@ -93,16 +110,11 @@ class _CoverPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF2C2C36), Color(0xFF1A1A22)],
-        ),
-      ),
+    final colors = context.colors;
+    return ColoredBox(
+      color: colors.surfaceSunken,
       child: Center(
-        child: Icon(Icons.album_rounded, color: Colors.white24, size: 40),
+        child: Icon(Icons.album_rounded, color: colors.textTertiary, size: 40),
       ),
     );
   }

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 import '../library_filters.dart';
 
 /// Barre de recherche de la bibliothèque (titre, artiste, album).
@@ -57,27 +59,31 @@ class _LibrarySearchBarState extends ConsumerState<LibrarySearchBar> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final query = ref.watch(librarySearchQueryProvider);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 4, AppLayout.gutter, 8),
       child: TextField(
         key: const ValueKey('library-search-field'),
         controller: _controller,
         autofocus: widget.autofocus,
         onChanged: _onChanged,
         textInputAction: TextInputAction.search,
-        style: const TextStyle(color: Colors.white, fontSize: 14.5),
-        cursorColor: const Color(0xFF1DB954),
+        style: theme.textTheme.bodyLarge?.copyWith(color: colors.textPrimary),
+        cursorColor: colors.accent,
         decoration: InputDecoration(
           isDense: true,
           filled: true,
-          fillColor: const Color(0xFF1F1F26),
+          fillColor: colors.surface,
           hintText: 'Rechercher un titre, un artiste, un album',
-          hintStyle: const TextStyle(color: Colors.white38, fontSize: 14),
-          prefixIcon: const Icon(
+          hintStyle: theme.textTheme.bodyMedium?.copyWith(
+            color: colors.textTertiary,
+          ),
+          prefixIcon: Icon(
             Icons.search_rounded,
-            color: Colors.white54,
+            color: colors.textSecondary,
             size: 20,
           ),
           suffixIcon: Row(
@@ -86,9 +92,9 @@ class _LibrarySearchBarState extends ConsumerState<LibrarySearchBar> {
               if (query.isNotEmpty)
                 IconButton(
                   tooltip: 'Effacer la recherche',
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.backspace_outlined,
-                    color: Colors.white54,
+                    color: colors.textSecondary,
                     size: 18,
                   ),
                   onPressed: _clear,
@@ -96,9 +102,9 @@ class _LibrarySearchBarState extends ConsumerState<LibrarySearchBar> {
               if (widget.onClose != null)
                 IconButton(
                   tooltip: 'Fermer la recherche',
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.close_rounded,
-                    color: Colors.white54,
+                    color: colors.textSecondary,
                     size: 20,
                   ),
                   onPressed: widget.onClose,
@@ -106,11 +112,11 @@ class _LibrarySearchBarState extends ConsumerState<LibrarySearchBar> {
             ],
           ),
           contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
+            horizontal: 14,
+            vertical: 12,
           ),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: AppRadius.chipRadius,
             borderSide: BorderSide.none,
           ),
         ),

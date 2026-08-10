@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/logging/app_logger.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../library_favorites.dart';
 
 class TrackFavoriteButton extends ConsumerWidget {
@@ -23,6 +24,7 @@ class TrackFavoriteButton extends ConsumerWidget {
       favoriteTrackIdsProvider.select((value) => value.asData != null),
     );
     final isFavorite = id != null && ref.watch(isFavoriteProvider(id));
+    final colors = context.colors;
 
     return IconButton(
       tooltip: isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
@@ -31,8 +33,8 @@ class TrackFavoriteButton extends ConsumerWidget {
           : null,
       iconSize: iconSize,
       visualDensity: visualDensity,
-      color: const Color(0xFF1DB954),
-      disabledColor: Colors.white24,
+      color: colors.accent,
+      disabledColor: colors.textTertiary,
       icon: AnimatedSwitcher(
         duration: const Duration(milliseconds: 160),
         transitionBuilder: (child, animation) =>

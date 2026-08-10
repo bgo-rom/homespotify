@@ -49,22 +49,42 @@ CustomTransitionPage<void> _darkTransitionPage({
     child: LegacyDarkTheme(child: child),
     transitionDuration: const Duration(milliseconds: 240),
     reverseTransitionDuration: const Duration(milliseconds: 200),
-    transitionsBuilder: (context, animation, secondaryAnimation, child) {
-      final curved = CurvedAnimation(
-        parent: animation,
-        curve: Curves.easeOutCubic,
-      );
-      return FadeTransition(
-        opacity: curved,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 0.08),
-            end: Offset.zero,
-          ).animate(curved),
-          child: child,
-        ),
-      );
-    },
+    transitionsBuilder: _fadeSlide,
+  );
+}
+
+/// Même transition, mais SANS repli sombre historique : réservée aux écrans
+/// déjà refondus en Direction 33 (ils suivent alors le thème clair/sombre
+/// système). Chaque écran migré passe de [_darkTransitionPage] à celle-ci.
+CustomTransitionPage<void> _transitionPage({
+  required LocalKey key,
+  required Widget child,
+}) {
+  return CustomTransitionPage<void>(
+    key: key,
+    child: child,
+    transitionDuration: const Duration(milliseconds: 240),
+    reverseTransitionDuration: const Duration(milliseconds: 200),
+    transitionsBuilder: _fadeSlide,
+  );
+}
+
+Widget _fadeSlide(
+  BuildContext context,
+  Animation<double> animation,
+  Animation<double> secondaryAnimation,
+  Widget child,
+) {
+  final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+  return FadeTransition(
+    opacity: curved,
+    child: SlideTransition(
+      position: Tween<Offset>(
+        begin: const Offset(0, 0.08),
+        end: Offset.zero,
+      ).animate(curved),
+      child: child,
+    ),
   );
 }
 
@@ -147,9 +167,7 @@ final GoRouter appRouter = GoRouter(
             GoRoute(
               path: '/library',
               name: 'library',
-              // Pas encore migré en Direction 33 → thème sombre historique.
-              builder: (context, state) =>
-                  const LegacyDarkTheme(child: LibraryScreen()),
+              builder: (context, state) => const LibraryScreen(),
             ),
           ],
         ),
@@ -183,7 +201,7 @@ final GoRouter appRouter = GoRouter(
       path: '/albums',
       name: 'albums',
       pageBuilder: (context, state) =>
-          _darkTransitionPage(key: state.pageKey, child: const AlbumsScreen()),
+          _transitionPage(key: state.pageKey, child: const AlbumsScreen()),
     ),
     GoRoute(
       path: '/albums/:albumKey',
@@ -197,7 +215,7 @@ final GoRouter appRouter = GoRouter(
           'route détail album: brut="$rawParam" '
           'décodé="${albumKey ?? '<illisible>'}"',
         );
-        return _darkTransitionPage(
+        return _transitionPage(
           key: state.pageKey,
           // Clé illisible → clé vide qui ne matche aucun album : l'écran
           // affiche « Album introuvable » avec bouton retour.
@@ -209,7 +227,7 @@ final GoRouter appRouter = GoRouter(
       path: '/artists',
       name: 'artists',
       pageBuilder: (context, state) =>
-          _darkTransitionPage(key: state.pageKey, child: const ArtistsScreen()),
+          _transitionPage(key: state.pageKey, child: const ArtistsScreen()),
     ),
     GoRoute(
       path: '/artists/:artistRouteId',
@@ -223,7 +241,7 @@ final GoRouter appRouter = GoRouter(
           'décodé="${artistKey ?? '<illisible>'}" '
           'section=${focusAlbums ? 'albums' : 'artiste'}',
         );
-        return _darkTransitionPage(
+        return _transitionPage(
           key: state.pageKey,
           child: ArtistDetailScreen(
             artistKey: artistKey ?? '',
@@ -235,7 +253,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/favorites',
       name: 'favorites',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const FavoritesScreen(),
       ),
@@ -243,7 +261,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/playlists',
       name: 'playlists',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const PlaylistsScreen(),
       ),
@@ -258,7 +276,7 @@ final GoRouter appRouter = GoRouter(
           'route détail playlist: brut="$rawId" '
           'valid=${playlistId.isNotEmpty}',
         );
-        return _darkTransitionPage(
+        return _transitionPage(
           key: state.pageKey,
           child: PlaylistDetailScreen(playlistId: playlistId),
         );
@@ -337,7 +355,7 @@ final GoRouter appRouter = GoRouter(
       path: '/player',
       name: 'player',
       pageBuilder: (context, state) =>
-          _darkTransitionPage(key: state.pageKey, child: const PlayerScreen()),
+          _transitionPage(key: state.pageKey, child: const PlayerScreen()),
     ),
     GoRoute(
       path: '/queue',

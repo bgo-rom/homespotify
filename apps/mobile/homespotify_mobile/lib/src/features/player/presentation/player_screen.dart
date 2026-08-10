@@ -8,7 +8,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/navigation.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../../core/theme/home_design.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../library/presentation/library_albums.dart';
 import '../../library/presentation/library_artists.dart';
 import '../../library/application/track_library_membership.dart';
@@ -24,7 +27,6 @@ import 'widgets/file_details_sheet.dart';
 import 'widgets/seek_bar.dart';
 import 'track_speed_sheet.dart';
 
-const Color _accent = Color(0xFF1DB954);
 String? _lastPlayerArtworkTrace;
 final Set<String> _playerArtworkErrors = <String>{};
 
@@ -43,11 +45,11 @@ void _tracePlayerArtwork(MediaItem? mediaItem) {
   );
 }
 
-/// Écran principal de lecture.
+/// Écran principal de lecture — « Direction 33, Clay Tactile Premium ».
 ///
-/// Sombre, centré, branché sur les streams de [HomeSpotifyAudioHandler] via
-/// Riverpod. Le tick de position est isolé dans [_ProgressBar] pour ne pas
-/// reconstruire la pochette/les contrôles ~5 fois par seconde.
+/// Branché sur les streams de [HomeSpotifyAudioHandler] via Riverpod. Le tick de
+/// position est isolé dans [_ProgressBar] pour ne pas reconstruire la pochette
+/// ou les contrôles ~5 fois par seconde.
 class PlayerScreen extends ConsumerWidget {
   const PlayerScreen({super.key});
 
@@ -55,6 +57,8 @@ class PlayerScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final mediaItem = ref.watch(mediaItemProvider).asData?.value;
     _tracePlayerArtwork(mediaItem);
     final playback = ref.watch(playbackStateProvider).asData?.value;
@@ -94,35 +98,39 @@ class PlayerScreen extends ConsumerWidget {
         closePlayer(context);
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF0D0D10),
-        body: Container(
-          decoration: const BoxDecoration(
+        backgroundColor: colors.background,
+        body: DecoratedBox(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Color(0xFF20202A), Color(0xFF0D0D10)],
+              colors: [colors.surface, colors.background],
             ),
           ),
           child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
+              padding: const EdgeInsets.symmetric(horizontal: AppLayout.gutter),
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final header = Row(
                     children: [
-                      IconButton(
+                      SoftCircle(
+                        size: 46,
+                        onTap: () => closePlayer(context),
                         tooltip: 'Retour',
-                        onPressed: () => closePlayer(context),
-                        color: Colors.white,
-                        icon: const Icon(Icons.arrow_back_rounded),
+                        semanticLabel: 'Retour',
+                        child: Icon(
+                          Icons.expand_more_rounded,
+                          size: 24,
+                          color: colors.textPrimary,
+                        ),
                       ),
                       Expanded(
                         child: Text(
                           'EN LECTURE',
                           textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.5),
-                            fontSize: 12,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: colors.textTertiary,
                             letterSpacing: 2,
                             fontWeight: FontWeight.w600,
                           ),
@@ -138,8 +146,8 @@ class PlayerScreen extends ConsumerWidget {
                         onPressed: hasTrack
                             ? () => ref.read(audioHandlerProvider).stop()
                             : null,
-                        color: Colors.white,
-                        disabledColor: Colors.white24,
+                        color: colors.textSecondary,
+                        disabledColor: colors.textTertiary,
                         icon: const Icon(Icons.stop_rounded),
                       ),
                       _PlayerMenu(mediaItem: mediaItem),
@@ -299,6 +307,7 @@ class _PlayerMenu extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final hasTrack = mediaItem != null;
     final trackId = int.tryParse(mediaItem?.id ?? '');
     final isFavorite =
@@ -311,30 +320,37 @@ class _PlayerMenu extends ConsumerWidget {
         : ref.watch(trackMembershipProvider(trackId));
     return PopupMenuButton<_PlayerMenuAction>(
       tooltip: 'Plus d’options',
-      icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
-      color: const Color(0xFF23232B),
+      icon: Icon(Icons.more_vert_rounded, color: colors.textPrimary),
+      color: colors.surfaceRaised,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
       onOpened: () => logUi('tap menu 3 points lecteur'),
       onSelected: (action) => _onSelected(context, ref, action),
       itemBuilder: (context) => [
-        _item(_PlayerMenuAction.artistPage, enabled: hasTrack),
-        _item(_PlayerMenuAction.artistAlbums, enabled: hasTrack),
-        _item(_PlayerMenuAction.trackAlbum, enabled: hasTrack),
+        _item(context, _PlayerMenuAction.artistPage, enabled: hasTrack),
+        _item(context, _PlayerMenuAction.artistAlbums, enabled: hasTrack),
+        _item(context, _PlayerMenuAction.trackAlbum, enabled: hasTrack),
         const PopupMenuDivider(),
         _item(
+          context,
           _PlayerMenuAction.favorite,
           enabled: hasTrack && trackId != null,
           label: isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
         ),
-        _item(_PlayerMenuAction.playlist, enabled: hasTrack),
-        _item(_PlayerMenuAction.speed, enabled: hasTrack && trackId != null),
-        _item(_PlayerMenuAction.sleepTimer, enabled: hasTrack),
-        _item(_PlayerMenuAction.fileDetails, enabled: hasTrack),
-        _item(_PlayerMenuAction.share, enabled: hasTrack),
+        _item(context, _PlayerMenuAction.playlist, enabled: hasTrack),
+        _item(
+          context,
+          _PlayerMenuAction.speed,
+          enabled: hasTrack && trackId != null,
+        ),
+        _item(context, _PlayerMenuAction.sleepTimer, enabled: hasTrack),
+        _item(context, _PlayerMenuAction.fileDetails, enabled: hasTrack),
+        _item(context, _PlayerMenuAction.share, enabled: hasTrack),
         const PopupMenuDivider(),
         // Libellé STRICTEMENT dérivé de l'appartenance réelle (`user_tracks`)
         // du compte connecté. Tant que l'état est inconnu, l'entrée est
         // désactivée : jamais de bouton menteur.
         _item(
+          context,
           _PlayerMenuAction.libraryMembership,
           enabled:
               hasTrack && trackId != null && membership?.inMyLibrary != null,
@@ -350,11 +366,14 @@ class _PlayerMenu extends ConsumerWidget {
   }
 
   PopupMenuItem<_PlayerMenuAction> _item(
+    BuildContext context,
     _PlayerMenuAction action, {
     required bool enabled,
     String? label,
     IconData? icon,
   }) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return PopupMenuItem<_PlayerMenuAction>(
       value: action,
       enabled: enabled,
@@ -363,7 +382,7 @@ class _PlayerMenu extends ConsumerWidget {
           Icon(
             icon ?? action.icon,
             size: 18,
-            color: enabled ? Colors.white70 : Colors.white24,
+            color: enabled ? colors.textSecondary : colors.textTertiary,
           ),
           const SizedBox(width: 12),
           Flexible(
@@ -371,9 +390,8 @@ class _PlayerMenu extends ConsumerWidget {
               label ?? action.label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: enabled ? Colors.white : Colors.white38,
-                fontSize: 14,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: enabled ? colors.textPrimary : colors.textTertiary,
               ),
             ),
           ),
@@ -488,7 +506,7 @@ class _PlayerMenu extends ConsumerWidget {
 }
 
 /// Boutons lecture aléatoire (gauche) et répétition (droite), sous les
-/// contrôles principaux. Actif = vert accent, inactif = gris discret.
+/// contrôles principaux. Actif = accent argile, inactif = discret.
 /// Ces boutons ne changent que l'ordre de lecture — aucun effet audio.
 class _ShuffleRepeatRow extends ConsumerWidget {
   const _ShuffleRepeatRow({
@@ -503,6 +521,7 @@ class _ShuffleRepeatRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final repeatActive = repeatMode != AudioServiceRepeatMode.none;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -530,8 +549,8 @@ class _ShuffleRepeatRow extends ConsumerWidget {
                 : null,
             iconSize: 22,
             visualDensity: VisualDensity.compact,
-            color: shuffleOn ? _accent : Colors.white54,
-            disabledColor: Colors.white24,
+            color: shuffleOn ? colors.accent : colors.textSecondary,
+            disabledColor: colors.textTertiary,
             icon: const Icon(Icons.shuffle_rounded),
           ),
           IconButton(
@@ -539,8 +558,8 @@ class _ShuffleRepeatRow extends ConsumerWidget {
             onPressed: enabled ? () => openQueue(context) : null,
             iconSize: 22,
             visualDensity: VisualDensity.compact,
-            color: Colors.white54,
-            disabledColor: Colors.white24,
+            color: colors.textSecondary,
+            disabledColor: colors.textTertiary,
             icon: const Icon(Icons.queue_music_rounded),
           ),
           IconButton(
@@ -566,8 +585,8 @@ class _ShuffleRepeatRow extends ConsumerWidget {
                 : null,
             iconSize: 22,
             visualDensity: VisualDensity.compact,
-            color: repeatActive ? _accent : Colors.white54,
-            disabledColor: Colors.white24,
+            color: repeatActive ? colors.accent : colors.textSecondary,
+            disabledColor: colors.textTertiary,
             icon: Icon(
               repeatMode == AudioServiceRepeatMode.one
                   ? Icons.repeat_one_rounded
@@ -610,6 +629,8 @@ class _VolumeControl extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final volume = (ref.watch(volumeProvider).asData?.value ?? 1.0)
         .clamp(0.0, 1.0)
         .toDouble();
@@ -617,17 +638,17 @@ class _VolumeControl extends ConsumerWidget {
       children: [
         Icon(
           volume <= 0.0 ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-          color: Colors.white54,
+          color: colors.textSecondary,
           size: 20,
         ),
         Expanded(
           child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              trackHeight: 2,
-              activeTrackColor: Colors.white70,
-              inactiveTrackColor: Colors.white24,
-              thumbColor: Colors.white,
-              overlayColor: const Color(0x291DB954),
+              trackHeight: 3,
+              activeTrackColor: colors.accent,
+              inactiveTrackColor: colors.surfaceSunken,
+              thumbColor: colors.accent,
+              overlayColor: colors.accentSoft,
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
               overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
             ),
@@ -642,10 +663,9 @@ class _VolumeControl extends ConsumerWidget {
           child: Text(
             '${(volume * 100).round()} %',
             textAlign: TextAlign.end,
-            style: const TextStyle(
-              color: Colors.white54,
-              fontSize: 12,
-              fontFeatures: [FontFeature.tabularFigures()],
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: colors.textSecondary,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         ),
@@ -661,22 +681,20 @@ class _ErrorBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.only(top: 10),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
-          const Icon(
-            Icons.error_outline_rounded,
-            color: Color(0xFFE57373),
-            size: 16,
-          ),
+          Icon(Icons.error_outline_rounded, color: colors.danger, size: 16),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
               message ?? 'Erreur audio pendant la lecture.',
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFFE57373), fontSize: 12),
+              style: theme.textTheme.bodySmall?.copyWith(color: colors.danger),
             ),
           ),
         ],
@@ -692,29 +710,36 @@ class _PlaybackStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final label = processingState == AudioProcessingState.buffering
         ? 'Mise en tampon audio...'
         : 'Preparation de la lecture...';
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white12),
+        color: colors.surface,
+        borderRadius: AppRadius.chipRadius,
+        boxShadow: colors.clayShadowSmall,
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
+            SizedBox(
               width: 14,
               height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2, color: _accent),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: colors.accent,
+              ),
             ),
             const SizedBox(width: 8),
             Text(
               label,
-              style: const TextStyle(color: Colors.white70, fontSize: 12),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.textSecondary,
+              ),
             ),
           ],
         ),
@@ -758,23 +783,18 @@ class _ArtworkBox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final cacheSide = (side * MediaQuery.devicePixelRatioOf(context)).round();
     return SizedBox(
       width: side,
       height: side,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: const [
-            BoxShadow(
-              color: Colors.black54,
-              blurRadius: 32,
-              offset: Offset(0, 12),
-            ),
-          ],
+          borderRadius: AppRadius.cardRadius,
+          boxShadow: colors.clayShadowFloating,
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: AppRadius.cardRadius,
           child: artUri == null
               ? const _ArtworkPlaceholder()
               : AuthenticatedNetworkImage(
@@ -816,16 +836,15 @@ class _ArtworkPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF33333F), Color(0xFF1A1A22)],
-        ),
-      ),
+    final colors = context.colors;
+    return ColoredBox(
+      color: colors.surfaceSunken,
       child: Center(
-        child: Icon(Icons.music_note_rounded, size: 88, color: Colors.white24),
+        child: Icon(
+          Icons.music_note_rounded,
+          size: 88,
+          color: colors.textTertiary,
+        ),
       ),
     );
   }
@@ -850,6 +869,8 @@ class _TrackInfo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final tappable = onArtistTap != null;
 
     final artistLabel = Text(
@@ -857,11 +878,9 @@ class _TrackInfo extends StatelessWidget {
       maxLines: 1,
       textAlign: TextAlign.center,
       overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        // Repris du style existant ; l'état cliquable est signalé par une
-        // teinte plus vive, pas par un soulignement qui alourdirait l'écran.
-        color: tappable ? Colors.white : Colors.white60,
-        fontSize: 15,
+      style: theme.textTheme.bodyLarge?.copyWith(
+        // L'état cliquable est signalé par l'accent, pas par un soulignement.
+        color: tappable ? colors.accent : colors.textSecondary,
         fontWeight: tappable ? FontWeight.w600 : FontWeight.w400,
       ),
     );
@@ -873,10 +892,8 @@ class _TrackInfo extends StatelessWidget {
           maxLines: 2,
           textAlign: TextAlign.center,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: dimmed ? Colors.white54 : Colors.white,
-            fontSize: 22,
-            fontWeight: FontWeight.w700,
+          style: theme.textTheme.headlineSmall?.copyWith(
+            color: dimmed ? colors.textTertiary : colors.textPrimary,
           ),
         ),
         const SizedBox(height: 6),
@@ -974,17 +991,19 @@ class _RoundIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return IconButton(
       tooltip: tooltip,
       onPressed: onPressed,
       iconSize: 32,
-      color: Colors.white,
-      disabledColor: Colors.white24,
+      color: colors.textPrimary,
+      disabledColor: colors.textTertiary,
       icon: Icon(icon),
     );
   }
 }
 
+/// Bouton lecture/pause principal : grand disque sculpté couleur accent.
 class _PlayPauseButton extends StatelessWidget {
   const _PlayPauseButton({
     required this.playing,
@@ -998,29 +1017,36 @@ class _PlayPauseButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final enabled = onPressed != null;
-    return Material(
-      color: enabled ? _accent : Colors.white12,
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onPressed,
-        child: SizedBox(
-          width: 72,
-          height: 72,
-          child: isBusy
-              ? const Padding(
-                  padding: EdgeInsets.all(22),
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    color: Colors.white,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        boxShadow: enabled ? colors.clayShadow : null,
+      ),
+      child: Material(
+        color: enabled ? colors.accent : colors.surfaceSunken,
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 72,
+            height: 72,
+            child: isBusy
+                ? Padding(
+                    padding: const EdgeInsets.all(22),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      color: colors.onAccent,
+                    ),
+                  )
+                : Icon(
+                    playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    size: 40,
+                    color: enabled ? colors.onAccent : colors.textTertiary,
                   ),
-                )
-              : Icon(
-                  playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                  size: 40,
-                  color: enabled ? Colors.black : Colors.white38,
-                ),
+          ),
         ),
       ),
     );

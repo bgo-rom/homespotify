@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:homespotify_mobile/src/app/navigation.dart';
+import 'package:homespotify_mobile/src/core/theme/app_colors.dart';
 import 'package:homespotify_mobile/src/features/library/data/library_api.dart';
 import 'package:homespotify_mobile/src/features/library/presentation/artist_detail_screen.dart';
 import 'package:homespotify_mobile/src/features/library/presentation/library_artists.dart';
@@ -88,9 +89,12 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.textContaining('Artiste introuvable'), findsOneWidget);
     expect(find.text('Retour'), findsOneWidget);
+    // Direction 33 : le fond suit le thème. Ici l'app est montée en
+    // ThemeData.dark() (sans AppColors), donc context.colors retombe sur la
+    // palette sombre — fond graphite/espresso, plus le noir historique.
     expect(
       tester.widget<Scaffold>(find.byType(Scaffold)).backgroundColor,
-      const Color(0xFF0D0D10),
+      AppColors.dark.background,
     );
   });
 }

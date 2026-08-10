@@ -3,11 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:homespotify_mobile/src/core/theme/app_colors.dart';
 import 'package:homespotify_mobile/src/features/player/audio/homespotify_audio_handler.dart';
 import 'package:homespotify_mobile/src/features/player/presentation/player_providers.dart';
 import 'package:homespotify_mobile/src/features/player/presentation/player_screen.dart';
 
-const Color _accent = Color(0xFF1DB954);
+// Direction 33 : le lecteur est monté dans un MaterialApp nu (thème clair par
+// défaut), donc `context.colors` retombe sur AppColors.light. Actif = accent
+// argile, inactif = texte secondaire (plus le vert Spotify historique).
+final Color _accent = AppColors.light.accent;
+final Color _inactive = AppColors.light.textSecondary;
 
 void main() {
   Future<void> pumpPlayer(
@@ -63,7 +68,7 @@ void main() {
     final handler = _FakeAudioHandler();
     await pumpPlayer(tester, handler: handler);
 
-    expect(buttonWithIcon(tester, Icons.shuffle_rounded).color, Colors.white54);
+    expect(buttonWithIcon(tester, Icons.shuffle_rounded).color, _inactive);
 
     await tester.tap(find.byIcon(Icons.shuffle_rounded));
     await tester.pump();
@@ -97,7 +102,7 @@ void main() {
     final handler = _FakeAudioHandler();
     await pumpPlayer(tester, handler: handler);
 
-    expect(buttonWithIcon(tester, Icons.repeat_rounded).color, Colors.white54);
+    expect(buttonWithIcon(tester, Icons.repeat_rounded).color, _inactive);
     await tester.tap(find.byIcon(Icons.repeat_rounded));
     await tester.pump();
     expect(handler.lastRepeatMode, AudioServiceRepeatMode.all);
