@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../data/admin_api.dart';
 import 'admin_guard.dart';
 
@@ -49,35 +53,38 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
   }
 
   Future<void> _runAction(Future<void> Function() action) async {
+    final colors = context.colors;
     try {
       await action();
       await _refresh();
     } on AdminApiException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(backgroundColor: adminCard, content: Text(error.message)),
+        SnackBar(backgroundColor: colors.surfaceRaised, content: Text(error.message)),
       );
     }
   }
 
   Future<bool> _confirm(String title, String message) async {
+    final colors = context.colors;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        backgroundColor: adminCard,
-        title: Text(title, style: const TextStyle(color: Colors.white)),
-        content: Text(message, style: const TextStyle(color: Colors.white70)),
+        backgroundColor: colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+        title: Text(title, style: TextStyle(color: colors.textPrimary)),
+        content: Text(message, style: TextStyle(color: colors.textSecondary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text(
+            child: Text(
               'Annuler',
-              style: TextStyle(color: Colors.white54),
+              style: TextStyle(color: colors.textSecondary),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Confirmer', style: TextStyle(color: adminError)),
+            child: Text('Confirmer', style: TextStyle(color: colors.danger)),
           ),
         ],
       ),
@@ -163,59 +170,88 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final users = _users;
     return AdminGuard(
       child: Scaffold(
-        backgroundColor: adminBackground,
-        appBar: AppBar(
-          backgroundColor: adminBackground,
-          foregroundColor: Colors.white,
-          title: const Text(
-            'Utilisateurs',
-            style: TextStyle(fontWeight: FontWeight.w700),
+        backgroundColor: colors.background,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              ClayHeader(
+                title: 'Utilisateurs',
+                onBack: () => Navigator.of(context).maybePop(),
+                actions: [
+                  SoftCircle(
+                    size: 46,
+                    onTap: _loading ? null : _refresh,
+                    tooltip: 'Actualiser',
+                    semanticLabel: 'Actualiser',
+                    child: _loading
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: colors.textSecondary,
+                            ),
+                          )
+                        : Icon(
+                            Icons.refresh_rounded,
+                            size: 21,
+                            color: colors.textPrimary,
+                          ),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: RefreshIndicator(
+                  color: colors.accent,
+                  backgroundColor: colors.surface,
+                  onRefresh: _refresh,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(
+                      AppLayout.gutter,
+                      4,
+                      AppLayout.gutter,
+                      96,
+                    ),
+                    children: [
+                      if (_error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Text(
+                            _error!,
+                            style: TextStyle(color: colors.danger, fontSize: 13),
+                          ),
+                        ),
+                      if (users == null && _error == null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 48),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: colors.accent,
+                            ),
+                          ),
+                        ),
+                      if (users != null)
+                        for (final user in users)
+                          _UserCard(user: user, onAction: (a) => _onAction(user, a)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-          actions: [
-            IconButton(
-              tooltip: 'Actualiser',
-              onPressed: _loading ? null : _refresh,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
-          ],
         ),
         floatingActionButton: FloatingActionButton.extended(
-          backgroundColor: adminAccent,
-          foregroundColor: Colors.black,
+          backgroundColor: colors.accent,
+          foregroundColor: colors.onAccent,
           onPressed: _createUser,
           icon: const Icon(Icons.person_add_rounded),
           label: const Text('Nouveau compte'),
-        ),
-        body: RefreshIndicator(
-          color: adminAccent,
-          onRefresh: _refresh,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-            children: [
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    _error!,
-                    style: const TextStyle(color: adminError, fontSize: 13),
-                  ),
-                ),
-              if (users == null && _error == null)
-                const Padding(
-                  padding: EdgeInsets.only(top: 48),
-                  child: Center(
-                    child: CircularProgressIndicator(color: adminAccent),
-                  ),
-                ),
-              if (users != null)
-                for (final user in users)
-                  _UserCard(user: user, onAction: (a) => _onAction(user, a)),
-            ],
-          ),
         ),
       ),
     );
@@ -239,124 +275,116 @@ class _UserCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: adminCard,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            user.displayName,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
-                            ),
+      child: SoftCard(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          user.displayName,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textPrimary,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        _RoleChip(role: user.role),
-                        if (!user.isActive) ...[
-                          const SizedBox(width: 6),
-                          const _Badge('Bloqué', adminError),
-                        ],
+                      ),
+                      const SizedBox(width: 8),
+                      _RoleChip(role: user.role),
+                      if (!user.isActive) ...[
+                        const SizedBox(width: 6),
+                        _Badge('Bloqué', colors.danger),
                       ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '@${user.username}',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Dernière connexion : ${formatDateTime(user.lastLoginAt)}',
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 12,
-                      ),
-                    ),
-                    Text(
-                      'Stockage : '
-                      '${user.storageUsage == null ? 'non calculé' : formatBytes(user.storageUsage)}',
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (user.isOwner)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12),
-                  child: Icon(
-                    Icons.shield_rounded,
-                    color: adminAccent,
-                    size: 20,
+                    ],
                   ),
-                )
-              else
-                PopupMenuButton<_UserAction>(
-                  color: adminCard,
-                  iconColor: Colors.white54,
-                  onSelected: onAction,
-                  itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: user.isActive
-                          ? _UserAction.block
-                          : _UserAction.unblock,
-                      child: _menuText(user.isActive ? 'Bloquer' : 'Réactiver'),
-                    ),
-                    PopupMenuItem(
-                      value: _UserAction.revokeSessions,
-                      child: _menuText('Révoquer les sessions'),
-                    ),
-                    PopupMenuItem(
-                      value: _UserAction.resetPassword,
-                      child: _menuText('Réinitialiser le mot de passe'),
-                    ),
-                    PopupMenuItem(
-                      value: _UserAction.toggleRole,
-                      child: _menuText(
-                        user.role == 'ADMIN'
-                            ? 'Rétrograder en USER'
-                            : 'Promouvoir ADMIN',
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _UserAction.delete,
-                      child: Text(
-                        'Supprimer',
-                        style: TextStyle(color: adminError),
-                      ),
-                    ),
-                  ],
+                  const SizedBox(height: 4),
+                  Text(
+                    '@${user.username}',
+                    style: TextStyle(color: colors.textSecondary, fontSize: 13),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Dernière connexion : ${formatDateTime(user.lastLoginAt)}',
+                    style: TextStyle(color: colors.textTertiary, fontSize: 12),
+                  ),
+                  Text(
+                    'Stockage : '
+                    '${user.storageUsage == null ? 'non calculé' : formatBytes(user.storageUsage)}',
+                    style: TextStyle(color: colors.textTertiary, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            if (user.isOwner)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Icon(
+                  Icons.shield_rounded,
+                  color: colors.accent,
+                  size: 20,
                 ),
-            ],
-          ),
+              )
+            else
+              PopupMenuButton<_UserAction>(
+                color: colors.surfaceRaised,
+                iconColor: colors.textSecondary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppRadius.cardRadius,
+                ),
+                onSelected: onAction,
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: user.isActive
+                        ? _UserAction.block
+                        : _UserAction.unblock,
+                    child: _menuText(
+                      colors,
+                      user.isActive ? 'Bloquer' : 'Réactiver',
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: _UserAction.revokeSessions,
+                    child: _menuText(colors, 'Révoquer les sessions'),
+                  ),
+                  PopupMenuItem(
+                    value: _UserAction.resetPassword,
+                    child: _menuText(colors, 'Réinitialiser le mot de passe'),
+                  ),
+                  PopupMenuItem(
+                    value: _UserAction.toggleRole,
+                    child: _menuText(
+                      colors,
+                      user.role == 'ADMIN'
+                          ? 'Rétrograder en USER'
+                          : 'Promouvoir ADMIN',
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: _UserAction.delete,
+                    child: Text(
+                      'Supprimer',
+                      style: TextStyle(color: colors.danger),
+                    ),
+                  ),
+                ],
+              ),
+          ],
         ),
       ),
     );
   }
 
-  static Text _menuText(String label) =>
-      Text(label, style: const TextStyle(color: Colors.white));
+  static Text _menuText(AppColors colors, String label) =>
+      Text(label, style: TextStyle(color: colors.textPrimary));
 }
 
 class _RoleChip extends StatelessWidget {
@@ -366,10 +394,11 @@ class _RoleChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final color = switch (role) {
-      'OWNER' => adminAccent,
-      'ADMIN' => const Color(0xFF64B5F6),
-      _ => Colors.white38,
+      'OWNER' => colors.accent,
+      'ADMIN' => colors.link,
+      _ => colors.textTertiary,
     };
     return _Badge(role, color);
   }
@@ -428,35 +457,34 @@ class _TemporaryPasswordDialogState extends State<_TemporaryPasswordDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return AlertDialog(
-      backgroundColor: adminCard,
-      title: const Text(
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+      title: Text(
         'Mot de passe temporaire',
-        style: TextStyle(color: Colors.white),
+        style: TextStyle(color: colors.textPrimary),
       ),
       content: TextField(
         controller: _password,
         autofocus: true,
-        style: const TextStyle(color: Colors.white),
-        decoration: const InputDecoration(
+        style: TextStyle(color: colors.textPrimary),
+        decoration: InputDecoration(
           labelText: '10 caractères minimum',
-          labelStyle: TextStyle(color: Colors.white54),
+          labelStyle: TextStyle(color: colors.textSecondary),
         ),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Annuler', style: TextStyle(color: Colors.white54)),
+          child: Text('Annuler', style: TextStyle(color: colors.textSecondary)),
         ),
         TextButton(
           onPressed: () {
             final value = _password.text;
             if (value.length >= 10) Navigator.of(context).pop(value);
           },
-          child: const Text(
-            'Réinitialiser',
-            style: TextStyle(color: adminAccent),
-          ),
+          child: Text('Réinitialiser', style: TextStyle(color: colors.accent)),
         ),
       ],
     );
@@ -524,49 +552,48 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return AlertDialog(
-      backgroundColor: adminCard,
-      title: const Text(
-        'Nouveau compte',
-        style: TextStyle(color: Colors.white),
-      ),
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+      title: Text('Nouveau compte', style: TextStyle(color: colors.textPrimary)),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           TextField(
             controller: _username,
             autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
+            style: TextStyle(color: colors.textPrimary),
+            decoration: InputDecoration(
               labelText: 'Nom d’utilisateur',
-              labelStyle: TextStyle(color: Colors.white54),
+              labelStyle: TextStyle(color: colors.textSecondary),
             ),
           ),
           TextField(
             controller: _displayName,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
+            style: TextStyle(color: colors.textPrimary),
+            decoration: InputDecoration(
               labelText: 'Nom affiché',
-              labelStyle: TextStyle(color: Colors.white54),
+              labelStyle: TextStyle(color: colors.textSecondary),
             ),
           ),
           TextField(
             controller: _password,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
+            style: TextStyle(color: colors.textPrimary),
+            decoration: InputDecoration(
               labelText: 'Mot de passe temporaire (10 min.)',
-              labelStyle: TextStyle(color: Colors.white54),
+              labelStyle: TextStyle(color: colors.textSecondary),
             ),
           ),
           const SizedBox(height: 12),
           Row(
             children: [
-              const Text('Rôle', style: TextStyle(color: Colors.white54)),
+              Text('Rôle', style: TextStyle(color: colors.textSecondary)),
               const Spacer(),
               DropdownButton<String>(
                 value: _role,
-                dropdownColor: adminCard,
-                style: const TextStyle(color: Colors.white),
+                dropdownColor: colors.surfaceRaised,
+                style: TextStyle(color: colors.textPrimary),
                 items: const [
                   DropdownMenuItem(value: 'USER', child: Text('USER')),
                   DropdownMenuItem(value: 'ADMIN', child: Text('ADMIN')),
@@ -580,11 +607,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Annuler', style: TextStyle(color: Colors.white54)),
+          child: Text('Annuler', style: TextStyle(color: colors.textSecondary)),
         ),
         TextButton(
           onPressed: _submit,
-          child: const Text('Créer', style: TextStyle(color: adminAccent)),
+          child: Text('Créer', style: TextStyle(color: colors.accent)),
         ),
       ],
     );

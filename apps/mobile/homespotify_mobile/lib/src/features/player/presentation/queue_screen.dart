@@ -4,20 +4,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/navigation.dart';
-import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/artwork_thumb.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../library/presentation/playlist_dialogs.dart';
 import '../audio/homespotify_audio_handler.dart';
 import 'player_providers.dart';
 
-const _background = Color(0xFF0D0D10);
-const _surface = Color(0xFF1A1A22);
-const _accent = Color(0xFF1DB954);
-
+/// Écran « File d'attente » — Direction 33, même famille visuelle que le
+/// lecteur complet (SoftCard, ArtworkThumb, tokens `context.colors`).
 class QueueScreen extends ConsumerWidget {
   const QueueScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final queue = ref.watch(queueProvider).asData?.value ?? const <MediaItem>[];
     final playback = ref.watch(playbackStateProvider).asData?.value;
     final position =
@@ -31,114 +34,121 @@ class QueueScreen extends ConsumerWidget {
         : const <MediaItem>[];
 
     return Scaffold(
-      backgroundColor: _background,
-      appBar: AppBar(
-        backgroundColor: _background,
-        foregroundColor: Colors.white,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
           children: [
-            const Text(
-              'File d’attente',
-              style: TextStyle(fontWeight: FontWeight.w800),
-            ),
-            Text(
-              _headerMeta(
+            ClayHeader(
+              title: 'File d’attente',
+              subtitle: _headerMeta(
                 queue,
                 currentIndex,
                 position.position,
                 playback?.speed ?? 1,
               ),
-              style: const TextStyle(color: Colors.white38, fontSize: 11),
+              onBack: () =>
+                  context.canPop() ? context.pop() : context.go('/'),
             ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Fermer',
-            onPressed: () => context.canPop() ? context.pop() : context.go('/'),
-            icon: const Icon(Icons.close_rounded),
-          ),
-        ],
-      ),
-      body: current == null
-          ? const _EmptyQueue()
-          : CustomScrollView(
-              slivers: [
-                SliverToBoxAdapter(
-                  child: _CurrentTrackCard(
-                    item: current,
-                    position: position.position,
-                    duration: position.duration == Duration.zero
-                        ? current.duration
-                        : position.duration,
-                    playing: playback?.playing ?? false,
-                  ),
-                ),
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 22, 8, 8),
-                    child: Row(
-                      children: [
-                        const Text(
-                          'À suivre',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
+            Expanded(
+              child: current == null
+                  ? const _EmptyQueue()
+                  : CustomScrollView(
+                      slivers: [
+                        SliverToBoxAdapter(
+                          child: _CurrentTrackCard(
+                            item: current,
+                            position: position.position,
+                            duration: position.duration == Duration.zero
+                                ? current.duration
+                                : position.duration,
+                            playing: playback?.playing ?? false,
                           ),
                         ),
-                        const Spacer(),
-                        if (upcoming.isNotEmpty)
-                          TextButton.icon(
-                            key: const ValueKey('queue-clear-upcoming'),
-                            onPressed: () => _confirmClear(context, ref),
-                            icon: const Icon(Icons.clear_all_rounded),
-                            label: const Text('Vider'),
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(
+                              AppLayout.gutter,
+                              22,
+                              AppLayout.gutter - 10,
+                              8,
+                            ),
+                            child: Row(
+                              children: [
+                                Text(
+                                  'À suivre',
+                                  style: Theme.of(context).textTheme.titleLarge
+                                      ?.copyWith(color: colors.textPrimary),
+                                ),
+                                const Spacer(),
+                                if (upcoming.isNotEmpty)
+                                  TextButton.icon(
+                                    key: const ValueKey(
+                                      'queue-clear-upcoming',
+                                    ),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: colors.link,
+                                    ),
+                                    onPressed: () => _confirmClear(
+                                      context,
+                                      ref,
+                                      colors,
+                                    ),
+                                    icon: const Icon(Icons.clear_all_rounded),
+                                    label: const Text('Vider'),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (upcoming.isEmpty)
+                          SliverFillRemaining(
+                            hasScrollBody: false,
+                            child: Center(
+                              child: Text(
+                                'Aucune piste à suivre.',
+                                style: TextStyle(color: colors.textTertiary),
+                              ),
+                            ),
+                          )
+                        else
+                          SliverFillRemaining(
+                            child: ReorderableListView.builder(
+                              buildDefaultDragHandles: false,
+                              padding: const EdgeInsets.fromLTRB(
+                                AppLayout.gutter - 6,
+                                0,
+                                AppLayout.gutter - 6,
+                                24,
+                              ),
+                              itemCount: upcoming.length,
+                              onReorderItem: (oldIndex, newIndex) {
+                                ref
+                                    .read(audioHandlerProvider)
+                                    .reorderQueueItem(
+                                      currentIndex + 1 + oldIndex,
+                                      currentIndex + 1 + newIndex,
+                                    );
+                              },
+                              itemBuilder: (context, index) {
+                                final absoluteIndex = currentIndex + 1 + index;
+                                return _UpcomingTile(
+                                  key: ValueKey(
+                                    'queue-item-${upcoming[index].id}-$index',
+                                  ),
+                                  item: upcoming[index],
+                                  index: absoluteIndex,
+                                  reorderIndex: index,
+                                );
+                              },
+                            ),
                           ),
                       ],
                     ),
-                  ),
-                ),
-                if (upcoming.isEmpty)
-                  const SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: Center(
-                      child: Text(
-                        'Aucune piste à suivre.',
-                        style: TextStyle(color: Colors.white38),
-                      ),
-                    ),
-                  )
-                else
-                  SliverFillRemaining(
-                    child: ReorderableListView.builder(
-                      buildDefaultDragHandles: false,
-                      padding: const EdgeInsets.only(bottom: 24),
-                      itemCount: upcoming.length,
-                      onReorderItem: (oldIndex, newIndex) {
-                        ref
-                            .read(audioHandlerProvider)
-                            .reorderQueueItem(
-                              currentIndex + 1 + oldIndex,
-                              currentIndex + 1 + newIndex,
-                            );
-                      },
-                      itemBuilder: (context, index) {
-                        final absoluteIndex = currentIndex + 1 + index;
-                        return _UpcomingTile(
-                          key: ValueKey(
-                            'queue-item-${upcoming[index].id}-$index',
-                          ),
-                          item: upcoming[index],
-                          index: absoluteIndex,
-                          reorderIndex: index,
-                        );
-                      },
-                    ),
-                  ),
-              ],
             ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -173,23 +183,34 @@ class QueueScreen extends ConsumerWidget {
     );
   }
 
-  static Future<void> _confirmClear(BuildContext context, WidgetRef ref) async {
+  static Future<void> _confirmClear(
+    BuildContext context,
+    WidgetRef ref,
+    AppColors colors,
+  ) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: _surface,
-        title: const Text('Vider la file à suivre ?'),
-        content: const Text(
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+        title: Text(
+          'Vider la file à suivre ?',
+          style: TextStyle(color: colors.textPrimary),
+        ),
+        content: Text(
           'La piste en cours continuera sans interruption.',
-          style: TextStyle(color: Colors.white70),
+          style: TextStyle(color: colors.textSecondary),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(
+              'Annuler',
+              style: TextStyle(color: colors.textSecondary),
+            ),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('Vider'),
           ),
         ],
@@ -213,91 +234,102 @@ class _CurrentTrackCard extends StatelessWidget {
   final bool playing;
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-    child: Material(
-      color: _surface,
-      borderRadius: BorderRadius.circular(22),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter - 6,
+        12,
+        AppLayout.gutter - 6,
+        0,
+      ),
+      child: SoftCard(
         key: const ValueKey('queue-current-track'),
+        padding: const EdgeInsets.all(14),
         onTap: () => openPlayer(context),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              _Artwork(artUri: item.artUri, size: 86, radius: 14),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          playing
-                              ? Icons.graphic_eq_rounded
-                              : Icons.pause_rounded,
-                          color: _accent,
-                          size: 18,
-                        ),
-                        const SizedBox(width: 6),
-                        const Text(
-                          'EN COURS DE LECTURE',
-                          style: TextStyle(
-                            color: _accent,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.8,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 7),
-                    Text(
-                      item.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
+        semanticLabel: 'Ouvrir le lecteur complet',
+        child: Row(
+          children: [
+            ArtworkThumb(
+              size: 86,
+              radius: AppRadius.artwork,
+              identity: 'queue-current-${item.id}',
+              artUri: item.artUri,
+              traceLabel: 'queue current trackId=${item.id}',
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        playing
+                            ? Icons.graphic_eq_rounded
+                            : Icons.pause_rounded,
+                        color: colors.accent,
+                        size: 18,
                       ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'EN COURS DE LECTURE',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: colors.accent,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    item.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: colors.textPrimary,
+                      fontWeight: FontWeight.w800,
                     ),
-                    Text(
-                      item.artist ?? 'Artiste inconnu',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white54),
+                  ),
+                  Text(
+                    item.artist ?? 'Artiste inconnu',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colors.textSecondary,
                     ),
-                    const SizedBox(height: 9),
-                    LinearProgressIndicator(
+                  ),
+                  const SizedBox(height: 9),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
                       value: duration == null || duration == Duration.zero
                           ? 0
-                          : (position.inMilliseconds / duration!.inMilliseconds)
+                          : (position.inMilliseconds /
+                                    duration!.inMilliseconds)
                                 .clamp(0.0, 1.0),
-                      color: _accent,
-                      backgroundColor: Colors.white12,
-                      borderRadius: BorderRadius.circular(4),
+                      color: colors.accent,
+                      backgroundColor: colors.surfaceSunken,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${_formatDuration(position)} / '
-                      '${duration == null ? '—' : _formatDuration(duration!)}',
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 10,
-                      ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${_formatDuration(position)} / '
+                    '${duration == null ? '—' : _formatDuration(duration!)}',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.textTertiary,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 enum _QueueAction { playNow, playNext, bottom, artist, album, playlist, remove }
@@ -315,90 +347,117 @@ class _UpcomingTile extends ConsumerWidget {
   final int reorderIndex;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) => Dismissible(
-    key: ValueKey('dismiss-${item.id}-$index'),
-    direction: DismissDirection.endToStart,
-    background: const ColoredBox(
-      color: Color(0xFF7A2630),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: Padding(
-          padding: EdgeInsets.only(right: 24),
-          child: Icon(Icons.delete_outline_rounded, color: Colors.white),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return Dismissible(
+      key: ValueKey('dismiss-${item.id}-$index'),
+      direction: DismissDirection.endToStart,
+      background: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.danger,
+          borderRadius: AppRadius.cardRadius,
+        ),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 24),
+            child: Icon(Icons.delete_outline_rounded, color: colors.onAccent),
+          ),
         ),
       ),
-    ),
-    onDismissed: (_) => ref.read(audioHandlerProvider).removeQueueItemAt(index),
-    child: ListTile(
-      contentPadding: const EdgeInsets.only(left: 16, right: 6),
-      leading: _Artwork(artUri: item.artUri, size: 48, radius: 8),
-      title: Text(
-        item.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-      subtitle: Text(
-        '${item.artist ?? 'Artiste inconnu'} · '
-        '${item.duration == null ? '—' : _formatDuration(item.duration!)} · '
-        '${item.extras?['origin'] ?? 'Bibliothèque'}',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(color: Colors.white38, fontSize: 11),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ReorderableDragStartListener(
-            index: reorderIndex,
-            child: const Padding(
-              padding: EdgeInsets.all(10),
-              child: Icon(Icons.drag_handle_rounded, color: Colors.white30),
+      onDismissed: (_) => ref.read(audioHandlerProvider).removeQueueItemAt(index),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: SoftCard(
+          padding: EdgeInsets.zero,
+          shadows: colors.clayShadowSmall,
+          child: ListTile(
+            contentPadding: const EdgeInsets.only(left: 12, right: 4),
+            leading: ArtworkThumb(
+              size: 48,
+              radius: AppRadius.chip,
+              identity: 'queue-upcoming-${item.id}-$index',
+              artUri: item.artUri,
+              traceLabel: 'queue upcoming trackId=${item.id}',
+            ),
+            title: Text(
+              item.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: colors.textPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            subtitle: Text(
+              '${item.artist ?? 'Artiste inconnu'} · '
+              '${item.duration == null ? '—' : _formatDuration(item.duration!)} · '
+              '${item.extras?['origin'] ?? 'Bibliothèque'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: colors.textSecondary,
+              ),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ReorderableDragStartListener(
+                  index: reorderIndex,
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Icon(
+                      Icons.drag_handle_rounded,
+                      color: colors.textTertiary,
+                    ),
+                  ),
+                ),
+                PopupMenuButton<_QueueAction>(
+                  tooltip: 'Actions de la piste',
+                  color: colors.surfaceRaised,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: AppRadius.cardRadius,
+                  ),
+                  icon: Icon(
+                    Icons.more_vert_rounded,
+                    color: colors.textSecondary,
+                  ),
+                  onSelected: (action) => _handleAction(context, ref, action),
+                  itemBuilder: (menuContext) => [
+                    _item(menuContext, 'Lire maintenant'),
+                    _item(menuContext, 'Lire ensuite'),
+                    _item(menuContext, 'Déplacer à la fin'),
+                    _item(menuContext, 'Accéder à l’artiste'),
+                    _item(menuContext, 'Accéder à l’album'),
+                    _item(menuContext, 'Ajouter à une playlist'),
+                    _item(menuContext, 'Retirer de la file'),
+                  ],
+                ),
+              ],
             ),
           ),
-          PopupMenuButton<_QueueAction>(
-            tooltip: 'Actions de la piste',
-            color: _surface,
-            icon: const Icon(Icons.more_vert_rounded, color: Colors.white54),
-            onSelected: (action) => _handleAction(context, ref, action),
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: _QueueAction.playNow,
-                child: Text('Lire maintenant'),
-              ),
-              PopupMenuItem(
-                value: _QueueAction.playNext,
-                child: Text('Lire ensuite'),
-              ),
-              PopupMenuItem(
-                value: _QueueAction.bottom,
-                child: Text('Déplacer à la fin'),
-              ),
-              PopupMenuItem(
-                value: _QueueAction.artist,
-                child: Text('Accéder à l’artiste'),
-              ),
-              PopupMenuItem(
-                value: _QueueAction.album,
-                child: Text('Accéder à l’album'),
-              ),
-              PopupMenuItem(
-                value: _QueueAction.playlist,
-                child: Text('Ajouter à une playlist'),
-              ),
-              PopupMenuItem(
-                value: _QueueAction.remove,
-                child: Text('Retirer de la file'),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
-    ),
-  );
+    );
+  }
+
+  PopupMenuItem<_QueueAction> _item(BuildContext context, String label) {
+    final colors = context.colors;
+    final action = switch (label) {
+      'Lire maintenant' => _QueueAction.playNow,
+      'Lire ensuite' => _QueueAction.playNext,
+      'Déplacer à la fin' => _QueueAction.bottom,
+      'Accéder à l’artiste' => _QueueAction.artist,
+      'Accéder à l’album' => _QueueAction.album,
+      'Ajouter à une playlist' => _QueueAction.playlist,
+      _ => _QueueAction.remove,
+    };
+    return PopupMenuItem<_QueueAction>(
+      value: action,
+      child: Text(label, style: TextStyle(color: colors.textPrimary)),
+    );
+  }
 
   Future<void> _handleAction(
     BuildContext context,
@@ -430,80 +489,54 @@ class _UpcomingTile extends ConsumerWidget {
   }
 }
 
-class _Artwork extends StatelessWidget {
-  const _Artwork({
-    required this.artUri,
-    required this.size,
-    required this.radius,
-  });
-
-  final Uri? artUri;
-  final double size;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(radius),
-    child: SizedBox.square(
-      dimension: size,
-      child: artUri == null
-          ? const ColoredBox(
-              color: Color(0xFF292933),
-              child: Icon(Icons.music_note_rounded, color: Colors.white24),
-            )
-          : AuthenticatedNetworkImage(artUri.toString(), fit: BoxFit.cover),
-    ),
-  );
-}
-
 class _EmptyQueue extends StatelessWidget {
   const _EmptyQueue();
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: const BoxDecoration(
-              color: _surface,
-              shape: BoxShape.circle,
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SoftCircle(
+              size: 110,
+              child: Icon(
+                Icons.queue_music_rounded,
+                size: 52,
+                color: colors.textTertiary,
+              ),
             ),
-            child: const Icon(
-              Icons.queue_music_rounded,
-              size: 62,
-              color: Colors.white24,
+            const SizedBox(height: 20),
+            Text(
+              'La file est vide',
+              style: theme.textTheme.headlineSmall?.copyWith(
+                color: colors.textPrimary,
+              ),
             ),
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'La file est vide',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
+            const SizedBox(height: 8),
+            Text(
+              'Choisis une piste dans ta bibliothèque pour commencer.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colors.textSecondary,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Choisis une piste dans ta bibliothèque pour commencer.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white54),
-          ),
-          const SizedBox(height: 22),
-          FilledButton.icon(
-            key: const ValueKey('queue-browse-library'),
-            onPressed: () => context.go('/library'),
-            icon: const Icon(Icons.library_music_rounded),
-            label: const Text('Parcourir la bibliothèque'),
-          ),
-        ],
+            const SizedBox(height: 22),
+            FilledButton.icon(
+              key: const ValueKey('queue-browse-library'),
+              onPressed: () => context.go('/library'),
+              icon: const Icon(Icons.library_music_rounded),
+              label: const Text('Parcourir la bibliothèque'),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 String _formatDuration(Duration value) {

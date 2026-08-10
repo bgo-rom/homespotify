@@ -9,9 +9,11 @@ import 'home_design.dart';
 ///
 /// - [light] / [dark] : « Direction 33 — Clay Tactile Premium ». Ce sont les
 ///   deux faces du MÊME design system, sélectionnées par `ThemeMode.system`.
-/// - [legacyDark] : thème sombre HISTORIQUE, conservé à l'identique pour les
-///   écrans pas encore migrés. Il disparaîtra quand le dernier écran sera
-///   passé en Direction 33 (cf. `LegacyDarkTheme`).
+///   Toutes les routes de `appRouter` s'y appuient désormais.
+/// - [legacyDark] : thème sombre HISTORIQUE. Les écrans applicatifs sont
+///   entièrement migrés ; ce thème reste uniquement le thème du parcours
+///   d'authentification (`AuthFlowScreen`, monté hors de `appRouter` avant
+///   connexion), lui-même pas encore refondu en Direction 33.
 abstract final class AppTheme {
   static final ThemeData light = _build(AppColors.light);
   static final ThemeData dark = _build(AppColors.dark);
@@ -119,9 +121,9 @@ abstract final class AppTheme {
 
   /// Thème sombre HISTORIQUE — identique à celui d'avant la refonte.
   ///
-  /// Il n'existe que pour figer l'apparence des écrans non migrés pendant la
-  /// migration page par page : sans lui, un téléphone en mode clair rendrait
-  /// illisibles les écrans qui s'appuient sur les valeurs par défaut sombres.
+  /// Toutes les routes de `appRouter` sont désormais en Direction 33 ; ce
+  /// thème ne sert plus qu'au parcours d'authentification pré-connexion
+  /// (`AuthFlowScreen`, monté directement par `main.dart`, hors `appRouter`).
   /// La palette [AppColors.dark] y est tout de même attachée, pour que les
   /// composants DÉJÀ migrés (mini-player) s'y affichent correctement.
   static final ThemeData legacyDark = ThemeData(
@@ -155,19 +157,4 @@ abstract final class AppTheme {
     visualDensity: VisualDensity.standard,
     extensions: const <ThemeExtension<dynamic>>[AppColors.dark],
   );
-}
-
-/// Fige un sous-arbre dans le thème sombre historique.
-///
-/// TEMPORAIRE — un usage est supprimé à chaque écran migré en Direction 33.
-/// Quand il n'en reste plus aucun, ce widget et [AppTheme.legacyDark] partent
-/// avec.
-class LegacyDarkTheme extends StatelessWidget {
-  const LegacyDarkTheme({super.key, required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) =>
-      Theme(data: AppTheme.legacyDark, child: child);
 }

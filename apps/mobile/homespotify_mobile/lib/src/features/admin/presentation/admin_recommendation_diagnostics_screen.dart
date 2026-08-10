@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../data/admin_api.dart';
+import '../presentation/widgets/admin_section.dart';
 import 'admin_guard.dart';
 
 /// Diagnostics techniques du moteur de recommandations (OWNER).
@@ -82,28 +87,43 @@ class _AdminRecommendationDiagnosticsScreenState
   }
 
   @override
-  Widget build(BuildContext context) => AdminGuard(
-    child: Scaffold(
-      backgroundColor: adminBackground,
-      appBar: AppBar(
-        backgroundColor: adminBackground,
-        foregroundColor: Colors.white,
-        title: const Text('Diagnostics recommandations'),
-        actions: [
-          IconButton(
-            tooltip: 'Recharger les diagnostics',
-            onPressed: _loading ? null : _refresh,
-            icon: const Icon(Icons.refresh_rounded),
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AdminGuard(
+      child: Scaffold(
+        backgroundColor: colors.background,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              ClayHeader(
+                title: 'Diagnostics recommandations',
+                onBack: () => Navigator.of(context).maybePop(),
+                actions: [
+                  SoftCircle(
+                    size: 46,
+                    onTap: _loading ? null : _refresh,
+                    tooltip: 'Recharger les diagnostics',
+                    semanticLabel: 'Recharger les diagnostics',
+                    child: Icon(
+                      Icons.refresh_rounded,
+                      size: 21,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              Expanded(child: _buildBody(colors)),
+            ],
           ),
-        ],
+        ),
       ),
-      body: _buildBody(),
-    ),
-  );
+    );
+  }
 
-  Widget _buildBody() {
+  Widget _buildBody(AppColors colors) {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator(color: adminAccent));
+      return Center(child: CircularProgressIndicator(color: colors.accent));
     }
     final error = _error;
     if (error != null) {
@@ -111,7 +131,7 @@ class _AdminRecommendationDiagnosticsScreenState
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(error, style: const TextStyle(color: Colors.white70)),
+            Text(error, style: TextStyle(color: colors.textSecondary)),
             const SizedBox(height: 12),
             FilledButton(onPressed: _refresh, child: const Text('Réessayer')),
           ],
@@ -122,136 +142,121 @@ class _AdminRecommendationDiagnosticsScreenState
     final metrics = _metrics;
     if (health == null || metrics == null) return const SizedBox.shrink();
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter,
+        4,
+        AppLayout.gutter,
+        32,
+      ),
       children: [
-        _section('État du moteur', [
-          _row(
-            'Statut',
-            health.degraded ? 'Dégradé' : 'OK',
-            valueColor: health.degraded ? adminError : adminAccent,
-          ),
-          _row('Version du modèle', health.modelVersion),
-          _row('Dernière génération', health.lastGeneratedAt ?? 'Jamais'),
-          if (health.providerErrorMessage != null)
-            _row(
-              'Erreur provider',
-              '${health.providerErrorMessage} (${health.providerErrorAt ?? '?'})',
-              valueColor: adminError,
-            )
-          else
-            _row('Erreur provider', 'Aucune'),
-        ]),
-        _section('Candidats (catalogue global)', [
-          _row('Total', '${health.candidatesTotal}'),
-          _row('Actifs', '${health.candidatesActive}'),
-          _row('Avec extrait audio', '${health.candidatesWithPreview}'),
-        ]),
-        _section('Files par compte', [
-          _row('Comptes avec file', '${health.usersWithQueue}'),
-          _row('Entrées totales', '${health.queueEntries}'),
-        ]),
-        _section('Usage', [
-          for (final action in const [
-            'LIKE',
-            'DISLIKE',
-            'SKIP',
-            'REQUEST',
-            'OPEN',
-          ])
-            _row(action, '${metrics.actions[action] ?? 0}'),
-          _row('Impressions (24 h)', '${metrics.impressions24h}'),
-          _row('Impressions (total)', '${metrics.impressionsTotal}'),
-        ]),
+        AdminSection(
+          title: 'État du moteur',
+          children: [
+            AdminInfoRow(
+              label: 'Statut',
+              value: health.degraded ? 'Dégradé' : 'OK',
+              valueColor: health.degraded ? colors.danger : colors.accent,
+            ),
+            AdminInfoRow(
+              label: 'Version du modèle',
+              value: health.modelVersion,
+            ),
+            AdminInfoRow(
+              label: 'Dernière génération',
+              value: health.lastGeneratedAt ?? 'Jamais',
+            ),
+            if (health.providerErrorMessage != null)
+              AdminInfoRow(
+                label: 'Erreur provider',
+                value:
+                    '${health.providerErrorMessage} (${health.providerErrorAt ?? '?'})',
+                valueColor: colors.danger,
+              )
+            else
+              const AdminInfoRow(label: 'Erreur provider', value: 'Aucune'),
+          ],
+        ),
+        AdminSection(
+          title: 'Candidats (catalogue global)',
+          children: [
+            AdminInfoRow(label: 'Total', value: '${health.candidatesTotal}'),
+            AdminInfoRow(label: 'Actifs', value: '${health.candidatesActive}'),
+            AdminInfoRow(
+              label: 'Avec extrait audio',
+              value: '${health.candidatesWithPreview}',
+            ),
+          ],
+        ),
+        AdminSection(
+          title: 'Files par compte',
+          children: [
+            AdminInfoRow(
+              label: 'Comptes avec file',
+              value: '${health.usersWithQueue}',
+            ),
+            AdminInfoRow(
+              label: 'Entrées totales',
+              value: '${health.queueEntries}',
+            ),
+          ],
+        ),
+        AdminSection(
+          title: 'Usage',
+          children: [
+            for (final action in const [
+              'LIKE',
+              'DISLIKE',
+              'SKIP',
+              'REQUEST',
+              'OPEN',
+            ])
+              AdminInfoRow(
+                label: action,
+                value: '${metrics.actions[action] ?? 0}',
+              ),
+            AdminInfoRow(
+              label: 'Impressions (24 h)',
+              value: '${metrics.impressions24h}',
+            ),
+            AdminInfoRow(
+              label: 'Impressions (total)',
+              value: '${metrics.impressionsTotal}',
+            ),
+          ],
+        ),
         const SizedBox(height: 8),
         SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
             style: FilledButton.styleFrom(
-              backgroundColor: adminAccent,
-              foregroundColor: Colors.black,
+              backgroundColor: colors.accent,
+              foregroundColor: colors.onAccent,
+              shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
             ),
             onPressed: _maintenanceBusy ? null : _runMaintenance,
             icon: _maintenanceBusy
-                ? const SizedBox(
+                ? SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Colors.black54,
+                      color: colors.onAccent,
                     ),
                   )
                 : const Icon(Icons.build_rounded),
             label: const Text('Lancer une maintenance'),
           ),
         ),
-        const Padding(
-          padding: EdgeInsets.only(top: 10),
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
           child: Text(
             'Régénère la file de recommandations de tous les comptes actifs '
             '(job asynchrone côté serveur, protégé contre les exécutions '
             'concurrentes).',
-            style: TextStyle(color: Colors.white54, fontSize: 12.5),
+            style: TextStyle(color: colors.textTertiary, fontSize: 12.5),
           ),
         ),
       ],
-    );
-  }
-
-  Widget _section(String title, List<Widget> children) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Text(
-              title,
-              style: const TextStyle(
-                color: adminAccent,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.4,
-              ),
-            ),
-          ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: adminCard,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(children: children),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _row(String label, String value, {Color? valueColor}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            flex: 4,
-            child: Text(label, style: const TextStyle(color: Colors.white54)),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            flex: 5,
-            child: Text(
-              value,
-              textAlign: TextAlign.end,
-              style: TextStyle(color: valueColor ?? Colors.white),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

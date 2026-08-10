@@ -2,7 +2,6 @@ import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/logging/app_logger.dart';
-import '../core/theme/app_theme.dart';
 import '../features/home/presentation/home_dashboard_screen.dart';
 import '../features/profile/presentation/profile_screen.dart';
 import 'home_shell.dart';
@@ -32,30 +31,13 @@ import '../features/settings/presentation/settings_screen.dart';
 import '../features/listening/presentation/listening_activity_screen.dart';
 import '../features/offline/presentation/downloads_screen.dart';
 
-/// Transition custom commune : fade + léger slide vertical, à la place de la
-/// transition Material par défaut.
+/// Transition custom commune à toutes les routes empilées : fade + léger
+/// slide vertical, à la place de la transition Material par défaut.
 ///
-/// MIGRATION DIRECTION 33 : tant qu'un écran empilé n'est pas refondu, il est
-/// figé dans le thème sombre historique par [LegacyDarkTheme]. Sinon, un
-/// téléphone en mode clair rendrait illisibles les écrans qui s'appuient sur
-/// les valeurs par défaut sombres. Chaque lot de refonte sortira son écran de
-/// ce repli.
-CustomTransitionPage<void> _darkTransitionPage({
-  required LocalKey key,
-  required Widget child,
-}) {
-  return CustomTransitionPage<void>(
-    key: key,
-    child: LegacyDarkTheme(child: child),
-    transitionDuration: const Duration(milliseconds: 240),
-    reverseTransitionDuration: const Duration(milliseconds: 200),
-    transitionsBuilder: _fadeSlide,
-  );
-}
-
-/// Même transition, mais SANS repli sombre historique : réservée aux écrans
-/// déjà refondus en Direction 33 (ils suivent alors le thème clair/sombre
-/// système). Chaque écran migré passe de [_darkTransitionPage] à celle-ci.
+/// MIGRATION DIRECTION 33 TERMINÉE : toutes les routes suivent désormais le
+/// thème clair/sombre système (`AppTheme.light`/`AppTheme.dark`). Le repli
+/// `LegacyDarkTheme` historique, utilisé pendant la migration progressive,
+/// a été retiré — plus aucune route ne s'appuyait dessus.
 CustomTransitionPage<void> _transitionPage({
   required LocalKey key,
   required Widget child,
@@ -292,7 +274,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/admin',
       name: 'admin',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const AdminDashboardScreen(),
       ),
@@ -300,7 +282,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/admin/users',
       name: 'admin-users',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const AdminUsersScreen(),
       ),
@@ -308,7 +290,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/admin/imports',
       name: 'admin-imports',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const AdminImportsScreen(),
       ),
@@ -316,7 +298,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/admin/recommendations',
       name: 'admin-recommendations',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const AdminRecommendationDiagnosticsScreen(),
       ),
@@ -357,7 +339,7 @@ final GoRouter appRouter = GoRouter(
       path: '/queue',
       name: 'queue',
       pageBuilder: (context, state) =>
-          _darkTransitionPage(key: state.pageKey, child: const QueueScreen()),
+          _transitionPage(key: state.pageKey, child: const QueueScreen()),
     ),
     // Écran développeur discret (accès par appui long sur le panneau « Mode
     // audio » de la feuille de vitesse) : comparaison A/B du moteur de
@@ -365,7 +347,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/dev/stretch-lab',
       name: 'stretch-lab',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const StretchLabScreen(),
       ),
@@ -373,7 +355,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/dev/audio-diagnostics',
       name: 'audio-diagnostics',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const AudioDiagnosticsScreen(),
       ),

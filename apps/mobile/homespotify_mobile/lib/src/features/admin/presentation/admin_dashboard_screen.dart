@@ -3,7 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../data/admin_api.dart';
+import '../presentation/widgets/admin_section.dart';
 import 'admin_guard.dart';
 
 /// Tableau de bord OWNER : état du serveur, stockage, bibliothèque, comptes.
@@ -68,7 +73,10 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
     } on AdminApiException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message), backgroundColor: adminError),
+        SnackBar(
+          content: Text(error.message),
+          backgroundColor: context.colors.danger,
+        ),
       );
     } finally {
       if (mounted) setState(() => _maintenanceRunning = false);
@@ -77,300 +85,359 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final overview = _overview;
     return AdminGuard(
       child: Scaffold(
-        backgroundColor: adminBackground,
-        appBar: AppBar(
-          backgroundColor: adminBackground,
-          foregroundColor: Colors.white,
-          title: const Text(
-            'Administration',
-            style: TextStyle(fontWeight: FontWeight.w700),
-          ),
-          actions: [
-            IconButton(
-              tooltip: 'Actualiser',
-              onPressed: _loading ? null : _refresh,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white54,
-                      ),
-                    )
-                  : const Icon(Icons.refresh_rounded),
-            ),
-          ],
-        ),
-        body: RefreshIndicator(
-          color: adminAccent,
-          onRefresh: _refresh,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        backgroundColor: colors.background,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
             children: [
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    _error!,
-                    style: const TextStyle(color: adminError, fontSize: 13),
+              ClayHeader(
+                title: 'Administration',
+                onBack: () => Navigator.of(context).maybePop(),
+                actions: [
+                  SoftCircle(
+                    size: 46,
+                    onTap: _loading ? null : _refresh,
+                    tooltip: 'Actualiser',
+                    semanticLabel: 'Actualiser',
+                    child: _loading
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: colors.textSecondary,
+                            ),
+                          )
+                        : Icon(
+                            Icons.refresh_rounded,
+                            size: 21,
+                            color: colors.textPrimary,
+                          ),
                   ),
-                ),
-              if (overview == null && _error == null)
-                const Padding(
-                  padding: EdgeInsets.only(top: 48),
-                  child: Center(
-                    child: CircularProgressIndicator(color: adminAccent),
-                  ),
-                ),
-              if (overview != null) ...[
-                _AdminSection(
-                  title: 'Serveur',
-                  rows: [
-                    (
-                      'État',
-                      overview.backendStatus == 'ok'
-                          ? 'En ligne'
-                          : 'Hors ligne',
+                ],
+              ),
+              Expanded(
+                child: RefreshIndicator(
+                  color: colors.accent,
+                  backgroundColor: colors.surface,
+                  onRefresh: _refresh,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(
+                      AppLayout.gutter,
+                      4,
+                      AppLayout.gutter,
+                      32,
                     ),
-                    ('Uptime', formatUptime(overview.uptimeSeconds)),
-                    ('Version', overview.version),
-                    ('Heure serveur', formatDateTime(overview.serverTime)),
-                  ],
-                ),
-                _AdminSection(
-                  title: 'Stockage',
-                  rows: [
-                    ('Total', formatBytes(overview.diskTotalBytes)),
-                    ('Utilisé', formatBytes(overview.diskUsedBytes)),
-                    ('Libre', formatBytes(overview.diskFreeBytes)),
-                    (
-                      'Bibliothèque audio',
-                      formatBytes(overview.librarySizeBytes),
-                    ),
-                    ('Pistes', '${overview.libraryTrackCount}'),
-                  ],
-                ),
-                _AdminSection(
-                  title: 'Comptes',
-                  rows: [
-                    ('Utilisateurs', '${overview.totalUsers}'),
-                    ('Actifs', '${overview.activeUsers}'),
-                    ('Bloqués', '${overview.blockedUsers}'),
-                    ('Sessions actives', '${overview.activeSessions}'),
-                  ],
-                ),
-                _AdminSection(
-                  title: 'Santé opérationnelle',
-                  rows: [
-                    (
-                      'État global',
-                      switch (overview.operationsStatus) {
-                        'healthy' => 'Sain',
-                        'degraded' => 'À surveiller',
-                        'critical' => 'Critique',
-                        _ => 'Inconnu',
-                      },
-                    ),
-                    ('Erreurs audio (24 h)', '${overview.audioErrors24h}'),
-                    ('Imports échoués', '${overview.failedImports}'),
-                    ('Fichiers suspects', '${overview.suspectFiles}'),
-                    ('Fichiers absents', '${overview.missingFiles}'),
-                    (
-                      'Tailles incohérentes',
-                      '${overview.inconsistentSizeFiles}',
-                    ),
-                    ('Chemins invalides', '${overview.invalidPathFiles}'),
-                  ],
-                ),
-                _AdminSection(
-                  title: 'Sauvegarde quotidienne',
-                  rows: [
-                    (
-                      'État',
-                      !overview.backupEnabled
-                          ? 'Désactivée'
-                          : overview.backupRunning
-                          ? 'En cours'
-                          : overview.backupLastError != null
-                          ? 'Erreur'
-                          : 'Planifiée',
-                    ),
-                    (
-                      'Dernier succès',
-                      overview.backupLastSuccessAt == null
-                          ? 'Jamais'
-                          : formatDateTime(overview.backupLastSuccessAt!),
-                    ),
-                    (
-                      'Prochaine',
-                      overview.backupNextRunAt == null
-                          ? 'Non planifiée'
-                          : formatDateTime(overview.backupNextRunAt!),
-                    ),
-                    ('Rétention', '${overview.backupRetentionCount} sauvegardes'),
-                    if (overview.backupLastError != null)
-                      ('Dernière erreur', overview.backupLastError!),
-                  ],
-                ),
-                _AdminSection(
-                  title: 'Détection du stockage par profil',
-                  rows: [
-                    (
-                      'Scanner',
-                      overview.scannerRunning ? 'Analyse en cours' : 'Prêt',
-                    ),
-                    ('Imports actifs', '${overview.scannerActiveImports}'),
-                    ('En attente', '${overview.scannerQueuedImports}'),
-                    (
-                      'Dernier scan',
-                      overview.scannerLastCompletedAt == null
-                          ? 'Jamais'
-                          : formatDateTime(overview.scannerLastCompletedAt!),
-                    ),
-                    if (overview.scannerLastError != null)
-                      ('Dernière erreur', overview.scannerLastError!),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed:
-                            _maintenanceRunning || !overview.backupEnabled
-                            ? null
-                            : () => _runMaintenance(
-                                (api) => api.runBackup(),
-                                'Sauvegarde terminée.',
+                    children: [
+                      if (_error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Text(
+                            _error!,
+                            style: TextStyle(color: colors.danger, fontSize: 13),
+                          ),
+                        ),
+                      if (overview == null && _error == null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 48),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: colors.accent,
+                            ),
+                          ),
+                        ),
+                      if (overview != null) ...[
+                        AdminSection(
+                          title: 'Serveur',
+                          children: [
+                            AdminInfoRow(
+                              label: 'État',
+                              value: overview.backendStatus == 'ok'
+                                  ? 'En ligne'
+                                  : 'Hors ligne',
+                            ),
+                            AdminInfoRow(
+                              label: 'Uptime',
+                              value: formatUptime(overview.uptimeSeconds),
+                            ),
+                            AdminInfoRow(
+                              label: 'Version',
+                              value: overview.version,
+                            ),
+                            AdminInfoRow(
+                              label: 'Heure serveur',
+                              value: formatDateTime(overview.serverTime),
+                            ),
+                          ],
+                        ),
+                        AdminSection(
+                          title: 'Stockage',
+                          children: [
+                            AdminInfoRow(
+                              label: 'Total',
+                              value: formatBytes(overview.diskTotalBytes),
+                            ),
+                            AdminInfoRow(
+                              label: 'Utilisé',
+                              value: formatBytes(overview.diskUsedBytes),
+                            ),
+                            AdminInfoRow(
+                              label: 'Libre',
+                              value: formatBytes(overview.diskFreeBytes),
+                            ),
+                            AdminInfoRow(
+                              label: 'Bibliothèque audio',
+                              value: formatBytes(overview.librarySizeBytes),
+                            ),
+                            AdminInfoRow(
+                              label: 'Pistes',
+                              value: '${overview.libraryTrackCount}',
+                            ),
+                          ],
+                        ),
+                        AdminSection(
+                          title: 'Comptes',
+                          children: [
+                            AdminInfoRow(
+                              label: 'Utilisateurs',
+                              value: '${overview.totalUsers}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Actifs',
+                              value: '${overview.activeUsers}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Bloqués',
+                              value: '${overview.blockedUsers}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Sessions actives',
+                              value: '${overview.activeSessions}',
+                            ),
+                          ],
+                        ),
+                        AdminSection(
+                          title: 'Santé opérationnelle',
+                          children: [
+                            AdminInfoRow(
+                              label: 'État global',
+                              value: switch (overview.operationsStatus) {
+                                'healthy' => 'Sain',
+                                'degraded' => 'À surveiller',
+                                'critical' => 'Critique',
+                                _ => 'Inconnu',
+                              },
+                              valueColor: switch (overview.operationsStatus) {
+                                'healthy' => colors.accent,
+                                'critical' => colors.danger,
+                                _ => null,
+                              },
+                            ),
+                            AdminInfoRow(
+                              label: 'Erreurs audio (24 h)',
+                              value: '${overview.audioErrors24h}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Imports échoués',
+                              value: '${overview.failedImports}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Fichiers suspects',
+                              value: '${overview.suspectFiles}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Fichiers absents',
+                              value: '${overview.missingFiles}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Tailles incohérentes',
+                              value: '${overview.inconsistentSizeFiles}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Chemins invalides',
+                              value: '${overview.invalidPathFiles}',
+                            ),
+                          ],
+                        ),
+                        AdminSection(
+                          title: 'Sauvegarde quotidienne',
+                          children: [
+                            AdminInfoRow(
+                              label: 'État',
+                              value: !overview.backupEnabled
+                                  ? 'Désactivée'
+                                  : overview.backupRunning
+                                  ? 'En cours'
+                                  : overview.backupLastError != null
+                                  ? 'Erreur'
+                                  : 'Planifiée',
+                            ),
+                            AdminInfoRow(
+                              label: 'Dernier succès',
+                              value: overview.backupLastSuccessAt == null
+                                  ? 'Jamais'
+                                  : formatDateTime(
+                                      overview.backupLastSuccessAt!,
+                                    ),
+                            ),
+                            AdminInfoRow(
+                              label: 'Prochaine',
+                              value: overview.backupNextRunAt == null
+                                  ? 'Non planifiée'
+                                  : formatDateTime(overview.backupNextRunAt!),
+                            ),
+                            AdminInfoRow(
+                              label: 'Rétention',
+                              value:
+                                  '${overview.backupRetentionCount} sauvegardes',
+                            ),
+                            if (overview.backupLastError != null)
+                              AdminInfoRow(
+                                label: 'Dernière erreur',
+                                value: overview.backupLastError!,
+                                valueColor: colors.danger,
                               ),
-                        icon: const Icon(Icons.backup_rounded),
-                        label: const Text('Sauvegarder'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _maintenanceRunning
-                            ? null
-                            : () => _runMaintenance(
-                                (api) => api.scanStorage(),
-                                'Stockage analysé.',
+                          ],
+                        ),
+                        AdminSection(
+                          title: 'Détection du stockage par profil',
+                          children: [
+                            AdminInfoRow(
+                              label: 'Scanner',
+                              value: overview.scannerRunning
+                                  ? 'Analyse en cours'
+                                  : 'Prêt',
+                            ),
+                            AdminInfoRow(
+                              label: 'Imports actifs',
+                              value: '${overview.scannerActiveImports}',
+                            ),
+                            AdminInfoRow(
+                              label: 'En attente',
+                              value: '${overview.scannerQueuedImports}',
+                            ),
+                            AdminInfoRow(
+                              label: 'Dernier scan',
+                              value: overview.scannerLastCompletedAt == null
+                                  ? 'Jamais'
+                                  : formatDateTime(
+                                      overview.scannerLastCompletedAt!,
+                                    ),
+                            ),
+                            if (overview.scannerLastError != null)
+                              AdminInfoRow(
+                                label: 'Dernière erreur',
+                                value: overview.scannerLastError!,
+                                valueColor: colors.danger,
                               ),
-                        icon: const Icon(Icons.manage_search_rounded),
-                        label: const Text('Scanner'),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: adminAccent,
-                      foregroundColor: Colors.black,
-                    ),
-                    onPressed: () => context.push('/admin/users'),
-                    icon: const Icon(Icons.group_rounded),
-                    label: const Text('Gérer les utilisateurs'),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: colors.accent,
+                                  side: BorderSide(color: colors.accent),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: AppRadius.chipRadius,
+                                  ),
+                                ),
+                                onPressed:
+                                    _maintenanceRunning ||
+                                        !overview.backupEnabled
+                                    ? null
+                                    : () => _runMaintenance(
+                                        (api) => api.runBackup(),
+                                        'Sauvegarde terminée.',
+                                      ),
+                                icon: const Icon(Icons.backup_rounded),
+                                label: const Text('Sauvegarder'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: colors.accent,
+                                  side: BorderSide(color: colors.accent),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: AppRadius.chipRadius,
+                                  ),
+                                ),
+                                onPressed: _maintenanceRunning
+                                    ? null
+                                    : () => _runMaintenance(
+                                        (api) => api.scanStorage(),
+                                        'Stockage analysé.',
+                                      ),
+                                icon: const Icon(Icons.manage_search_rounded),
+                                label: const Text('Scanner'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: colors.accent,
+                              foregroundColor: colors.onAccent,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: AppRadius.chipRadius,
+                              ),
+                            ),
+                            onPressed: () => context.push('/admin/users'),
+                            icon: const Icon(Icons.group_rounded),
+                            label: const Text('Gérer les utilisateurs'),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: colors.accent,
+                                  side: BorderSide(color: colors.accent),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: AppRadius.chipRadius,
+                                  ),
+                                ),
+                                onPressed: () => context.push('/admin/imports'),
+                                icon: const Icon(Icons.move_to_inbox_rounded),
+                                label: const Text('Imports'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_refreshedAt != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Text(
+                              'Dernière actualisation : '
+                              '${formatDateTime(_refreshedAt!.toIso8601String())}',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: colors.textTertiary,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ],
                   ),
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => context.push('/admin/imports'),
-                        icon: const Icon(Icons.move_to_inbox_rounded),
-                        label: const Text('Imports'),
-                      ),
-                    ),
-                  ],
-                ),
-                if (_refreshedAt != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Text(
-                      'Dernière actualisation : '
-                      '${formatDateTime(_refreshedAt!.toIso8601String())}',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _AdminSection extends StatelessWidget {
-  const _AdminSection({required this.title, required this.rows});
-
-  final String title;
-  final List<(String, String)> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Text(
-              title,
-              style: const TextStyle(
-                color: adminAccent,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.4,
-              ),
-            ),
-          ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: adminCard,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  for (final (label, value) in rows)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              label,
-                              style: const TextStyle(color: Colors.white54),
-                            ),
-                          ),
-                          Text(
-                            value,
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

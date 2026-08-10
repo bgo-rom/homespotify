@@ -6,6 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../auth/application/auth_controller.dart';
 import '../audio/audio_diagnostics.dart';
 import '../audio/homespotify_audio_handler.dart';
@@ -24,148 +28,236 @@ class _AudioDiagnosticsScreenState
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final user = ref.watch(
       authControllerProvider.select((state) => state.user),
     );
     if (user?.isOwner != true && !kDebugMode) {
-      return const Scaffold(
-        body: Center(child: Text('Diagnostic réservé au propriétaire.')),
+      return Scaffold(
+        backgroundColor: colors.background,
+        body: SafeArea(
+          child: Column(
+            children: [
+              ClayHeader(
+                title: 'Diagnostic audio',
+                onBack: () => Navigator.of(context).maybePop(),
+              ),
+              Expanded(
+                child: Center(
+                  child: Text(
+                    'Diagnostic réservé au propriétaire.',
+                    style: TextStyle(color: colors.textSecondary),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
     final handler = ref.read(audioHandlerProvider);
     final diagnostics = AudioDiagnostics.instance;
     return Scaffold(
-      appBar: AppBar(title: const Text('Diagnostic audio')),
-      body: ValueListenableBuilder<int>(
-        valueListenable: diagnostics.revision,
-        builder: (context, _, child) => StreamBuilder<PlayerPositionData>(
-          stream: handler.positionDataStream,
-          initialData: PlayerPositionData.zero,
-          builder: (context, positionSnapshot) {
-            final state = <String, Object?>{
-              ...handler.diagnosticState,
-              'positionMs': positionSnapshot.data?.position.inMilliseconds,
-              'bufferedPositionMs':
-                  positionSnapshot.data?.bufferedPosition.inMilliseconds,
-              'durationMs': positionSnapshot.data?.duration.inMilliseconds,
-            };
-            final events = diagnostics.structuredSnapshot();
-            final lastError = _lastEvent(
-              events,
-              (event) => event.contains('ERROR') || event.contains('FAILED'),
-            );
-            final lastNetwork = _lastEvent(
-              events,
-              (event) => event.contains('NETWORK') || event.contains('HTTP'),
-            );
-            return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-              children: [
-                _StatusCard(
-                  title: 'Lecteur',
-                  values: {
-                    'État': state['processingState'],
-                    'Lecture': state['playing'],
-                    'Index': state['currentIndex'],
-                    'Taille file': state['queueLength'],
-                    'Piste': state['trackId'],
-                    'Position': _duration(state['positionMs']),
-                    'Durée': _duration(state['durationMs']),
-                    'Tampon': _duration(state['bufferedPositionMs']),
-                    'Repeat': state['repeatMode'],
-                    'Shuffle': state['shuffleMode'],
-                    'Moteur': state['timeStretchEngine'],
-                    'Vitesse': state['timeStretchRatio'],
-                  },
-                ),
-                _StatusCard(
-                  title: 'Fiabilité',
-                  values: {
-                    'Token expire dans': _duration(state['tokenExpiresInMs']),
-                    'Refresh actif': state['authorizationRecoveryInFlight'],
-                    'Recovery actif': state['trackRecoveryInFlight'],
-                    'Bufferings': state['bufferingCount'],
-                    'Buffering total': _duration(state['totalBufferingMs']),
-                    'Plus long buffering': _duration(
-                      state['longestBufferingMs'],
-                    ),
-                    'Événements': diagnostics.eventCount,
-                    'Session': diagnostics.playbackSessionId,
-                    'Révision file': diagnostics.queueRevisionId,
-                    'Dernier réseau': lastNetwork?['event'],
-                    'Dernière erreur':
-                        lastError?['message'] ??
-                        lastError?['error'] ??
-                        lastError?['event'],
-                  },
-                ),
-                SwitchListTile(
-                  title: const Text('Diagnostic audio'),
-                  subtitle: const Text('Journal normal roulant et borné.'),
-                  value: AudioDiagnostics.enabled,
-                  onChanged: AudioDiagnostics.available
-                      ? diagnostics.setEnabled
-                      : null,
-                ),
-                SwitchListTile(
-                  title: const Text('Trace audio verbeuse'),
-                  subtitle: const Text(
-                    'Désactivation automatique après 15 minutes.',
-                  ),
-                  value: diagnostics.isTraceEnabled,
-                  onChanged:
-                      (kDebugMode || AudioDiagnostics.traceAvailable) &&
-                          AudioDiagnostics.available
-                      ? diagnostics.setTraceEnabled
-                      : null,
-                ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: () {
-                    diagnostics.markProblem(context: handler.diagnosticState);
-                    _show('Problème marqué, contexte étendu pendant 2 min.');
-                  },
-                  icon: const Icon(Icons.flag_rounded),
-                  label: const Text('Marquer maintenant comme problème'),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: _busy ? null : () => _export(handler),
-                  icon: const Icon(Icons.ios_share_rounded),
-                  label: const Text('Exporter les logs'),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await Clipboard.setData(
-                      ClipboardData(
-                        text: const JsonEncoder.withIndent('  ').convert({
-                          ...diagnostics.summary(),
-                          'audioState': handler.diagnosticState,
-                          'lastError': lastError,
-                        }),
-                      ),
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            ClayHeader(
+              title: 'Diagnostic audio',
+              onBack: () => Navigator.of(context).maybePop(),
+            ),
+            Expanded(
+              child: ValueListenableBuilder<int>(
+                valueListenable: diagnostics.revision,
+                builder: (context, _, child) => StreamBuilder<PlayerPositionData>(
+                  stream: handler.positionDataStream,
+                  initialData: PlayerPositionData.zero,
+                  builder: (context, positionSnapshot) {
+                    final state = <String, Object?>{
+                      ...handler.diagnosticState,
+                      'positionMs': positionSnapshot.data?.position.inMilliseconds,
+                      'bufferedPositionMs':
+                          positionSnapshot.data?.bufferedPosition.inMilliseconds,
+                      'durationMs': positionSnapshot.data?.duration.inMilliseconds,
+                    };
+                    final events = diagnostics.structuredSnapshot();
+                    final lastError = _lastEvent(
+                      events,
+                      (event) =>
+                          event.contains('ERROR') || event.contains('FAILED'),
                     );
-                    _show('Résumé copié.');
+                    final lastNetwork = _lastEvent(
+                      events,
+                      (event) =>
+                          event.contains('NETWORK') || event.contains('HTTP'),
+                    );
+                    return ListView(
+                      padding: const EdgeInsets.fromLTRB(
+                        AppLayout.gutter,
+                        4,
+                        AppLayout.gutter,
+                        32,
+                      ),
+                      children: [
+                        _StatusCard(
+                          title: 'Lecteur',
+                          values: {
+                            'État': state['processingState'],
+                            'Lecture': state['playing'],
+                            'Index': state['currentIndex'],
+                            'Taille file': state['queueLength'],
+                            'Piste': state['trackId'],
+                            'Position': _duration(state['positionMs']),
+                            'Durée': _duration(state['durationMs']),
+                            'Tampon': _duration(state['bufferedPositionMs']),
+                            'Repeat': state['repeatMode'],
+                            'Shuffle': state['shuffleMode'],
+                            'Moteur': state['timeStretchEngine'],
+                            'Vitesse': state['timeStretchRatio'],
+                          },
+                        ),
+                        _StatusCard(
+                          title: 'Fiabilité',
+                          values: {
+                            'Token expire dans': _duration(
+                              state['tokenExpiresInMs'],
+                            ),
+                            'Refresh actif': state['authorizationRecoveryInFlight'],
+                            'Recovery actif': state['trackRecoveryInFlight'],
+                            'Bufferings': state['bufferingCount'],
+                            'Buffering total': _duration(
+                              state['totalBufferingMs'],
+                            ),
+                            'Plus long buffering': _duration(
+                              state['longestBufferingMs'],
+                            ),
+                            'Événements': diagnostics.eventCount,
+                            'Session': diagnostics.playbackSessionId,
+                            'Révision file': diagnostics.queueRevisionId,
+                            'Dernier réseau': lastNetwork?['event'],
+                            'Dernière erreur':
+                                lastError?['message'] ??
+                                lastError?['error'] ??
+                                lastError?['event'],
+                          },
+                        ),
+                        SwitchListTile(
+                          title: Text(
+                            'Diagnostic audio',
+                            style: TextStyle(color: colors.textPrimary),
+                          ),
+                          subtitle: Text(
+                            'Journal normal roulant et borné.',
+                            style: TextStyle(color: colors.textSecondary),
+                          ),
+                          activeThumbColor: colors.accent,
+                          value: AudioDiagnostics.enabled,
+                          onChanged: AudioDiagnostics.available
+                              ? diagnostics.setEnabled
+                              : null,
+                        ),
+                        SwitchListTile(
+                          title: Text(
+                            'Trace audio verbeuse',
+                            style: TextStyle(color: colors.textPrimary),
+                          ),
+                          subtitle: Text(
+                            'Désactivation automatique après 15 minutes.',
+                            style: TextStyle(color: colors.textSecondary),
+                          ),
+                          activeThumbColor: colors.accent,
+                          value: diagnostics.isTraceEnabled,
+                          onChanged:
+                              (kDebugMode || AudioDiagnostics.traceAvailable) &&
+                                  AudioDiagnostics.available
+                              ? diagnostics.setTraceEnabled
+                              : null,
+                        ),
+                        const SizedBox(height: 8),
+                        FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: colors.accent,
+                            foregroundColor: colors.onAccent,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: AppRadius.chipRadius,
+                            ),
+                          ),
+                          onPressed: () {
+                            diagnostics.markProblem(
+                              context: handler.diagnosticState,
+                            );
+                            _show('Problème marqué, contexte étendu pendant 2 min.');
+                          },
+                          icon: const Icon(Icons.flag_rounded),
+                          label: const Text('Marquer maintenant comme problème'),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: colors.accent,
+                            side: BorderSide(color: colors.accent),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: AppRadius.chipRadius,
+                            ),
+                          ),
+                          onPressed: _busy ? null : () => _export(handler),
+                          icon: const Icon(Icons.ios_share_rounded),
+                          label: const Text('Exporter les logs'),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: colors.accent,
+                            side: BorderSide(color: colors.accent),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: AppRadius.chipRadius,
+                            ),
+                          ),
+                          onPressed: () async {
+                            await Clipboard.setData(
+                              ClipboardData(
+                                text: const JsonEncoder.withIndent('  ').convert({
+                                  ...diagnostics.summary(),
+                                  'audioState': handler.diagnosticState,
+                                  'lastError': lastError,
+                                }),
+                              ),
+                            );
+                            _show('Résumé copié.');
+                          },
+                          icon: const Icon(Icons.copy_rounded),
+                          label: const Text('Copier le résumé'),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: colors.accent,
+                            side: BorderSide(color: colors.accent),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: AppRadius.chipRadius,
+                            ),
+                          ),
+                          onPressed: _showGuidedTest,
+                          icon: const Icon(Icons.playlist_play_rounded),
+                          label: const Text('Lancer un test audio guidé'),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton.icon(
+                          style: TextButton.styleFrom(
+                            foregroundColor: colors.danger,
+                          ),
+                          onPressed: _busy ? null : _clear,
+                          icon: const Icon(Icons.delete_outline_rounded),
+                          label: const Text('Effacer les diagnostics'),
+                        ),
+                      ],
+                    );
                   },
-                  icon: const Icon(Icons.copy_rounded),
-                  label: const Text('Copier le résumé'),
                 ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: _showGuidedTest,
-                  icon: const Icon(Icons.playlist_play_rounded),
-                  label: const Text('Lancer un test audio guidé'),
-                ),
-                const SizedBox(height: 8),
-                TextButton.icon(
-                  onPressed: _busy ? null : _clear,
-                  icon: const Icon(Icons.delete_outline_rounded),
-                  label: const Text('Effacer les diagnostics'),
-                ),
-              ],
-            );
-          },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -232,21 +324,28 @@ class _AudioDiagnosticsScreenState
 
   void _showGuidedTest() {
     AudioDiagnostics.instance.log('AUDIO_GUIDED_TEST_STARTED');
+    final colors = context.colors;
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Test audio guidé'),
-        content: const Text(
+        backgroundColor: colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+        title: Text(
+          'Test audio guidé',
+          style: TextStyle(color: colors.textPrimary),
+        ),
+        content: Text(
           '1. Lance une playlist de 20 pistes.\n'
           '2. Verrouille l’écran pendant 60 minutes.\n'
           '3. Teste ensuite Wi-Fi → 5G, pause/reprise et Bluetooth.\n'
           '4. En cas d’incident, marque immédiatement le problème.\n'
           '5. Reviens ici puis exporte les diagnostics.',
+          style: TextStyle(color: colors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Compris'),
+            child: Text('Compris', style: TextStyle(color: colors.accent)),
           ),
         ],
       ),
@@ -269,14 +368,20 @@ class _StatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: SoftCard(
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              title,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(color: colors.textPrimary),
+            ),
             const SizedBox(height: 8),
             for (final entry in values.entries)
               Padding(
@@ -287,7 +392,7 @@ class _StatusCard extends StatelessWidget {
                     Expanded(
                       child: Text(
                         entry.key,
-                        style: const TextStyle(color: Colors.white60),
+                        style: TextStyle(color: colors.textSecondary),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -297,6 +402,7 @@ class _StatusCard extends StatelessWidget {
                         textAlign: TextAlign.end,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: colors.textPrimary),
                       ),
                     ),
                   ],

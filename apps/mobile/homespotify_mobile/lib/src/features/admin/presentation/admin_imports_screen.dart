@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../data/admin_api.dart';
 import 'admin_guard.dart';
 
@@ -73,83 +77,111 @@ class _AdminImportsScreenState extends ConsumerState<AdminImportsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final users = <int, String>{
       for (final item in _items) item.userId: item.requesterName,
     };
     return AdminGuard(
       child: Scaffold(
-        backgroundColor: adminBackground,
-        appBar: AppBar(
-          backgroundColor: adminBackground,
-          foregroundColor: Colors.white,
-          title: const Text('Imports utilisateurs'),
-          actions: [
-            IconButton(
-              onPressed: _refresh,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
-          ],
-        ),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator(color: adminAccent))
-            : _error != null
-            ? Center(
-                child: Text(_error!, style: const TextStyle(color: adminError)),
-              )
-            : Column(
-                children: [
-                  _Filters(
-                    status: _status,
-                    userId: _userId,
-                    users: users,
-                    onStatusChanged: (value) => setState(() => _status = value),
-                    onUserChanged: (value) => setState(() => _userId = value),
-                  ),
-                  Expanded(
-                    child: _filtered.isEmpty
-                        ? const Center(
-                            child: Text(
-                              'Aucun import enregistré.',
-                              style: TextStyle(color: Colors.white54),
-                            ),
-                          )
-                        : ListView.builder(
-                            itemCount: _filtered.length,
-                            itemBuilder: (context, index) {
-                              final item = _filtered[index];
-                              return Card(
-                                color: adminCard,
-                                margin: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 5,
-                                ),
-                                child: ListTile(
-                                  onTap: () => _open(item),
-                                  leading: const Icon(
-                                    Icons.audio_file_rounded,
-                                    color: adminAccent,
-                                  ),
-                                  title: Text(
-                                    item.filename,
-                                    style: const TextStyle(color: Colors.white),
-                                  ),
-                                  subtitle: Text(
-                                    '${item.requesterName} · ${item.status}\n${item.relativePath}',
-                                    style: const TextStyle(
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                  trailing: const Icon(
-                                    Icons.chevron_right_rounded,
-                                    color: Colors.white38,
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
+        backgroundColor: colors.background,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              ClayHeader(
+                title: 'Imports utilisateurs',
+                onBack: () => Navigator.of(context).maybePop(),
+                actions: [
+                  SoftCircle(
+                    size: 46,
+                    onTap: _refresh,
+                    tooltip: 'Actualiser',
+                    semanticLabel: 'Actualiser',
+                    child: Icon(
+                      Icons.refresh_rounded,
+                      size: 21,
+                      color: colors.textPrimary,
+                    ),
                   ),
                 ],
               ),
+              Expanded(
+                child: _loading
+                    ? Center(child: CircularProgressIndicator(color: colors.accent))
+                    : _error != null
+                    ? Center(
+                        child: Text(
+                          _error!,
+                          style: TextStyle(color: colors.danger),
+                        ),
+                      )
+                    : Column(
+                        children: [
+                          _Filters(
+                            status: _status,
+                            userId: _userId,
+                            users: users,
+                            onStatusChanged: (value) =>
+                                setState(() => _status = value),
+                            onUserChanged: (value) =>
+                                setState(() => _userId = value),
+                          ),
+                          Expanded(
+                            child: _filtered.isEmpty
+                                ? Center(
+                                    child: Text(
+                                      'Aucun import enregistré.',
+                                      style: TextStyle(
+                                        color: colors.textSecondary,
+                                      ),
+                                    ),
+                                  )
+                                : ListView.builder(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: AppLayout.gutter - 10,
+                                    ),
+                                    itemCount: _filtered.length,
+                                    itemBuilder: (context, index) {
+                                      final item = _filtered[index];
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 5,
+                                        ),
+                                        child: SoftCard(
+                                          onTap: () => _open(item),
+                                          child: ListTile(
+                                            leading: Icon(
+                                              Icons.audio_file_rounded,
+                                              color: colors.accent,
+                                            ),
+                                            title: Text(
+                                              item.filename,
+                                              style: TextStyle(
+                                                color: colors.textPrimary,
+                                              ),
+                                            ),
+                                            subtitle: Text(
+                                              '${item.requesterName} · ${item.status}\n${item.relativePath}',
+                                              style: TextStyle(
+                                                color: colors.textSecondary,
+                                              ),
+                                            ),
+                                            trailing: Icon(
+                                              Icons.chevron_right_rounded,
+                                              color: colors.textTertiary,
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -214,12 +246,14 @@ class _ImportDialogState extends State<_ImportDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final metadata = widget.job.metadata ?? const <String, dynamic>{};
     return AlertDialog(
-      backgroundColor: adminCard,
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
       title: Text(
         widget.job.filename,
-        style: const TextStyle(color: Colors.white),
+        style: TextStyle(color: colors.textPrimary),
       ),
       content: SizedBox(
         width: 620,
@@ -232,7 +266,7 @@ class _ImportDialogState extends State<_ImportDialog> {
                 '${widget.job.sizeBytes ?? 0} octets\n'
                 'Dossier : ${widget.job.directoryPath}\n'
                 'Fichier : ${widget.job.relativePath}',
-                style: const TextStyle(color: Colors.white70),
+                style: TextStyle(color: colors.textSecondary),
               ),
               if (metadata.isNotEmpty) ...[
                 const SizedBox(height: 10),
@@ -241,22 +275,22 @@ class _ImportDialogState extends State<_ImportDialog> {
                   '${metadata['artist'] ?? 'Artiste inconnu'}\n'
                   '${metadata['album'] ?? 'Album inconnu'} · '
                   '${metadata['container'] ?? '?'}',
-                  style: const TextStyle(color: Colors.white60),
+                  style: TextStyle(color: colors.textSecondary),
                 ),
               ],
               if (widget.job.errorMessage != null) ...[
                 const SizedBox(height: 10),
                 Text(
                   widget.job.errorMessage!,
-                  style: const TextStyle(color: adminError),
+                  style: TextStyle(color: colors.danger),
                 ),
               ],
-              const Divider(color: Colors.white12, height: 28),
+              Divider(color: colors.surfaceSunken, height: 28),
               TextField(
                 key: const Key('import-track-search'),
                 controller: _search,
                 onSubmitted: (_) => _searchTracks(),
-                style: const TextStyle(color: Colors.white),
+                style: TextStyle(color: colors.textPrimary),
                 decoration: InputDecoration(
                   labelText: 'Rechercher une piste',
                   suffixIcon: IconButton(
@@ -273,14 +307,14 @@ class _ImportDialogState extends State<_ImportDialog> {
                     for (final track in _tracks)
                       RadioListTile<AdminTrackSearchResult>(
                         value: track,
-                        activeColor: adminAccent,
+                        activeColor: colors.accent,
                         title: Text(
                           track.title,
-                          style: const TextStyle(color: Colors.white),
+                          style: TextStyle(color: colors.textPrimary),
                         ),
                         subtitle: Text(
                           '${track.artist} · ${track.album}',
-                          style: const TextStyle(color: Colors.white54),
+                          style: TextStyle(color: colors.textSecondary),
                         ),
                       ),
                   ],
@@ -298,7 +332,7 @@ class _ImportDialogState extends State<_ImportDialog> {
           child: const Text('Réessayer'),
         ),
         TextButton(
-          style: TextButton.styleFrom(foregroundColor: adminError),
+          style: TextButton.styleFrom(foregroundColor: colors.danger),
           onPressed: _busy
               ? null
               : () => _perform(() => widget.api.rejectImport(widget.job.id)),
@@ -337,11 +371,12 @@ class _Filters extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final statusFilter = DropdownButtonFormField<String?>(
       // Sans isExpanded, le dropdown garde la largeur de son plus long item.
       isExpanded: true,
       initialValue: status,
-      dropdownColor: adminCard,
+      dropdownColor: colors.surfaceRaised,
       decoration: const InputDecoration(labelText: 'Statut', isDense: true),
       items: [
         const DropdownMenuItem(
@@ -359,7 +394,7 @@ class _Filters extends StatelessWidget {
     final userFilter = DropdownButtonFormField<int?>(
       isExpanded: true,
       initialValue: userId,
-      dropdownColor: adminCard,
+      dropdownColor: colors.surfaceRaised,
       decoration: const InputDecoration(
         labelText: 'Utilisateur',
         isDense: true,

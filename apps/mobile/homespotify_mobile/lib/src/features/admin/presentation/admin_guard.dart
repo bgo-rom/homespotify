@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/clay_header.dart';
 import '../../auth/application/auth_controller.dart';
-
-const adminBackground = Color(0xFF0D0D10);
-const adminCard = Color(0xFF1A1A22);
-const adminAccent = Color(0xFF1DB954);
-const adminError = Color(0xFFE57373);
 
 /// Garde d'affichage des écrans d'administration : réservés au OWNER.
 /// Le backend revérifie chaque appel — masquer l'UI ne suffit jamais.
@@ -21,21 +18,31 @@ class AdminGuard extends ConsumerWidget {
       authControllerProvider.select((state) => state.user),
     );
     if (user == null || !user.isOwner) {
+      final colors = context.colors;
       return Scaffold(
-        backgroundColor: adminBackground,
-        appBar: AppBar(
-          backgroundColor: adminBackground,
-          foregroundColor: Colors.white,
-          title: const Text('Administration'),
-        ),
-        body: const Center(
-          child: Padding(
-            padding: EdgeInsets.all(24),
-            child: Text(
-              'Accès réservé au propriétaire de HomeSpotify.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white54),
-            ),
+        backgroundColor: colors.background,
+        body: SafeArea(
+          child: Column(
+            children: [
+              ClayHeader(
+                title: 'Administration',
+                onBack: () => Navigator.of(context).maybePop(),
+              ),
+              Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'Accès réservé au propriétaire de HomeSpotify.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );

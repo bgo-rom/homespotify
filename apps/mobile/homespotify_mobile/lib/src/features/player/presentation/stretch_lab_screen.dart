@@ -6,12 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../audio/audio_diagnostics.dart';
 import '../audio/homespotify_audio_handler.dart';
-
-const _background = Color(0xFF15151B);
-const _surface = Color(0xFF24242D);
-const _accent = Color(0xFF1DB954);
 
 /// Écran développeur discret : comparaison A/B des configurations du moteur
 /// HomeSpotify Stretch sur la même piste, à la même position et au même
@@ -163,170 +163,221 @@ class _StretchLabScreenState extends ConsumerState<StretchLabScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final status = _status;
     final native = _nativeMetrics;
     return Scaffold(
-      backgroundColor: _background,
-      appBar: AppBar(
-        backgroundColor: _background,
-        title: const Text('Stretch Lab (dev)'),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text(
-            'Écran développeur. Comparer les configurations sur le même '
-            'passage : choisir, appliquer (seek sur place), écouter, noter.',
-            style: TextStyle(color: Colors.white54),
-          ),
-          const SizedBox(height: 16),
-          _section('État du moteur', [
-            _row('Mode', '${status?['engineMode'] ?? '—'}'),
-            _row('Actif', '${status?['active'] ?? '—'}'),
-            _row(
-              'Ratio demandé / appliqué',
-              '${status?['requestedRatio'] ?? '—'} / '
-                  '${status?['nativeAppliedRatio'] ?? '—'}',
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            ClayHeader(
+              title: 'Stretch Lab',
+              subtitle: 'Outil développeur — comparaison A/B du moteur audio',
+              onBack: () => Navigator.of(context).maybePop(),
             ),
-            _row('Profil (Java)', '${status?['profile'] ?? '—'}'),
-            _row('Profil natif actif', '${native?['activeProfile'] ?? '—'}'),
-            _row(
-              'Changement de profil en attente',
-              '${native?['profileChangePending'] ?? '—'}',
-            ),
-            _row('Override', _overrideLabel(status?['profileOverride'])),
-            _row(
-              'Latence',
-              '${(status?['latencyMs'] as num?)?.toStringAsFixed(0) ?? '—'} ms',
-            ),
-            _row(
-              'Frames PCM traitées',
-              '${status?['pcmFramesProcessed'] ?? '—'}',
-            ),
-            _row(
-              'DSP moyen / max',
-              '${(status?['averageDspMicros'] as num?)?.toStringAsFixed(0) ?? '—'} µs / '
-                  '${status?['maxDspMicros'] ?? '—'} µs',
-            ),
-            _row('Underruns détectés', '${status?['underrunCount'] ?? '—'}'),
-            _row('Fallbacks', '${status?['fallbackCount'] ?? '—'}'),
-            _row('Dernière erreur', '${status?['lastError'] ?? '—'}'),
-          ]),
-          const SizedBox(height: 16),
-          _section('Configuration à comparer', [
-            RadioGroup<int>(
-              groupValue: _selectedOverride,
-              onChanged: (value) {
-                if (_applying || value == null) return;
-                setState(() => _selectedOverride = value);
-              },
-              child: Column(
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(
+                  AppLayout.gutter,
+                  4,
+                  AppLayout.gutter,
+                  32,
+                ),
                 children: [
-                  for (final override in _overrides)
-                    RadioListTile<int>(
-                      key: ValueKey('stretch-lab-override-${override.value}'),
-                      value: override.value,
-                      activeColor: _accent,
-                      title: Text(override.label),
-                      subtitle: Text(
-                        override.description,
-                        style: const TextStyle(
-                          color: Colors.white54,
-                          fontSize: 12,
+                  Text(
+                    'Écran développeur. Comparer les configurations sur le '
+                    'même passage : choisir, appliquer (seek sur place), '
+                    'écouter, noter.',
+                    style: TextStyle(color: colors.textSecondary),
+                  ),
+                  const SizedBox(height: 16),
+                  _section(colors, 'État du moteur', [
+                    _row(colors, 'Mode', '${status?['engineMode'] ?? '—'}'),
+                    _row(colors, 'Actif', '${status?['active'] ?? '—'}'),
+                    _row(
+                      colors,
+                      'Ratio demandé / appliqué',
+                      '${status?['requestedRatio'] ?? '—'} / '
+                          '${status?['nativeAppliedRatio'] ?? '—'}',
+                    ),
+                    _row(colors, 'Profil (Java)', '${status?['profile'] ?? '—'}'),
+                    _row(
+                      colors,
+                      'Profil natif actif',
+                      '${native?['activeProfile'] ?? '—'}',
+                    ),
+                    _row(
+                      colors,
+                      'Changement de profil en attente',
+                      '${native?['profileChangePending'] ?? '—'}',
+                    ),
+                    _row(
+                      colors,
+                      'Override',
+                      _overrideLabel(status?['profileOverride']),
+                    ),
+                    _row(
+                      colors,
+                      'Latence',
+                      '${(status?['latencyMs'] as num?)?.toStringAsFixed(0) ?? '—'} ms',
+                    ),
+                    _row(
+                      colors,
+                      'Frames PCM traitées',
+                      '${status?['pcmFramesProcessed'] ?? '—'}',
+                    ),
+                    _row(
+                      colors,
+                      'DSP moyen / max',
+                      '${(status?['averageDspMicros'] as num?)?.toStringAsFixed(0) ?? '—'} µs / '
+                          '${status?['maxDspMicros'] ?? '—'} µs',
+                    ),
+                    _row(
+                      colors,
+                      'Underruns détectés',
+                      '${status?['underrunCount'] ?? '—'}',
+                    ),
+                    _row(colors, 'Fallbacks', '${status?['fallbackCount'] ?? '—'}'),
+                    _row(colors, 'Dernière erreur', '${status?['lastError'] ?? '—'}'),
+                  ]),
+                  const SizedBox(height: 16),
+                  _section(colors, 'Configuration à comparer', [
+                    RadioGroup<int>(
+                      groupValue: _selectedOverride,
+                      onChanged: (value) {
+                        if (_applying || value == null) return;
+                        setState(() => _selectedOverride = value);
+                      },
+                      child: Column(
+                        children: [
+                          for (final override in _overrides)
+                            RadioListTile<int>(
+                              key: ValueKey(
+                                'stretch-lab-override-${override.value}',
+                              ),
+                              value: override.value,
+                              activeColor: colors.accent,
+                              title: Text(
+                                override.label,
+                                style: TextStyle(color: colors.textPrimary),
+                              ),
+                              subtitle: Text(
+                                override.description,
+                                style: TextStyle(
+                                  color: colors.textSecondary,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    FilledButton(
+                      key: const ValueKey('stretch-lab-apply'),
+                      onPressed: _applying ? null : _apply,
+                      child: Text(
+                        _applying
+                            ? 'Application…'
+                            : 'Appliquer à la position courante',
+                      ),
+                    ),
+                  ]),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(_error!, style: TextStyle(color: colors.danger)),
+                  ],
+                  const SizedBox(height: 16),
+                  _section(
+                    colors,
+                    'Fiche d\'écoute (comparer sur le même passage)',
+                    [
+                      _ChecklistItem('Naturel des voix (pas de timbre métallique)'),
+                      _ChecklistItem(
+                        'Netteté des consonnes (pas d\'attaques répétées)',
+                      ),
+                      _ChecklistItem('Batterie : kicks simples, cymbales nettes'),
+                      _ChecklistItem('Basses stables (pas de tremolo)'),
+                      _ChecklistItem('Image stéréo cohérente'),
+                      _ChecklistItem('Artefacts : phasing, chorus, voix creuse'),
+                      _ChecklistItem(
+                        'Stabilité : coupures, clics, dérive de position',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Rappel : aucune métrique CPU ne remplace l\'écoute. '
+                    'Comparer casque, haut-parleur et Bluetooth ; mêmes '
+                    'passages vocaux à 0.80x, 1.20x et 1.30x.',
+                    style: TextStyle(color: colors.textTertiary, fontSize: 12),
+                  ),
+                  const SizedBox(height: 16),
+                  _section(colors, 'Journal audio (sessions longues)', [
+                    Text(
+                      AudioDiagnostics.enabled
+                          ? 'Événements du lecteur (file, index, erreurs, '
+                                'refresh). Aucun secret journalisé.'
+                          : 'Journal inactif : build sans '
+                                'HOMESPOTIFY_AUDIO_DIAGNOSTICS=true.',
+                      style: TextStyle(color: colors.textSecondary, fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      constraints: const BoxConstraints(maxHeight: 240),
+                      decoration: BoxDecoration(
+                        color: colors.surfaceSunken,
+                        borderRadius: AppRadius.cardRadius,
+                      ),
+                      padding: const EdgeInsets.all(8),
+                      child: SingleChildScrollView(
+                        reverse: true,
+                        child: Text(
+                          AudioDiagnostics.instance.snapshot().isEmpty
+                              ? '(vide)'
+                              : AudioDiagnostics.instance
+                                    .snapshot()
+                                    .reversed
+                                    .take(60)
+                                    .toList()
+                                    .reversed
+                                    .join('\n'),
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 10,
+                            color: colors.textSecondary,
+                          ),
                         ),
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      key: const ValueKey('stretch-lab-copy-audio-journal'),
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: AudioDiagnostics.instance.export()),
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Journal audio copié (presse-papiers).',
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.copy_all_rounded, size: 18),
+                      label: const Text('Copier le journal complet'),
+                    ),
+                  ]),
                 ],
               ),
             ),
-            const SizedBox(height: 8),
-            FilledButton(
-              key: const ValueKey('stretch-lab-apply'),
-              onPressed: _applying ? null : _apply,
-              child: Text(
-                _applying ? 'Application…' : 'Appliquer à la position courante',
-              ),
-            ),
-          ]),
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Color(0xFFE57373))),
           ],
-          const SizedBox(height: 16),
-          _section('Fiche d\'écoute (comparer sur le même passage)', const [
-            _ChecklistItem('Naturel des voix (pas de timbre métallique)'),
-            _ChecklistItem('Netteté des consonnes (pas d\'attaques répétées)'),
-            _ChecklistItem('Batterie : kicks simples, cymbales nettes'),
-            _ChecklistItem('Basses stables (pas de tremolo)'),
-            _ChecklistItem('Image stéréo cohérente'),
-            _ChecklistItem('Artefacts : phasing, chorus, voix creuse'),
-            _ChecklistItem('Stabilité : coupures, clics, dérive de position'),
-          ]),
-          const SizedBox(height: 16),
-          const Text(
-            'Rappel : aucune métrique CPU ne remplace l\'écoute. Comparer '
-            'casque, haut-parleur et Bluetooth ; mêmes passages vocaux à '
-            '0.80x, 1.20x et 1.30x.',
-            style: TextStyle(color: Colors.white38, fontSize: 12),
-          ),
-          const SizedBox(height: 16),
-          _section('Journal audio (sessions longues)', [
-            Text(
-              AudioDiagnostics.enabled
-                  ? 'Événements du lecteur (file, index, erreurs, refresh). '
-                        'Aucun secret journalisé.'
-                  : 'Journal inactif : build sans '
-                        'HOMESPOTIFY_AUDIO_DIAGNOSTICS=true.',
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              constraints: const BoxConstraints(maxHeight: 240),
-              decoration: BoxDecoration(
-                color: _background,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              padding: const EdgeInsets.all(8),
-              child: SingleChildScrollView(
-                reverse: true,
-                child: Text(
-                  AudioDiagnostics.instance.snapshot().isEmpty
-                      ? '(vide)'
-                      : AudioDiagnostics.instance
-                            .snapshot()
-                            .reversed
-                            .take(60)
-                            .toList()
-                            .reversed
-                            .join('\n'),
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 10,
-                    color: Colors.white70,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              key: const ValueKey('stretch-lab-copy-audio-journal'),
-              onPressed: () async {
-                await Clipboard.setData(
-                  ClipboardData(text: AudioDiagnostics.instance.export()),
-                );
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Journal audio copié (presse-papiers).'),
-                    ),
-                  );
-                }
-              },
-              icon: const Icon(Icons.copy_all_rounded, size: 18),
-              label: const Text('Copier le journal complet'),
-            ),
-          ]),
-        ],
+        ),
       ),
     );
   }
@@ -341,40 +392,42 @@ class _StretchLabScreenState extends ConsumerState<StretchLabScreen> {
         .label;
   }
 
-  Widget _section(String title, List<Widget> children) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: _surface,
-      borderRadius: BorderRadius.circular(18),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 10),
-          ...children,
-        ],
-      ),
-    ),
-  );
+  Widget _section(AppColors colors, String title, List<Widget> children) =>
+      SoftCard(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                color: colors.accent,
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 10),
+            ...children,
+          ],
+        ),
+      );
 
-  Widget _row(String label, String value) => Padding(
+  Widget _row(AppColors colors, String label, String value) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 3),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
-          child: Text(label, style: const TextStyle(color: Colors.white54)),
+          child: Text(label, style: TextStyle(color: colors.textSecondary)),
         ),
         Expanded(
           child: Text(
             value,
             textAlign: TextAlign.right,
-            style: const TextStyle(fontWeight: FontWeight.w600),
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ],
@@ -388,18 +441,23 @@ class _ChecklistItem extends StatelessWidget {
   final String label;
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 3),
-    child: Row(
-      children: [
-        const Icon(
-          Icons.check_box_outline_blank,
-          size: 16,
-          color: Colors.white38,
-        ),
-        const SizedBox(width: 8),
-        Expanded(child: Text(label)),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(
+            Icons.check_box_outline_blank,
+            size: 16,
+            color: colors.textTertiary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(label, style: TextStyle(color: colors.textPrimary)),
+          ),
+        ],
+      ),
+    );
+  }
 }
