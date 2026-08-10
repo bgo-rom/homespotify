@@ -3,12 +3,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/app_config.dart';
 import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/home_ui_states.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../library/domain/track.dart';
 import '../../library/presentation/library_playback_controller.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
+import '../../player/presentation/widgets/mini_player.dart';
 import '../data/listening_activity_api.dart';
 import '../domain/listening_activity.dart';
 
+/// Écran « Activité d'écoute » — refonte Direction 33. Même grammaire que la
+/// Bibliothèque : pochette, titre/artiste, progression, sections par jour.
 class ListeningActivityScreen extends ConsumerStatefulWidget {
   const ListeningActivityScreen({super.key});
 
@@ -99,33 +107,44 @@ class _ListeningActivityScreenState
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Scaffold(
-      appBar: AppBar(title: const Text('Activité d’écoute')),
-      body: RefreshIndicator(
-        onRefresh: () => _load(reset: true),
-        child: _body(),
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            ClayHeader(
+              title: 'Activité d’écoute',
+              onBack: () => Navigator.of(context).maybePop(),
+            ),
+            Expanded(
+              child: RefreshIndicator(
+                color: colors.accent,
+                backgroundColor: colors.surface,
+                onRefresh: () => _load(reset: true),
+                child: _body(),
+              ),
+            ),
+          ],
+        ),
       ),
+      bottomNavigationBar: const MiniPlayer(),
     );
   }
 
   Widget _body() {
+    final colors = context.colors;
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return Center(
+        child: CircularProgressIndicator(color: colors.accent),
+      );
     }
     if (_error != null && _sessions.isEmpty) {
       return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         children: [
-          const SizedBox(height: 160),
-          const Icon(Icons.history_toggle_off_rounded, size: 52),
-          const SizedBox(height: 16),
-          Text(_error!, textAlign: TextAlign.center),
-          const SizedBox(height: 12),
-          Center(
-            child: FilledButton(
-              onPressed: () => _load(reset: true),
-              child: const Text('Réessayer'),
-            ),
-          ),
+          HomeErrorState(message: _error!, onRetry: () => _load(reset: true)),
         ],
       );
     }
@@ -143,7 +162,13 @@ class _ListeningActivityScreenState
     }
     final entries = grouped.entries.toList(growable: false);
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter,
+        4,
+        AppLayout.gutter,
+        32,
+      ),
       itemCount: entries.length + 1,
       itemBuilder: (context, index) {
         if (index == entries.length) {
@@ -152,11 +177,8 @@ class _ListeningActivityScreenState
             padding: const EdgeInsets.symmetric(vertical: 16),
             child: Center(
               child: _loadingMore
-                  ? const CircularProgressIndicator()
-                  : OutlinedButton(
-                      onPressed: () => _load(reset: false),
-                      child: const Text('Afficher plus'),
-                    ),
+                  ? CircularProgressIndicator(color: colors.accent)
+                  : _LoadMoreButton(onTap: () => _load(reset: false)),
             ),
           );
         }
@@ -168,9 +190,9 @@ class _ListeningActivityScreenState
               padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
               child: Text(
                 _dayLabel(entry.key),
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: colors.textPrimary,
+                ),
               ),
             ),
             ...entry.value.map(
@@ -196,6 +218,45 @@ class _ListeningActivityScreenState
   }
 }
 
+/// Bouton discret « Afficher plus » — pastille sculptée, pas un bouton
+/// Material contouré générique.
+class _LoadMoreButton extends StatelessWidget {
+  const _LoadMoreButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: AppRadius.pillRadius,
+        boxShadow: colors.clayShadowSmall,
+      ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: AppRadius.pillRadius,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+            child: Text(
+              'Afficher plus',
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: colors.textPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Ligne d'écoute : pochette, titre/artiste, progression, durée écoutée.
 class _ActivityTile extends StatelessWidget {
   const _ActivityTile({
     required this.session,
@@ -209,6 +270,8 @@ class _ActivityTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final duration = session.durationMs ?? session.track.durationMs;
     final progress = duration == null || duration <= 0
         ? 0.0
@@ -219,62 +282,99 @@ class _ActivityTile extends StatelessWidget {
         : cover.startsWith('http')
         ? cover
         : '${AppConfig.apiBaseUrl}$cover';
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        enabled: session.track.available,
-        contentPadding: const EdgeInsets.all(10),
-        leading: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: SizedBox.square(
-            dimension: 54,
-            child: coverUrl == null
-                ? const ColoredBox(
-                    color: Color(0xFF24242D),
-                    child: Icon(Icons.music_note_rounded),
-                  )
-                : AuthenticatedNetworkImage(
-                    coverUrl,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const ColoredBox(
-                      color: Color(0xFF24242D),
-                      child: Icon(Icons.music_note_rounded),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: SoftCard(
+        onTap: session.track.available ? onTap : null,
+        padding: const EdgeInsets.all(10),
+        child: Opacity(
+          // Piste indisponible (source retirée) : même grammaire que la
+          // Bibliothèque, atténuée plutôt que masquée.
+          opacity: session.track.available ? 1 : 0.45,
+          child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            ClipRRect(
+              borderRadius: AppRadius.artworkRadius,
+              child: SizedBox.square(
+                dimension: 54,
+                child: coverUrl == null
+                    ? ColoredBox(
+                        color: colors.surfaceSunken,
+                        child: Icon(
+                          Icons.music_note_rounded,
+                          color: colors.textTertiary,
+                        ),
+                      )
+                    : AuthenticatedNetworkImage(
+                        coverUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => ColoredBox(
+                          color: colors.surfaceSunken,
+                          child: Icon(
+                            Icons.music_note_rounded,
+                            color: colors.textTertiary,
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    session.track.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: colors.textPrimary,
                     ),
                   ),
+                  const SizedBox(height: 2),
+                  Text(
+                    session.track.artist,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  if (!session.completed && progress > 0) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: progress,
+                        minHeight: 3,
+                        backgroundColor: colors.surfaceSunken,
+                        color: colors.accent,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                  ],
+                  Text(
+                    session.completed
+                        ? 'Terminé · ${_duration(session.listenedMs)} écoutées'
+                        : '${_duration(session.listenedMs)} écoutées',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuButton<String>(
+              icon: Icon(Icons.more_vert_rounded, color: colors.textSecondary),
+              onSelected: (_) => onRestart(),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'restart', child: Text('Recommencer')),
+              ],
+            ),
+          ],
           ),
         ),
-        title: Text(
-          session.track.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              session.track.artist,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 6),
-            if (!session.completed && progress > 0)
-              LinearProgressIndicator(value: progress, minHeight: 3),
-            const SizedBox(height: 5),
-            Text(
-              session.completed
-                  ? 'Terminé · ${_duration(session.listenedMs)} écoutées'
-                  : '${_duration(session.listenedMs)} écoutées',
-              style: const TextStyle(fontSize: 11),
-            ),
-          ],
-        ),
-        trailing: PopupMenuButton<String>(
-          onSelected: (_) => onRestart(),
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'restart', child: Text('Recommencer')),
-          ],
-        ),
-        onTap: onTap,
       ),
     );
   }
@@ -293,20 +393,12 @@ class _EmptyActivity extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
       children: const [
-        SizedBox(height: 160),
-        Icon(Icons.history_rounded, size: 56, color: Colors.white38),
-        SizedBox(height: 16),
-        Text(
-          'Aucune écoute enregistrée',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
-        ),
-        SizedBox(height: 8),
-        Text(
-          'Vos prochaines écoutes apparaîtront ici.',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white54),
+        HomeEmptyState(
+          icon: Icons.history_rounded,
+          title: 'Aucune écoute enregistrée',
+          message: 'Vos prochaines écoutes apparaîtront ici.',
         ),
       ],
     );

@@ -177,9 +177,7 @@ final GoRouter appRouter = GoRouter(
             GoRoute(
               path: '/discover',
               name: 'discover',
-              // Pas encore migré en Direction 33 → thème sombre historique.
-              builder: (context, state) =>
-                  const LegacyDarkTheme(child: DiscoverScreen()),
+              builder: (context, state) => const DiscoverScreen(),
             ),
           ],
         ),
@@ -189,9 +187,7 @@ final GoRouter appRouter = GoRouter(
             GoRoute(
               path: '/profile',
               name: 'profile',
-              // Pas encore migré en Direction 33 → thème sombre historique.
-              builder: (context, state) =>
-                  const LegacyDarkTheme(child: ProfileScreen()),
+              builder: (context, state) => const ProfileScreen(),
             ),
           ],
         ),
@@ -338,7 +334,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/settings',
       name: 'settings',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const SettingsScreen(),
       ),
@@ -346,7 +342,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/listening-activity',
       name: 'listening-activity',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const ListeningActivityScreen(),
       ),

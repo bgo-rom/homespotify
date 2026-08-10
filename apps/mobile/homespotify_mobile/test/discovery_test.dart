@@ -164,6 +164,10 @@ void main() {
       // Pas encore de carte : squelette visible, pas d'écran vide ni d'erreur.
       expect(find.text('Titre 1'), findsNothing);
       expect(find.textContaining('Aucune recommandation'), findsNothing);
+      // Élapse explicitement au-delà du délai simulé : `pumpAndSettle` seul
+      // s'arrête dès qu'aucune frame n'est planifiée, ce que l'écran refondu
+      // (sans AppBar Material) n'a plus besoin de faire pendant l'attente.
+      await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
       expect(find.text('Titre 1'), findsOneWidget);
     });

@@ -19,6 +19,7 @@ class AnimatedSuccessOverlay extends StatefulWidget {
     required this.title,
     required this.artist,
     required this.onCompleted,
+    this.accentColor = defaultAccent,
   });
 
   final String title;
@@ -27,8 +28,13 @@ class AnimatedSuccessOverlay extends StatefulWidget {
   /// Appelé une fois l'animation terminée (retrait de l'[OverlayEntry]).
   final VoidCallback onCompleted;
 
-  /// Couleur d'accent lumineuse (vert HomeSpotify).
-  static const Color accent = Color(0xFF1DB954);
+  /// Couleur d'accent lumineuse de l'overlay (badge, glow, particules).
+  /// Le panneau reste un verre sombre indépendant du thème système — seule
+  /// cette teinte relie l'effet à l'identité visuelle courante.
+  final Color accentColor;
+
+  /// Repli si aucune couleur d'accent n'est fournie (contexte hors thème).
+  static const Color defaultAccent = Color(0xFF1DB954);
 
   /// Insère l'overlay au-dessus de tout et retourne l'entrée créée. L'entrée se
   /// retire seule à la fin ; [onDismissed] est alors invoqué (ex. réarmer
@@ -37,6 +43,7 @@ class AnimatedSuccessOverlay extends StatefulWidget {
     BuildContext context, {
     required String title,
     required String artist,
+    Color accentColor = defaultAccent,
     VoidCallback? onDismissed,
   }) {
     final overlay = Overlay.of(context, rootOverlay: true);
@@ -46,6 +53,7 @@ class AnimatedSuccessOverlay extends StatefulWidget {
         child: AnimatedSuccessOverlay(
           title: title,
           artist: artist,
+          accentColor: accentColor,
           onCompleted: () {
             entry.remove();
             onDismissed?.call();
@@ -149,17 +157,18 @@ class _AnimatedSuccessOverlayState extends State<AnimatedSuccessOverlay>
   }
 
   Widget _panel() {
+    final accent = widget.accentColor;
     return Container(
       constraints: const BoxConstraints(maxWidth: 300),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
         border: Border.all(
-          color: AnimatedSuccessOverlay.accent.withValues(alpha: 0.45),
+          color: accent.withValues(alpha: 0.45),
           width: 1.2,
         ),
         boxShadow: [
           BoxShadow(
-            color: AnimatedSuccessOverlay.accent.withValues(alpha: 0.22),
+            color: accent.withValues(alpha: 0.22),
             blurRadius: 40,
             spreadRadius: 2,
           ),
@@ -178,11 +187,14 @@ class _AnimatedSuccessOverlayState extends State<AnimatedSuccessOverlay>
                 width: 108,
                 height: 108,
                 child: CustomPaint(
-                  painter: _BurstPainter(progress: _burstProgress.value),
+                  painter: _BurstPainter(
+                    progress: _burstProgress.value,
+                    color: accent,
+                  ),
                   child: Center(
                     child: Transform.scale(
                       scale: _circleScale.value,
-                      child: _badge(),
+                      child: _badge(accent),
                     ),
                   ),
                 ),
@@ -196,7 +208,7 @@ class _AnimatedSuccessOverlayState extends State<AnimatedSuccessOverlay>
     );
   }
 
-  Widget _badge() {
+  Widget _badge(Color accent) {
     return Container(
       width: 76,
       height: 76,
@@ -204,13 +216,13 @@ class _AnimatedSuccessOverlayState extends State<AnimatedSuccessOverlay>
         shape: BoxShape.circle,
         gradient: RadialGradient(
           colors: [
-            AnimatedSuccessOverlay.accent.withValues(alpha: 0.95),
-            const Color(0xFF12833B),
+            accent.withValues(alpha: 0.95),
+            Color.lerp(accent, Colors.black, 0.35)!,
           ],
         ),
         boxShadow: [
           BoxShadow(
-            color: AnimatedSuccessOverlay.accent.withValues(alpha: 0.55),
+            color: accent.withValues(alpha: 0.55),
             blurRadius: 26,
             spreadRadius: 1,
           ),
@@ -294,9 +306,10 @@ class _CheckPainter extends CustomPainter {
 
 /// Onde d'expansion + petites particules radiales (éclat de confirmation).
 class _BurstPainter extends CustomPainter {
-  _BurstPainter({required this.progress});
+  _BurstPainter({required this.progress, required this.color});
 
   final double progress;
+  final Color color;
   static const int _particleCount = 8;
 
   @override
@@ -309,9 +322,7 @@ class _BurstPainter extends CustomPainter {
     final ringOpacity = (1.0 - progress).clamp(0.0, 1.0);
     if (ringOpacity > 0) {
       final ringPaint = Paint()
-        ..color = AnimatedSuccessOverlay.accent.withValues(
-          alpha: 0.5 * ringOpacity,
-        )
+        ..color = color.withValues(alpha: 0.5 * ringOpacity)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5;
       canvas.drawCircle(
@@ -324,10 +335,7 @@ class _BurstPainter extends CustomPainter {
     // Particules qui jaillissent puis s'éteignent.
     final particleOpacity = (1.0 - progress).clamp(0.0, 1.0);
     if (particleOpacity > 0) {
-      final dotPaint = Paint()
-        ..color = AnimatedSuccessOverlay.accent.withValues(
-          alpha: particleOpacity,
-        );
+      final dotPaint = Paint()..color = color.withValues(alpha: particleOpacity);
       for (var i = 0; i < _particleCount; i++) {
         final angle = (2 * math.pi / _particleCount) * i;
         final distance = maxRadius * (0.5 + 0.5 * progress);

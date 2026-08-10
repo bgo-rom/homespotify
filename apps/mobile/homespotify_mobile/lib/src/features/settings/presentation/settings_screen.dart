@@ -6,6 +6,10 @@ import 'package:go_router/go_router.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../../core/platform/app_package_info.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../app_update/application/app_update_controller.dart';
 import '../../app_update/domain/app_update_models.dart';
 import '../../auth/application/auth_controller.dart';
@@ -16,6 +20,7 @@ import '../../library/presentation/library_playlists.dart';
 import '../../library/presentation/library_summary.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../player/audio/replay_gain.dart';
+import '../../player/presentation/widgets/mini_player.dart';
 import '../data/settings_server_checker.dart';
 
 /// Formatage compact octets → Go/Mo/Ko pour la section Compte.
@@ -32,12 +37,10 @@ String _formatBytes(int bytes) {
   return '$bytes o';
 }
 
-const Color _background = Color(0xFF0D0D10);
-const Color _card = Color(0xFF1A1A22);
-const Color _accent = Color(0xFF1DB954);
-
 enum _ServerStatus { idle, testing, connected, inaccessible }
 
+/// Écran « Paramètres » — refonte Direction 33. Même logique, mêmes sections,
+/// même comportement d'updater ; seule la présentation change.
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
@@ -104,38 +107,44 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (result.succeeded) _biometricEnabled = enabled;
     });
     if (!result.succeeded && enabled) {
+      final colors = context.colors;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(backgroundColor: _card, content: Text(result.userMessage)),
+        SnackBar(
+          backgroundColor: colors.surfaceRaised,
+          content: Text(result.userMessage),
+        ),
       );
     }
   }
 
   Future<void> _logout() async {
+    final colors = context.colors;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        backgroundColor: _card,
-        title: const Text(
+        backgroundColor: colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+        title: Text(
           'Se déconnecter ?',
-          style: TextStyle(color: Colors.white),
+          style: TextStyle(color: colors.textPrimary),
         ),
-        content: const Text(
+        content: Text(
           'La session de cet appareil sera fermée.',
-          style: TextStyle(color: Colors.white70),
+          style: TextStyle(color: colors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text(
+            child: Text(
               'Annuler',
-              style: TextStyle(color: Colors.white54),
+              style: TextStyle(color: colors.textSecondary),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text(
+            child: Text(
               'Se déconnecter',
-              style: TextStyle(color: Color(0xFFE57373)),
+              style: TextStyle(color: colors.danger),
             ),
           ),
         ],
@@ -148,6 +157,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final favoriteCount = ref
         .watch(favoriteTrackIdsProvider)
         .asData
@@ -164,418 +174,308 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final updateState = ref.watch(appUpdateControllerProvider);
 
     return Scaffold(
-      backgroundColor: _background,
-      appBar: AppBar(
-        backgroundColor: _background,
-        foregroundColor: Colors.white,
-        title: const Text(
-          'Paramètres',
-          style: TextStyle(fontWeight: FontWeight.w700),
+      backgroundColor: colors.background,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            ClayHeader(
+              title: 'Paramètres',
+              onBack: () => Navigator.of(context).maybePop(),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(
+                  AppLayout.gutter,
+                  4,
+                  AppLayout.gutter,
+                  32,
+                ),
+                children: [
+                  if (authUser != null)
+                    _SettingsSection(
+                      title: 'Compte',
+                      children: [
+                        _InfoRow(label: 'Nom affiché', value: authUser.displayName),
+                        _InfoRow(label: 'Utilisateur', value: '@${authUser.username}'),
+                        _InfoRow(label: 'Rôle', value: authUser.role),
+                        ...summary.when(
+                          loading: () => const <Widget>[
+                            _InfoRow(label: 'Bibliothèque', value: 'Chargement…'),
+                          ],
+                          error: (_, _) => <Widget>[
+                            const _InfoRow(
+                              label: 'Bibliothèque',
+                              value: 'Indisponible',
+                            ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: () =>
+                                    ref.invalidate(userLibrarySummaryProvider),
+                                child: const Text('Réessayer'),
+                              ),
+                            ),
+                          ],
+                          data: (value) => <Widget>[
+                            _InfoRow(label: 'Morceaux', value: '${value.trackCount}'),
+                            _InfoRow(label: 'Favoris', value: '${value.favoriteCount}'),
+                            _InfoRow(
+                              label: 'Playlists',
+                              value: '${value.playlistCount}',
+                            ),
+                            _InfoRow(
+                              label: 'Stockage logique',
+                              value: _formatBytes(value.logicalSizeBytes),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        _DangerButton(
+                          icon: Icons.logout_rounded,
+                          label: 'Se déconnecter',
+                          onPressed: _logout,
+                        ),
+                      ],
+                    ),
+                  _SettingsSection(
+                    title: 'Sécurité',
+                    children: [
+                      _SettingSwitch(
+                        title: 'Déverrouiller HomeSpotify avec la biométrie',
+                        subtitle: _biometricSupported
+                            ? 'Empreinte ou visage, uniquement pour la session '
+                                  'locale de cet appareil.'
+                            : _biometricAvailability?.failureReason ==
+                                  BiometricFailureReason.notConfigured
+                            ? 'Aucune biométrie n’est configurée dans Android.'
+                            : 'La biométrie est indisponible sur cet appareil.',
+                        value: _biometricEnabled,
+                        onChanged: _biometricSupported && !_biometricBusy
+                            ? _toggleBiometric
+                            : null,
+                      ),
+                    ],
+                  ),
+                  _SettingsSection(
+                    title: 'Découverte',
+                    children: [
+                      _SettingSwitch(
+                        title: 'Lecture automatique des aperçus',
+                        subtitle:
+                            'Joue l’extrait de la carte affichée après un court instant.',
+                        value: discoverySettings.autoplayPreviews,
+                        onChanged: (value) => ref
+                            .read(discoverySettingsProvider.notifier)
+                            .setAutoplayPreviews(value),
+                      ),
+                    ],
+                  ),
+                  _SettingsSection(
+                    title: 'Musique',
+                    children: [
+                      _NavRow(
+                        icon: Icons.history_rounded,
+                        title: 'Activité d’écoute',
+                        subtitle: 'Reprendre un titre et consulter les écoutes récentes.',
+                        onTap: () => context.push('/listening-activity'),
+                      ),
+                      _NavRow(
+                        icon: Icons.explore_rounded,
+                        title: 'Découvrir',
+                        subtitle: 'Swiper des recommandations et découvrir des morceaux.',
+                        onTap: () => context.go('/discover'),
+                      ),
+                    ],
+                  ),
+                  if (authUser != null && authUser.isOwner)
+                    _SettingsSection(
+                      title: 'Administration',
+                      children: [
+                        const _Note(
+                          'Section réservée au propriétaire. Les droits sont '
+                          'revérifiés par le serveur à chaque action.',
+                        ),
+                        const SizedBox(height: 14),
+                        _PrimaryButton(
+                          icon: Icons.admin_panel_settings_rounded,
+                          label: 'Tableau de bord',
+                          onPressed: () => context.push('/admin'),
+                        ),
+                        const SizedBox(height: 8),
+                        _OutlinedAccentButton(
+                          icon: Icons.move_to_inbox_rounded,
+                          label: 'Imports utilisateurs',
+                          onPressed: () => context.push('/admin/imports'),
+                        ),
+                        const SizedBox(height: 8),
+                        _OutlinedAccentButton(
+                          icon: Icons.monitor_heart_rounded,
+                          label: 'Diagnostics recommandations',
+                          onPressed: () => context.push('/admin/recommendations'),
+                        ),
+                        const SizedBox(height: 8),
+                        _OutlinedAccentButton(
+                          icon: Icons.group_rounded,
+                          label: 'Utilisateurs',
+                          onPressed: () => context.push('/admin/users'),
+                        ),
+                      ],
+                    ),
+                  _SettingsSection(
+                    title: 'Serveur',
+                    children: [
+                      const _InfoRow(
+                        label: 'URL API actuelle',
+                        value: AppConfig.apiBaseUrl,
+                      ),
+                      _InfoRow(label: 'État', value: _statusLabel),
+                      if (_serverError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(
+                            _serverError!,
+                            style: TextStyle(color: colors.danger, fontSize: 13),
+                          ),
+                        ),
+                      const SizedBox(height: 14),
+                      _PrimaryButton(
+                        icon: Icons.wifi_tethering_rounded,
+                        label: 'Tester la connexion',
+                        busy: _serverStatus == _ServerStatus.testing,
+                        onPressed: _serverStatus == _ServerStatus.testing
+                            ? null
+                            : _testConnection,
+                      ),
+                    ],
+                  ),
+                  _SettingsSection(
+                    title: 'Informations de l’application',
+                    children: [
+                      const _InfoRow(label: 'Nom', value: 'HomeSpotify'),
+                      _InfoRow(label: 'Version', value: _appVersion),
+                      _InfoRow(label: 'Mode', value: _buildMode),
+                      const _InfoRow(label: 'Plateforme', value: 'Android'),
+                    ],
+                  ),
+                  _SettingsSection(
+                    title: 'Mise à jour',
+                    children: [
+                      _InfoRow(label: 'Version actuelle', value: _appVersion),
+                      _InfoRow(
+                        label: 'Dernière version',
+                        value: _latestVersionLabel(updateState),
+                      ),
+                      if (updateState.phase == AppUpdatePhase.downloading) ...[
+                        const SizedBox(height: 12),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: LinearProgressIndicator(
+                            key: const ValueKey('settings-update-progress'),
+                            value: updateState.progress,
+                            minHeight: 6,
+                            backgroundColor: colors.surfaceSunken,
+                            color: colors.accent,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Téléchargement en cours'
+                          '${updateState.progress == null ? '' : ' · ${(updateState.progress! * 100).round()} %'}',
+                          style: TextStyle(color: colors.textSecondary, fontSize: 12),
+                        ),
+                      ],
+                      if (updateState.phase == AppUpdatePhase.error &&
+                          updateState.message != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(
+                            updateState.message!,
+                            style: TextStyle(color: colors.danger, fontSize: 13),
+                          ),
+                        ),
+                      const SizedBox(height: 14),
+                      _OutlinedAccentButton(
+                        key: const ValueKey('settings-check-update'),
+                        icon: Icons.system_update_rounded,
+                        label: 'Rechercher une mise à jour',
+                        busy: updateState.phase == AppUpdatePhase.checking,
+                        onPressed: updateState.busy
+                            ? null
+                            : () => ref
+                                  .read(appUpdateControllerProvider.notifier)
+                                  .checkManually(),
+                      ),
+                      const _Note(
+                        'HomeSpotify n’est pas sur le Play Store : les mises à jour '
+                        'viennent de ton propre serveur. Android demande toujours '
+                        'confirmation avant d’installer.',
+                      ),
+                    ],
+                  ),
+                  _SettingsSection(
+                    title: 'Données du compte',
+                    children: [
+                      _InfoRow(label: 'Favoris', value: _countLabel(favoriteCount)),
+                      _InfoRow(label: 'Playlists', value: _countLabel(playlistCount)),
+                      const _Note(
+                        'Ces données sont synchronisées avec le serveur pour le compte courant.',
+                      ),
+                    ],
+                  ),
+                  if (authUser?.isOwner == true || kDebugMode)
+                    _SettingsSection(
+                      title: 'Diagnostic',
+                      children: [
+                        _NavRow(
+                          icon: Icons.monitor_heart_rounded,
+                          title: 'Diagnostic audio',
+                          subtitle:
+                              'État temps réel, trace, marqueur de problème et export.',
+                          onTap: () => context.push('/dev/audio-diagnostics'),
+                        ),
+                      ],
+                    ),
+                  _SettingsSection(
+                    title: 'Audio',
+                    children: [
+                      const _InfoRow(
+                        label: 'Formats pris en charge',
+                        value: 'WAV / FLAC',
+                      ),
+                      _ReplayGainSetting(controller: replayGainController),
+                      _InfoRow(
+                        label: 'Time-stretch',
+                        value: audioHandler.currentTimeStretchEngineName,
+                      ),
+                      const _InfoRow(
+                        label: 'Transcodage',
+                        value: 'Aucun — fichier original',
+                      ),
+                    ],
+                  ),
+                  _SettingsSection(
+                    title: 'Accès distant',
+                    children: [
+                      _InfoRow(label: 'Adresse effective', value: AppConfig.apiBaseUrl),
+                      _InfoRow(
+                        label: 'HTTPS',
+                        value: AppConfig.usesTls ? 'Activé' : 'Non activé',
+                      ),
+                      _Note(
+                        AppConfig.remoteAccessConfigured
+                            ? 'Une adresse distante chiffrée est compilée dans cette version.'
+                            : 'Cette version utilise une adresse locale ou de développement.',
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-        children: [
-          if (authUser != null)
-            _SettingsSection(
-              title: 'Compte',
-              children: [
-                _InfoRow(label: 'Nom affiché', value: authUser.displayName),
-                _InfoRow(label: 'Utilisateur', value: '@${authUser.username}'),
-                _InfoRow(label: 'Rôle', value: authUser.role),
-                ...summary.when(
-                  loading: () => const <Widget>[
-                    _InfoRow(label: 'Bibliothèque', value: 'Chargement…'),
-                  ],
-                  error: (_, _) => <Widget>[
-                    const _InfoRow(
-                      label: 'Bibliothèque',
-                      value: 'Indisponible',
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () =>
-                            ref.invalidate(userLibrarySummaryProvider),
-                        child: const Text('Réessayer'),
-                      ),
-                    ),
-                  ],
-                  data: (value) => <Widget>[
-                    _InfoRow(label: 'Morceaux', value: '${value.trackCount}'),
-                    _InfoRow(label: 'Favoris', value: '${value.favoriteCount}'),
-                    _InfoRow(
-                      label: 'Playlists',
-                      value: '${value.playlistCount}',
-                    ),
-                    _InfoRow(
-                      label: 'Stockage logique',
-                      value: _formatBytes(value.logicalSizeBytes),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFE57373),
-                      side: const BorderSide(color: Color(0xFFE57373)),
-                    ),
-                    onPressed: _logout,
-                    icon: const Icon(Icons.logout_rounded),
-                    label: const Text('Se déconnecter'),
-                  ),
-                ),
-              ],
-            ),
-          _SettingsSection(
-            title: 'Sécurité',
-            children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text(
-                  'Déverrouiller HomeSpotify avec la biométrie',
-                  style: TextStyle(color: Colors.white, fontSize: 15),
-                ),
-                subtitle: Text(
-                  _biometricSupported
-                      ? 'Empreinte ou visage, uniquement pour la session '
-                            'locale de cet appareil.'
-                      : _biometricAvailability?.failureReason ==
-                            BiometricFailureReason.notConfigured
-                      ? 'Aucune biométrie n’est configurée dans Android.'
-                      : 'La biométrie est indisponible sur cet appareil.',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                activeThumbColor: _accent,
-                value: _biometricEnabled,
-                onChanged: _biometricSupported && !_biometricBusy
-                    ? _toggleBiometric
-                    : null,
-              ),
-            ],
-          ),
-          _SettingsSection(
-            title: 'Découverte',
-            children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text(
-                  'Lecture automatique des aperçus',
-                  style: TextStyle(color: Colors.white, fontSize: 15),
-                ),
-                subtitle: const Text(
-                  'Joue l’extrait de la carte affichée après un court instant.',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                activeThumbColor: _accent,
-                value: discoverySettings.autoplayPreviews,
-                onChanged: (value) => ref
-                    .read(discoverySettingsProvider.notifier)
-                    .setAutoplayPreviews(value),
-              ),
-            ],
-          ),
-          _SettingsSection(
-            title: 'Musique',
-            children: [
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.history_rounded, color: _accent),
-                title: const Text(
-                  'Activité d’écoute',
-                  style: TextStyle(color: Colors.white),
-                ),
-                subtitle: const Text(
-                  'Reprendre un titre et consulter les écoutes récentes.',
-                  style: TextStyle(color: Colors.white54),
-                ),
-                trailing: const Icon(
-                  Icons.chevron_right_rounded,
-                  color: Colors.white38,
-                ),
-                onTap: () => context.push('/listening-activity'),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.explore_rounded, color: _accent),
-                title: const Text(
-                  'Découvrir',
-                  style: TextStyle(color: Colors.white),
-                ),
-                subtitle: const Text(
-                  'Swiper des recommandations et découvrir des morceaux.',
-                  style: TextStyle(color: Colors.white54),
-                ),
-                trailing: const Icon(
-                  Icons.chevron_right_rounded,
-                  color: Colors.white38,
-                ),
-                onTap: () => context.go('/discover'),
-              ),
-            ],
-          ),
-          if (authUser != null && authUser.isOwner)
-            _SettingsSection(
-              title: 'Administration',
-              children: [
-                const _Note(
-                  'Section réservée au propriétaire. Les droits sont '
-                  'revérifiés par le serveur à chaque action.',
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: _accent,
-                      foregroundColor: Colors.black,
-                    ),
-                    onPressed: () => context.push('/admin'),
-                    icon: const Icon(Icons.admin_panel_settings_rounded),
-                    label: const Text('Tableau de bord'),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: _accent,
-                      side: const BorderSide(color: _accent),
-                    ),
-                    onPressed: () => context.push('/admin/imports'),
-                    icon: const Icon(Icons.move_to_inbox_rounded),
-                    label: const Text('Imports utilisateurs'),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: _accent,
-                      side: const BorderSide(color: _accent),
-                    ),
-                    onPressed: () => context.push('/admin/recommendations'),
-                    icon: const Icon(Icons.monitor_heart_rounded),
-                    label: const Text('Diagnostics recommandations'),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: _accent,
-                      side: const BorderSide(color: _accent),
-                    ),
-                    onPressed: () => context.push('/admin/users'),
-                    icon: const Icon(Icons.group_rounded),
-                    label: const Text('Utilisateurs'),
-                  ),
-                ),
-              ],
-            ),
-          _SettingsSection(
-            title: 'Serveur',
-            children: [
-              const _InfoRow(
-                label: 'URL API actuelle',
-                value: AppConfig.apiBaseUrl,
-              ),
-              _InfoRow(label: 'État', value: _statusLabel),
-              if (_serverError != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 10),
-                  child: Text(
-                    _serverError!,
-                    style: const TextStyle(
-                      color: Color(0xFFE57373),
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: _accent,
-                    foregroundColor: Colors.black,
-                  ),
-                  onPressed: _serverStatus == _ServerStatus.testing
-                      ? null
-                      : _testConnection,
-                  icon: _serverStatus == _ServerStatus.testing
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.black54,
-                          ),
-                        )
-                      : const Icon(Icons.wifi_tethering_rounded),
-                  label: const Text('Tester la connexion'),
-                ),
-              ),
-            ],
-          ),
-          _SettingsSection(
-            title: 'Informations de l’application',
-            children: [
-              const _InfoRow(label: 'Nom', value: 'HomeSpotify'),
-              _InfoRow(label: 'Version', value: _appVersion),
-              _InfoRow(label: 'Mode', value: _buildMode),
-              const _InfoRow(label: 'Plateforme', value: 'Android'),
-            ],
-          ),
-          _SettingsSection(
-            title: 'Mise à jour',
-            children: [
-              _InfoRow(label: 'Version actuelle', value: _appVersion),
-              _InfoRow(
-                label: 'Dernière version',
-                value: _latestVersionLabel(updateState),
-              ),
-              if (updateState.phase == AppUpdatePhase.downloading) ...[
-                const SizedBox(height: 12),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: LinearProgressIndicator(
-                    key: const ValueKey('settings-update-progress'),
-                    value: updateState.progress,
-                    minHeight: 6,
-                    backgroundColor: Colors.white12,
-                    color: _accent,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Téléchargement en cours'
-                  '${updateState.progress == null ? '' : ' · ${(updateState.progress! * 100).round()} %'}',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-              ],
-              if (updateState.phase == AppUpdatePhase.error &&
-                  updateState.message != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 10),
-                  child: Text(
-                    updateState.message!,
-                    style: const TextStyle(
-                      color: Color(0xFFE57373),
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  key: const ValueKey('settings-check-update'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: _accent,
-                    side: const BorderSide(color: _accent),
-                  ),
-                  onPressed: updateState.busy
-                      ? null
-                      : () => ref
-                            .read(appUpdateControllerProvider.notifier)
-                            .checkManually(),
-                  icon: updateState.phase == AppUpdatePhase.checking
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: _accent,
-                          ),
-                        )
-                      : const Icon(Icons.system_update_rounded),
-                  label: const Text('Rechercher une mise à jour'),
-                ),
-              ),
-              const _Note(
-                'HomeSpotify n’est pas sur le Play Store : les mises à jour '
-                'viennent de ton propre serveur. Android demande toujours '
-                'confirmation avant d’installer.',
-              ),
-            ],
-          ),
-          _SettingsSection(
-            title: 'Données du compte',
-            children: [
-              _InfoRow(label: 'Favoris', value: _countLabel(favoriteCount)),
-              _InfoRow(label: 'Playlists', value: _countLabel(playlistCount)),
-              const _Note(
-                'Ces données sont synchronisées avec le serveur pour le compte courant.',
-              ),
-            ],
-          ),
-          if (authUser?.isOwner == true || kDebugMode)
-            _SettingsSection(
-              title: 'Diagnostic',
-              children: [
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(
-                    Icons.monitor_heart_rounded,
-                    color: _accent,
-                  ),
-                  title: const Text(
-                    'Diagnostic audio',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  subtitle: const Text(
-                    'État temps réel, trace, marqueur de problème et export.',
-                    style: TextStyle(color: Colors.white54),
-                  ),
-                  trailing: const Icon(
-                    Icons.chevron_right_rounded,
-                    color: Colors.white38,
-                  ),
-                  onTap: () => context.push('/dev/audio-diagnostics'),
-                ),
-              ],
-            ),
-          _SettingsSection(
-            title: 'Audio',
-            children: [
-              const _InfoRow(
-                label: 'Formats pris en charge',
-                value: 'WAV / FLAC',
-              ),
-              _ReplayGainSetting(controller: replayGainController),
-              _InfoRow(
-                label: 'Time-stretch',
-                value: audioHandler.currentTimeStretchEngineName,
-              ),
-              const _InfoRow(
-                label: 'Transcodage',
-                value: 'Aucun — fichier original',
-              ),
-            ],
-          ),
-          _SettingsSection(
-            title: 'Accès distant',
-            children: [
-              _InfoRow(label: 'Adresse effective', value: AppConfig.apiBaseUrl),
-              _InfoRow(
-                label: 'HTTPS',
-                value: AppConfig.usesTls ? 'Activé' : 'Non activé',
-              ),
-              _Note(
-                AppConfig.remoteAccessConfigured
-                    ? 'Une adresse distante chiffrée est compilée dans cette version.'
-                    : 'Cette version utilise une adresse locale ou de développement.',
-              ),
-            ],
-          ),
-        ],
-      ),
+      bottomNavigationBar: const MiniPlayer(),
     );
   }
 
@@ -646,6 +546,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 }
 
+/// Groupe sculpté Direction 33 : libellé en accent, carte unique. Remplace
+/// la carte Material contourée d'origine.
 class _SettingsSection extends StatelessWidget {
   const _SettingsSection({required this.title, required this.children});
 
@@ -654,8 +556,10 @@ class _SettingsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -663,27 +567,16 @@ class _SettingsSection extends StatelessWidget {
             padding: const EdgeInsets.only(left: 4, bottom: 8),
             child: Text(
               title,
-              style: const TextStyle(
-                color: _accent,
-                fontSize: 13,
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: colors.accent,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.4,
               ),
             ),
           ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: _card,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Material(
-              type: MaterialType.transparency,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(children: children),
-              ),
-            ),
+          SoftCard(
+            padding: const EdgeInsets.all(16),
+            child: Column(children: children),
           ),
         ],
       ),
@@ -699,6 +592,8 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Padding(
       key: ValueKey<String>('settings-info-$label'),
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -707,7 +602,12 @@ class _InfoRow extends StatelessWidget {
         children: [
           Expanded(
             flex: 4,
-            child: Text(label, style: const TextStyle(color: Colors.white54)),
+            child: Text(
+              label,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colors.textSecondary,
+              ),
+            ),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -717,10 +617,248 @@ class _InfoRow extends StatelessWidget {
               maxLines: 4,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.end,
-              style: const TextStyle(color: Colors.white),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colors.textPrimary,
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Ligne switch Direction 33 : titre, sous-titre, interrupteur en accent.
+class _SettingSwitch extends StatelessWidget {
+  const _SettingSwitch({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+    this.settingKey,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final Key? settingKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return Padding(
+      key: settingKey,
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: colors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Switch(
+            value: value,
+            activeThumbColor: colors.accent,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Ligne de navigation vers un autre écran : icône, titre, sous-titre,
+/// chevron — même grammaire que les tuiles de Bibliothèque/Profil.
+class _NavRow extends StatelessWidget {
+  const _NavRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            SoftCircle(
+              size: 40,
+              color: colors.accentSoft,
+              child: Icon(icon, color: colors.accent, size: 20),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: colors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: colors.textTertiary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bouton plein largeur en accent — action principale d'une section.
+class _PrimaryButton extends StatelessWidget {
+  const _PrimaryButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: colors.accent,
+          foregroundColor: colors.onAccent,
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
+        ),
+        onPressed: onPressed,
+        icon: busy
+            ? SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: colors.onAccent,
+                ),
+              )
+            : Icon(icon),
+        label: Text(label),
+      ),
+    );
+  }
+}
+
+/// Bouton plein largeur contouré en accent — action secondaire.
+class _OutlinedAccentButton extends StatelessWidget {
+  const _OutlinedAccentButton({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: colors.accent,
+          side: BorderSide(color: colors.accent),
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
+        ),
+        onPressed: onPressed,
+        icon: busy
+            ? SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: colors.accent,
+                ),
+              )
+            : Icon(icon),
+        label: Text(label),
+      ),
+    );
+  }
+}
+
+/// Bouton plein largeur contouré en danger — déconnexion.
+class _DangerButton extends StatelessWidget {
+  const _DangerButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: colors.danger,
+          side: BorderSide(color: colors.danger),
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
+        ),
+        onPressed: onPressed,
+        icon: Icon(icon),
+        label: Text(label),
       ),
     );
   }
@@ -736,19 +874,11 @@ class _ReplayGainSetting extends StatelessWidget {
     return ValueListenableBuilder<ReplayGainState>(
       valueListenable: controller.state,
       builder: (context, state, _) {
-        return SwitchListTile(
-          key: const ValueKey('settings-replay-gain'),
-          contentPadding: EdgeInsets.zero,
-          activeThumbColor: _accent,
+        return _SettingSwitch(
+          settingKey: const ValueKey('settings-replay-gain'),
+          title: 'Volume homogène (ReplayGain)',
+          subtitle: _subtitle(state),
           value: state.enabled,
-          title: const Text(
-            'Volume homogène (ReplayGain)',
-            style: TextStyle(color: Colors.white, fontSize: 15),
-          ),
-          subtitle: Text(
-            _subtitle(state),
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
-          ),
           onChanged: (enabled) async {
             try {
               await controller.setEnabled(enabled);
@@ -800,21 +930,22 @@ class _Note extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.only(top: 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(
-            Icons.info_outline_rounded,
-            color: Colors.white38,
-            size: 18,
-          ),
+          Icon(Icons.info_outline_rounded, color: colors.textTertiary, size: 18),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               text,
-              style: const TextStyle(color: Colors.white54, height: 1.4),
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: colors.textSecondary,
+                height: 1.4,
+              ),
             ),
           ),
         ],

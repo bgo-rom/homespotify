@@ -5,6 +5,9 @@ import '../../../app/navigation.dart';
 import '../../../app/main_navigation_state.dart';
 import '../../../app/route_observer.dart';
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../player/presentation/player_providers.dart';
 import '../application/discovery_settings.dart';
 import '../domain/discovery_models.dart';
@@ -12,12 +15,10 @@ import 'animated_success_overlay.dart';
 import 'discover_deck_controller.dart';
 import 'discovery_preview_controller.dart';
 
-const Color _bg = Color(0xFF0D0D10);
-const Color _card = Color(0xFF1A1A22);
-const Color _accent = Color(0xFF1DB954);
-const Color _danger = Color(0xFFE57373);
-
 /// Écran « Découvrir » : pile de cartes swipeables sur file pré-calculée.
+///
+/// Refonte Direction 33 — même logique Swipefy, même contrôleurs, mêmes
+/// gestes ; seule la présentation change.
 ///
 /// - Rendu instantané depuis la file locale du serveur (skeletons brefs).
 /// - Les 2 cartes suivantes sont pré-rendues sous la carte du dessus.
@@ -211,33 +212,38 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
 
   /// Swipe droite : confirmation obligatoire avant l'installation.
   Future<bool> _onRequest(RecommendationCandidate candidate) async {
+    final colors = context.colors;
     // La confirmation coupe l'extrait (geste utilisateur).
     _preview.stop(reportEarlyStop: true);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: _card,
-        title: const Text(
+        backgroundColor: colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+        title: Text(
           'Installer ce titre ?',
-          style: TextStyle(color: Colors.white),
+          style: TextStyle(color: colors.textPrimary),
         ),
         content: Text(
           '« ${candidate.title} » de ${candidate.artist} sera téléchargé puis '
           'ajouté à votre bibliothèque.',
-          style: const TextStyle(color: Colors.white70),
+          style: TextStyle(color: colors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text(
+            child: Text(
               'Annuler',
-              style: TextStyle(color: Colors.white54),
+              style: TextStyle(color: colors.textSecondary),
             ),
           ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: _accent,
-              foregroundColor: Colors.black,
+              backgroundColor: colors.accent,
+              foregroundColor: colors.onAccent,
+              shape: RoundedRectangleBorder(
+                borderRadius: AppRadius.chipRadius,
+              ),
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Installer'),
@@ -264,6 +270,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   /// puis, une fois l'overlay terminé et la nouvelle carte stable, réarme
   /// l'autoplay sur la carte du dessus.
   void _showSuccessOverlay(RecommendationCandidate candidate) {
+    final colors = context.colors;
     _preview.stop();
     _overlayActive = true;
     _preview.disarmAutoplay();
@@ -271,6 +278,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
       context,
       title: candidate.title,
       artist: candidate.artist,
+      accentColor: colors.accent,
       onDismissed: () {
         if (!mounted) return;
         _overlayActive = false;
@@ -286,17 +294,21 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   void _flushError() {
     final message = _deck.takeError();
     if (message != null && mounted) {
+      final colors = context.colors;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text(message, style: const TextStyle(color: Colors.white)),
-            backgroundColor: _card,
+            content: Text(
+              message,
+              style: TextStyle(color: colors.textPrimary),
+            ),
+            backgroundColor: colors.surfaceRaised,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 2),
             margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: AppRadius.cardRadius,
             ),
           ),
         );
@@ -315,6 +327,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     ref.listen<int>(mainNavigationIndexProvider, (_, index) {
       if (index != HomeDestination.discover) {
         _preview.stop();
@@ -350,40 +363,22 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
         if (didPop) _onLeaveScreen();
       },
       child: Scaffold(
-        backgroundColor: _bg,
-        appBar: AppBar(
-          backgroundColor: _bg,
-          foregroundColor: Colors.white,
-          title: const Text(
-            'Découvrir',
-            style: TextStyle(fontWeight: FontWeight.w700),
+        backgroundColor: colors.background,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              _DiscoverHeader(
+                refreshing: deck.refreshing,
+                busy: deck.busy || deck.loading,
+                onSearch: () => openCatalogSearch(context),
+                onRefresh: () =>
+                    ref.read(discoverDeckProvider.notifier).refresh(),
+              ),
+              Expanded(child: _buildBody(deck)),
+            ],
           ),
-          actions: [
-            IconButton(
-              key: const ValueKey('discover-catalog-search-button'),
-              tooltip: 'Rechercher dans les catalogues',
-              icon: const Icon(Icons.search_rounded),
-              onPressed: () => openCatalogSearch(context),
-            ),
-            IconButton(
-              tooltip: 'Actualiser les recommandations',
-              icon: deck.refreshing
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _accent,
-                      ),
-                    )
-                  : const Icon(Icons.refresh_rounded),
-              onPressed: deck.busy || deck.loading || deck.refreshing
-                  ? null
-                  : () => ref.read(discoverDeckProvider.notifier).refresh(),
-            ),
-          ],
         ),
-        body: _buildBody(deck),
       ),
     );
   }
@@ -431,7 +426,12 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
       children: [
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+            padding: const EdgeInsets.fromLTRB(
+              AppLayout.gutter,
+              12,
+              AppLayout.gutter,
+              8,
+            ),
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -464,13 +464,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
                   onDismissed: (_) => _advance(),
                   background: const _SwipeHint(
                     alignment: Alignment.centerLeft,
-                    color: _accent,
+                    isPositive: true,
                     icon: Icons.favorite_rounded,
                     label: 'Demander',
                   ),
                   secondaryBackground: const _SwipeHint(
                     alignment: Alignment.centerRight,
-                    color: _danger,
+                    isPositive: false,
                     icon: Icons.thumb_down_rounded,
                     label: 'Pas pour moi',
                   ),
@@ -494,13 +494,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
           ),
         ),
         Padding(
-          padding: const EdgeInsets.only(bottom: 24, top: 4),
+          padding: const EdgeInsets.only(bottom: 22, top: 6),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               _RoundAction(
                 icon: Icons.thumb_down_rounded,
-                color: _danger,
+                tone: _RoundActionTone.danger,
                 tooltip: 'Pas pour moi',
                 onPressed: deck.busy
                     ? null
@@ -512,10 +512,10 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
                         }
                       },
               ),
-              const SizedBox(width: 20),
+              const SizedBox(width: 18),
               _RoundAction(
                 icon: Icons.skip_next_rounded,
-                color: Colors.white70,
+                tone: _RoundActionTone.neutral,
                 tooltip: 'Passer',
                 onPressed: deck.busy
                     ? null
@@ -527,10 +527,10 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
                         ref.read(discoverDeckProvider.notifier).skip(top);
                       },
               ),
-              const SizedBox(width: 20),
+              const SizedBox(width: 18),
               _RoundAction(
                 icon: Icons.favorite_rounded,
-                color: _accent,
+                tone: _RoundActionTone.accent,
                 tooltip: 'Installer ce titre',
                 onPressed: deck.busy
                     ? null
@@ -542,6 +542,79 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
           ),
         ),
       ],
+    );
+  }
+}
+
+/// En-tête « Découvrir » : grand titre + actions sculptées (recherche
+/// catalogue, régénération). Aucune AppBar : le corps n'est pas une liste
+/// défilante, le titre reste fixe comme sur l'Accueil.
+class _DiscoverHeader extends StatelessWidget {
+  const _DiscoverHeader({
+    required this.refreshing,
+    required this.busy,
+    required this.onSearch,
+    required this.onRefresh,
+  });
+
+  final bool refreshing;
+  final bool busy;
+  final VoidCallback onSearch;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 16, AppLayout.gutter, 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Découvrir',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.displaySmall?.copyWith(
+                color: colors.textPrimary,
+              ),
+            ),
+          ),
+          SoftCircle(
+            key: const ValueKey('discover-catalog-search-button'),
+            size: 46,
+            onTap: onSearch,
+            tooltip: 'Rechercher dans les catalogues',
+            semanticLabel: 'Rechercher dans les catalogues',
+            child: Icon(
+              Icons.search_rounded,
+              size: 21,
+              color: colors.textPrimary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          SoftCircle(
+            size: 46,
+            onTap: busy ? null : onRefresh,
+            tooltip: 'Actualiser les recommandations',
+            semanticLabel: 'Actualiser les recommandations',
+            child: refreshing
+                ? SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: colors.accent,
+                    ),
+                  )
+                : Icon(
+                    Icons.refresh_rounded,
+                    size: 21,
+                    color: busy ? colors.textTertiary : colors.textPrimary,
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -564,10 +637,13 @@ class _CandidateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Container(
       decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(20),
+        color: colors.surface,
+        borderRadius: AppRadius.cardRadius,
+        boxShadow: colors.clayShadow,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -592,10 +668,8 @@ class _CandidateCard extends StatelessWidget {
                             candidate.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 19,
-                              fontWeight: FontWeight.w700,
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              color: colors.textPrimary,
                             ),
                           ),
                           const SizedBox(height: 3),
@@ -607,9 +681,8 @@ class _CandidateCard extends StatelessWidget {
                             ].join(' · '),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 14,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.textSecondary,
                             ),
                           ),
                         ],
@@ -619,29 +692,30 @@ class _CandidateCard extends StatelessWidget {
                     // a été résolue par le backend.
                     if (onTogglePreview != null)
                       previewLoading
-                          ? const Padding(
-                              padding: EdgeInsets.all(10),
+                          ? Padding(
+                              padding: const EdgeInsets.all(11),
                               child: SizedBox(
                                 width: 24,
                                 height: 24,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2.4,
-                                  color: _accent,
+                                  color: colors.accent,
                                 ),
                               ),
                             )
-                          : IconButton(
+                          : SoftCircle(
+                              size: 46,
                               tooltip: previewPlaying
                                   ? 'Pause de l\'extrait'
                                   : 'Écouter un extrait',
-                              iconSize: 40,
-                              color: _accent,
-                              icon: Icon(
+                              onTap: onTogglePreview,
+                              child: Icon(
                                 previewPlaying
                                     ? Icons.pause_circle_filled_rounded
                                     : Icons.play_circle_fill_rounded,
+                                size: 26,
+                                color: colors.accent,
                               ),
-                              onPressed: onTogglePreview,
                             ),
                   ],
                 ),
@@ -653,8 +727,8 @@ class _CandidateCard extends StatelessWidget {
                     child: LinearProgressIndicator(
                       value: previewProgress,
                       minHeight: 3,
-                      backgroundColor: Colors.white12,
-                      valueColor: const AlwaysStoppedAnimation(_accent),
+                      backgroundColor: colors.surfaceSunken,
+                      valueColor: AlwaysStoppedAnimation(colors.accent),
                     ),
                   ),
                 ],
@@ -666,14 +740,16 @@ class _CandidateCard extends StatelessWidget {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: _accent.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(8),
+                      color: colors.accentSoft,
+                      borderRadius: AppRadius.chipRadius,
                     ),
                     child: Text(
                       candidate.reason!,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: _accent, fontSize: 12.5),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: colors.accent,
+                      ),
                     ),
                   ),
                 ],
@@ -755,15 +831,16 @@ class _ArtworkSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const ColoredBox(
-      color: Color(0xFF23232B),
+    final colors = context.colors;
+    return ColoredBox(
+      color: colors.surfaceSunken,
       child: Center(
         child: SizedBox(
           width: 28,
           height: 28,
           child: CircularProgressIndicator(
             strokeWidth: 2.2,
-            color: Colors.white24,
+            color: colors.textTertiary,
           ),
         ),
       ),
@@ -776,16 +853,21 @@ class _ArtworkFallback extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const ColoredBox(
-      color: Color(0xFF23232B),
-      child: Icon(Icons.music_note_rounded, color: Colors.white24, size: 96),
+    final colors = context.colors;
+    return ColoredBox(
+      color: colors.surfaceSunken,
+      child: Icon(
+        Icons.music_note_rounded,
+        color: colors.textTertiary,
+        size: 96,
+      ),
     );
   }
 }
 
 /// Écran de PRÉPARATION affiché quand la file MEDIA_READY est vide et qu'un job
 /// de préparation tourne : message dédié + stats temps réel (jamais un
-/// placeholder générique). Les compteurs viennent du /status de la file.
+/// placeholder générique muet). Les compteurs viennent du /status de la file.
 class _PreparationState extends StatelessWidget {
   const _PreparationState({required this.status});
 
@@ -793,6 +875,8 @@ class _PreparationState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final ready = status?.readyCount ?? 0;
     final reserve = status?.reserveCount ?? 0;
     return Center(
@@ -801,27 +885,33 @@ class _PreparationState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
-              width: 44,
-              height: 44,
-              child: CircularProgressIndicator(color: _accent, strokeWidth: 3),
+            SoftCircle(
+              size: 76,
+              child: SizedBox(
+                width: 32,
+                height: 32,
+                child: CircularProgressIndicator(
+                  color: colors.accent,
+                  strokeWidth: 3,
+                ),
+              ),
             ),
             const SizedBox(height: 24),
-            const Text(
+            Text(
               'Préparation de vos recommandations audio…',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: colors.textPrimary,
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
+            Text(
               'Chaque carte reçoit un extrait jouable et sa pochette avant '
               'd’entrer dans le paquet.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white54, fontSize: 13),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.textSecondary,
+              ),
             ),
             const SizedBox(height: 24),
             Row(
@@ -847,20 +937,20 @@ class _PrepStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Column(
       children: [
         Text(
           '$value',
-          style: const TextStyle(
-            color: _accent,
-            fontSize: 26,
-            fontWeight: FontWeight.w800,
-          ),
+          style: theme.textTheme.headlineSmall?.copyWith(color: colors.accent),
         ),
         const SizedBox(height: 2),
         Text(
           label,
-          style: const TextStyle(color: Colors.white54, fontSize: 12),
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: colors.textSecondary,
+          ),
         ),
       ],
     );
@@ -873,30 +963,36 @@ class _SkeletonDeck extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 88),
+      padding: const EdgeInsets.fromLTRB(
+        AppLayout.gutter,
+        12,
+        AppLayout.gutter,
+        88,
+      ),
       child: Column(
         children: [
           Expanded(
             child: Container(
               decoration: BoxDecoration(
-                color: _card,
-                borderRadius: BorderRadius.circular(20),
+                color: colors.surface,
+                borderRadius: AppRadius.cardRadius,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Expanded(child: ColoredBox(color: Color(0xFF23232B))),
+                  Expanded(child: ColoredBox(color: colors.surfaceSunken)),
                   Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _skeletonBar(width: 180, height: 18),
+                        _skeletonBar(colors, width: 180, height: 18),
                         const SizedBox(height: 8),
-                        _skeletonBar(width: 120, height: 13),
+                        _skeletonBar(colors, width: 120, height: 13),
                         const SizedBox(height: 12),
-                        _skeletonBar(width: 220, height: 24),
+                        _skeletonBar(colors, width: 220, height: 24),
                       ],
                     ),
                   ),
@@ -909,39 +1005,48 @@ class _SkeletonDeck extends StatelessWidget {
     );
   }
 
-  Widget _skeletonBar({required double width, required double height}) {
+  Widget _skeletonBar(
+    AppColors colors, {
+    required double width,
+    required double height,
+  }) {
     return Container(
       width: width,
       height: height,
       decoration: BoxDecoration(
-        color: Colors.white10,
+        color: colors.surfaceSunken,
         borderRadius: BorderRadius.circular(6),
       ),
     );
   }
 }
 
+/// Fond révélé par le swipe : « Demander » (accent) à gauche, « Pas pour
+/// moi » (danger) à droite. `isPositive` résout la couleur — jamais l'inverse.
 class _SwipeHint extends StatelessWidget {
   const _SwipeHint({
     required this.alignment,
-    required this.color,
+    required this.isPositive,
     required this.icon,
     required this.label,
   });
 
   final Alignment alignment;
-  final Color color;
+  final bool isPositive;
   final IconData icon;
   final String label;
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    final color = isPositive ? colors.accent : colors.danger;
     return Container(
       alignment: alignment,
       padding: const EdgeInsets.symmetric(horizontal: 28),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: AppRadius.cardRadius,
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -950,7 +1055,10 @@ class _SwipeHint extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             label,
-            style: TextStyle(color: color, fontWeight: FontWeight.w700),
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ],
       ),
@@ -958,36 +1066,46 @@ class _SwipeHint extends StatelessWidget {
   }
 }
 
+enum _RoundActionTone { danger, neutral, accent }
+
+/// Bouton d'action rond sculpté — pastille Direction 33 en bas de carte.
 class _RoundAction extends StatelessWidget {
   const _RoundAction({
     required this.icon,
-    required this.color,
+    required this.tone,
     required this.tooltip,
     required this.onPressed,
   });
 
   final IconData icon;
-  final Color color;
+  final _RoundActionTone tone;
   final String tooltip;
   final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return IconButton.filled(
+    final colors = context.colors;
+    final baseColor = switch (tone) {
+      _RoundActionTone.danger => colors.danger,
+      _RoundActionTone.neutral => colors.textSecondary,
+      _RoundActionTone.accent => colors.accent,
+    };
+    final disabled = onPressed == null;
+    return SoftCircle(
+      size: 62,
+      onTap: onPressed,
       tooltip: tooltip,
-      onPressed: onPressed,
-      style: IconButton.styleFrom(
-        backgroundColor: _card,
-        disabledBackgroundColor: _card.withValues(alpha: 0.5),
-        padding: const EdgeInsets.all(16),
+      semanticLabel: tooltip,
+      child: Icon(
+        icon,
+        size: 27,
+        color: disabled ? baseColor.withValues(alpha: 0.35) : baseColor,
       ),
-      iconSize: 30,
-      color: color,
-      icon: Icon(icon),
     );
   }
 }
 
+/// État centré (aucune carte, erreur de chargement) au langage Direction 33.
 class _MessageState extends StatelessWidget {
   const _MessageState({
     required this.icon,
@@ -1003,24 +1121,38 @@ class _MessageState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 64, color: Colors.white24),
-            const SizedBox(height: 16),
+            SoftCircle(
+              size: 84,
+              child: Icon(icon, size: 34, color: colors.textTertiary),
+            ),
+            const SizedBox(height: 20),
             Text(
               message,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white70, fontSize: 15),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colors.textSecondary,
+              ),
             ),
             const SizedBox(height: 20),
             FilledButton.icon(
               style: FilledButton.styleFrom(
-                backgroundColor: _accent,
-                foregroundColor: Colors.black,
+                backgroundColor: colors.accent,
+                foregroundColor: colors.onAccent,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppRadius.chipRadius,
+                ),
               ),
               onPressed: onAction,
               icon: const Icon(Icons.refresh_rounded),
