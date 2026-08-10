@@ -57,10 +57,30 @@ Set-StrictMode -Version Latest
 function Step([string] $Message) { Write-Host "[android-update] $Message" }
 function Fail([string] $Message) { throw "ANDROID_UPDATE_ABORT: $Message" }
 
+# Windows PowerShell transforme CHAQUE ligne de stderr d'un exécutable natif en
+# ErrorRecord ; avec $ErrorActionPreference = 'Stop', un simple avertissement
+# (flutter, pnpm, gradle en produisent) devient une erreur fatale. Les appels
+# natifs passent donc tous par ces deux helpers, qui neutralisent ce piège et
+# jugent UNIQUEMENT sur le code de sortie.
 function Invoke-Checked {
     param([string] $Label, [scriptblock] $Action)
-    & $Action
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Action } finally { $ErrorActionPreference = $previous }
     if ($LASTEXITCODE -ne 0) { Fail "$Label a échoué (code $LASTEXITCODE)" }
+}
+
+function Invoke-NativeOutput {
+    param([string] $Label, [scriptblock] $Action, [switch] $AllowFailure)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $output = @(& $Action 2>&1 | ForEach-Object { "$_" }) }
+    finally { $ErrorActionPreference = $previous }
+    if (-not $AllowFailure -and $LASTEXITCODE -ne 0) {
+        $output | ForEach-Object { Write-Host $_ }
+        Fail "$Label a échoué (code $LASTEXITCODE)"
+    }
+    return $output
 }
 
 # --- 1. Racine du dépôt et arborescence ------------------------------------
@@ -142,11 +162,10 @@ try {
     Invoke-Checked 'flutter pub get' { flutter pub get | Out-Null }
 
     Step 'flutter analyze'
-    $analyze = @(flutter analyze --no-fatal-infos 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        $analyze | ForEach-Object { Write-Host $_ }
-        Fail 'flutter analyze a signalé des avertissements ou des erreurs'
-    }
+    # `--no-fatal-infos` : les `info` restants sont des faux positifs
+    # `prefer_initializing_formals` (un paramètre nommé ne peut pas être privé
+    # en Dart). Un WARNING ou une ERROR reste bloquant.
+    $null = Invoke-NativeOutput 'flutter analyze' { flutter analyze --no-fatal-infos }
 
     if ($SkipTests) {
         Write-Warning 'flutter test IGNORÉ (-SkipTests) — à justifier dans le rapport de publication.'
@@ -226,8 +245,7 @@ $newState | ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding utf8
 
 # --- 8. Contrôle de l'APK produite -----------------------------------------
 Step "lecture des métadonnées réelles de l'APK"
-$badging = & $aapt2 dump badging $apkPath 2>&1
-if ($LASTEXITCODE -ne 0) { Fail "aapt2 n'a pas pu lire l'APK" }
+$badging = Invoke-NativeOutput 'aapt2 dump badging' { & $aapt2 dump badging $apkPath }
 $packageLine = $badging | Where-Object { $_ -like 'package:*' } | Select-Object -First 1
 if ($packageLine -notmatch "name='([^']+)'\s+versionCode='(\d+)'\s+versionName='([^']*)'") {
     Fail 'ligne package illisible dans aapt2 badging'
@@ -241,11 +259,7 @@ if ($apkVersionCode -ne $VersionCode) { Fail "versionCode de l'APK ($apkVersionC
 if ($apkVersionName -ne $VersionName) { Fail "versionName de l'APK ($apkVersionName) != demandé ($VersionName)" }
 
 Step 'contrôle du certificat de signature'
-$certs = & $apksigner verify --print-certs -v $apkPath 2>&1
-if ($LASTEXITCODE -ne 0) {
-    $certs | ForEach-Object { Write-Host $_ }
-    Fail "apksigner refuse l'APK"
-}
+$certs = Invoke-NativeOutput 'apksigner verify' { & $apksigner verify --print-certs -v $apkPath }
 $certLine = $certs | Where-Object { $_ -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]{64})' } | Select-Object -First 1
 if (-not $certLine) { Fail 'empreinte de certificat introuvable' }
 $null = $certLine -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]{64})'
@@ -311,12 +325,16 @@ Invoke-Checked 'scp manifest' { scp -o BatchMode=yes -q $manifestPath "${VpsHost
 Invoke-Checked 'scp publisher' { scp -o BatchMode=yes -q $publisher "${VpsHost}:$remoteStage/publish.sh" }
 
 Step 'publication atomique côté serveur'
-$publishOutput = ssh -o BatchMode=yes $VpsHost "sudo -n bash $remoteStage/publish.sh $remoteStage/app.apk $remoteStage/manifest.json $RemoteRoot"
+$publishOutput = Invoke-NativeOutput 'publication serveur' -AllowFailure {
+    ssh -o BatchMode=yes $VpsHost "sudo -n bash $remoteStage/publish.sh $remoteStage/app.apk $remoteStage/manifest.json $RemoteRoot"
+}
 if ($LASTEXITCODE -ne 0) {
     $publishOutput | ForEach-Object { Write-Host $_ }
     Fail 'publication serveur refusée — latest.json inchangé'
 }
-ssh -o BatchMode=yes $VpsHost "rm -rf $remoteStage" | Out-Null
+$null = Invoke-NativeOutput 'nettoyage staging distant' -AllowFailure {
+    ssh -o BatchMode=yes $VpsHost "rm -rf $remoteStage"
+}
 
 # --- 11. Vérification distante, en lecture seule ----------------------------
 Step 'vérification du manifeste publié'
@@ -330,7 +348,9 @@ if ([int] $check.latest.sizeBytes -ne $apkItem.Length) { Fail 'taille publiée i
 if (-not $check.updateAvailable) { Fail 'updateAvailable=false pour un client en version 1' }
 
 Step 'vérification du téléchargement (1 Ko, lecture seule)'
-$probe = Invoke-WebRequest -Uri "$PublicBaseUrl$($check.latest.downloadPath)" -Headers @{ Range = 'bytes=0-1023' } -TimeoutSec 30
+# -UseBasicParsing : sans lui, Windows PowerShell tente d'utiliser le moteur
+# Internet Explorer et echoue en session non interactive.
+$probe = Invoke-WebRequest -UseBasicParsing -Uri "$PublicBaseUrl$($check.latest.downloadPath)" -Headers @{ Range = 'bytes=0-1023' } -TimeoutSec 30
 if ($probe.StatusCode -ne 206) { Fail "téléchargement partiel refusé (HTTP $($probe.StatusCode))" }
 if ($probe.Headers['Content-Type'] -notlike 'application/vnd.android.package-archive*') {
     Fail "Content-Type inattendu : $($probe.Headers['Content-Type'])"

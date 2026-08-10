@@ -164,6 +164,17 @@ Un seul serveur, déployé en **Docker Compose** (api, proxy, monitoring). Les f
 - Option ultérieure : exposition HTTPS via Caddy (certificats automatiques) + rate limiting + fail2ban, seulement si le VPN devient trop contraignant.
 - Jamais d'API exposée en HTTP clair hors localhost.
 
+## Mise à jour de l'application Android
+
+Détail complet : `docs/ANDROID_SELF_UPDATE.md` — décision : `TD-Android-Self-Update`.
+
+- **Catalogue de releases sur disque**, jamais en base : `mobile-updates/android/{releases,metadata,latest.json}` sous la seule racine inscriptible du service, donc indépendant des releases backend.
+- **Deux routes publiques, les seules du backend** : `GET /api/app-update/android/latest` et `/download/<versionCode>`. Une version trop ancienne pour s'authentifier doit pouvoir se mettre à jour ; elles n'exposent que l'APK HomeSpotify et son manifeste.
+- **Aucun chemin fourni par le client** : le paramètre est un entier, le nom de fichier est reconstruit côté serveur, la version doit exister au catalogue.
+- **Publication atomique** : APK mise en place et vérifiée d'abord, `latest.json` publié en dernier par `mv -T`.
+- **Client** : vérification au démarrage et au retour au premier plan (throttlée), contrôle taille + SHA-256 + identité lue dans l'archive, puis remise à l'installateur Android via un FileProvider confiné. Aucune installation silencieuse.
+- **Disponibilité** : une panne du service de mise à jour ne peut jamais empêcher le démarrage de l'application.
+
 ## Sauvegardes
 
 - **DB** : `scripts/backup_homespotify.ps1` utilise l'API online backup de `better-sqlite3`, exécute `PRAGMA integrity_check`, puis produit un manifest versionné avec taille et SHA-256.
