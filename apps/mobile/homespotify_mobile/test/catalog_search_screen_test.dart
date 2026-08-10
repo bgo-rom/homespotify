@@ -5,6 +5,7 @@ import 'package:homespotify_mobile/src/features/catalog_search/application/catal
 import 'package:homespotify_mobile/src/features/catalog_search/data/catalog_search_api.dart';
 import 'package:homespotify_mobile/src/features/catalog_search/domain/catalog_models.dart';
 import 'package:homespotify_mobile/src/features/catalog_search/presentation/catalog_preview_controller.dart';
+import 'package:homespotify_mobile/src/core/widgets/soft_surface.dart';
 import 'package:homespotify_mobile/src/features/catalog_search/presentation/catalog_search_screen.dart';
 import 'package:homespotify_mobile/src/features/library/data/library_api.dart';
 import 'package:homespotify_mobile/src/features/library/domain/track.dart';
@@ -502,7 +503,9 @@ void main() {
       expect(find.byKey(const ValueKey('install-button-k1')), findsNothing);
       final busy = find.byKey(const ValueKey('install-busy-k1'));
       expect(busy, findsOneWidget);
-      expect(tester.widget<IconButton>(busy).onPressed, isNull);
+      // Direction 33 : le contrôle occupé est une pastille sculptée sans
+      // `onTap` — un second appui est structurellement impossible.
+      expect(tester.widget<SoftCircle>(busy).onTap, isNull);
       await tester.tap(busy, warnIfMissed: false);
       await tester.pump();
       expect(downloads.calls, hasLength(1));

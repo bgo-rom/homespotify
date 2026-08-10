@@ -288,7 +288,7 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/catalog-search',
       name: 'catalog-search',
-      pageBuilder: (context, state) => _darkTransitionPage(
+      pageBuilder: (context, state) => _transitionPage(
         key: state.pageKey,
         child: const CatalogSearchScreen(),
       ),

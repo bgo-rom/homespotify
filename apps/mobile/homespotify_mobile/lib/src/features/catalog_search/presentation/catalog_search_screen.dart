@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/theme/home_design.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
+import '../../../core/widgets/clay_header.dart';
+import '../../../core/widgets/soft_surface.dart';
 import '../../library/data/library_api.dart';
 import '../../library/domain/track.dart';
 import '../../library/presentation/library_playback_controller.dart';
+import '../../player/presentation/widgets/mini_player.dart';
 import '../application/catalog_search_controller.dart';
 import '../application/track_install_controller.dart';
 import '../domain/catalog_models.dart';
@@ -45,7 +49,7 @@ const _platformLabels = <String, String>{
 };
 
 /// Écran « Rechercher » : UNIQUE point d'entrée pour trouver et installer une
-/// musique.
+/// musique. Refonte Direction 33 — même logique, même flux serveur.
 ///
 /// Un seul type de résultat (des pistes), donc aucun onglet. Le bouton
 /// Installer appelle directement le moteur de téléchargement avec l'identité
@@ -203,6 +207,7 @@ class _CatalogSearchScreenState extends ConsumerState<CatalogSearchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final state = ref.watch(catalogSearchProvider);
     final preview = ref.watch(catalogPreviewProvider);
     ref.listen<Map<String, TrackInstallState>>(
@@ -215,93 +220,58 @@ class _CatalogSearchScreenState extends ConsumerState<CatalogSearchScreen> {
         if (didPop) ref.read(catalogPreviewProvider.notifier).stop();
       },
       child: Scaffold(
-        backgroundColor: HomeDesign.background,
-        appBar: AppBar(
-          backgroundColor: HomeDesign.background,
-          foregroundColor: Colors.white,
-          title: const Text(
-            'Rechercher',
-            style: TextStyle(fontWeight: FontWeight.w700),
+        backgroundColor: colors.background,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              ClayHeader(
+                title: 'Rechercher',
+                subtitle: 'Trouve un titre et installe-le en un geste',
+                onBack: () => Navigator.of(context).maybePop(),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppLayout.gutter,
+                  2,
+                  AppLayout.gutter,
+                  6,
+                ),
+                child: _SearchField(
+                  controller: _queryController,
+                  hasQuery: state.query.isNotEmpty,
+                  onChanged: (value) => ref
+                      .read(catalogSearchProvider.notifier)
+                      .onQueryChanged(value),
+                  onClear: () {
+                    _queryController.clear();
+                    ref
+                        .read(catalogSearchProvider.notifier)
+                        .onQueryChanged('');
+                  },
+                ),
+              ),
+              if (preview.mainPlaybackInterrupted)
+                _ResumePlaybackBanner(
+                  onResume: () => ref
+                      .read(catalogPreviewProvider.notifier)
+                      .resumeMainPlayback(),
+                ),
+              if (state.partialResults) const _PartialResultsBanner(),
+              Expanded(child: _buildBody(state)),
+            ],
           ),
         ),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: HomeDesign.space16,
-              ),
-              child: TextField(
-                key: const ValueKey('catalog-search-field'),
-                controller: _queryController,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white),
-                textInputAction: TextInputAction.search,
-                onChanged: (value) => ref
-                    .read(catalogSearchProvider.notifier)
-                    .onQueryChanged(value),
-                decoration: InputDecoration(
-                  hintText: 'Rechercher un titre, un artiste, un album ou un ISRC…',
-                  hintStyle: const TextStyle(color: Colors.white38),
-                  prefixIcon: const Icon(
-                    Icons.search_rounded,
-                    color: Colors.white54,
-                  ),
-                  suffixIcon: state.query.isEmpty
-                      ? null
-                      : IconButton(
-                          icon: const Icon(
-                            Icons.clear_rounded,
-                            color: Colors.white54,
-                          ),
-                          onPressed: () {
-                            _queryController.clear();
-                            ref
-                                .read(catalogSearchProvider.notifier)
-                                .onQueryChanged('');
-                          },
-                        ),
-                  filled: true,
-                  fillColor: HomeDesign.surface,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(
-                      HomeDesign.radiusMedium,
-                    ),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: HomeDesign.space8),
-            if (preview.mainPlaybackInterrupted)
-              _ResumePlaybackBanner(
-                onResume: () => ref
-                    .read(catalogPreviewProvider.notifier)
-                    .resumeMainPlayback(),
-              ),
-            if (state.partialResults)
-              const Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: HomeDesign.space16,
-                  vertical: HomeDesign.space4,
-                ),
-                child: Text(
-                  'Résultats partiels : certains fournisseurs sont '
-                  'momentanément indisponibles.',
-                  key: ValueKey('catalog-partial-banner'),
-                  style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
-                ),
-              ),
-            Expanded(child: _buildBody(state)),
-          ],
-        ),
+        bottomNavigationBar: const MiniPlayer(),
       ),
     );
   }
 
   Widget _buildBody(CatalogSearchState state) {
+    final colors = context.colors;
     if (state.loading) {
-      return const Center(
-        child: CircularProgressIndicator(color: HomeDesign.accent),
+      return Center(
+        child: CircularProgressIndicator(color: colors.accent),
       );
     }
     if (state.error != null) {
@@ -323,9 +293,10 @@ class _CatalogSearchScreenState extends ConsumerState<CatalogSearchScreen> {
       return const _CenteredMessage(
         key: ValueKey('catalog-search-initial'),
         icon: Icons.travel_explore_rounded,
+        title: 'Cherche dans les catalogues officiels',
         message:
-            'Cherche un titre dans les catalogues officiels, écoute un aperçu, '
-            'puis installe-le directement dans ta bibliothèque.',
+            'Trouve un titre, écoute un aperçu, puis installe-le directement '
+            'dans ta bibliothèque.',
       );
     }
     if (state.results.isEmpty) {
@@ -336,28 +307,44 @@ class _CatalogSearchScreenState extends ConsumerState<CatalogSearchScreen> {
       );
     }
     return RefreshIndicator(
-      color: HomeDesign.accent,
+      color: colors.accent,
+      backgroundColor: colors.surface,
       onRefresh: () => ref.read(catalogSearchProvider.notifier).retry(),
       child: ListView.builder(
         key: const ValueKey('catalog-search-results'),
         controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: HomeDesign.space32),
+        padding: const EdgeInsets.fromLTRB(
+          AppLayout.gutter,
+          4,
+          AppLayout.gutter,
+          24,
+        ),
         itemCount: state.results.length + (state.loadingMore ? 1 : 0),
         itemBuilder: (context, index) {
           if (index >= state.results.length) {
-            return const Padding(
-              padding: EdgeInsets.all(HomeDesign.space16),
+            return Padding(
+              padding: const EdgeInsets.all(16),
               child: Center(
-                child: CircularProgressIndicator(color: HomeDesign.accent),
+                child: CircularProgressIndicator(color: colors.accent),
               ),
             );
           }
           final result = state.results[index];
-          return CatalogResultCard(
-            result: result,
-            onInstall: () => _install(result),
-            onRetry: () => _retry(result),
+          return Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxWidth: AppLayout.maxContentWidth,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: CatalogResultCard(
+                  result: result,
+                  onInstall: () => _install(result),
+                  onRetry: () => _retry(result),
+                ),
+              ),
+            ),
           );
         },
       ),
@@ -365,6 +352,62 @@ class _CatalogSearchScreenState extends ConsumerState<CatalogSearchScreen> {
   }
 }
 
+/// Champ de recherche sculpté : creux « clay », une seule surface, aucun trait.
+class _SearchField extends StatelessWidget {
+  const _SearchField({
+    required this.controller,
+    required this.hasQuery,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final bool hasQuery;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surfaceSunken,
+        borderRadius: AppRadius.cardRadius,
+      ),
+      child: TextField(
+        key: const ValueKey('catalog-search-field'),
+        controller: controller,
+        autofocus: true,
+        style: theme.textTheme.bodyLarge?.copyWith(color: colors.textPrimary),
+        textInputAction: TextInputAction.search,
+        cursorColor: colors.accent,
+        onChanged: onChanged,
+        decoration: InputDecoration(
+          isCollapsed: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 15),
+          hintText: 'Rechercher un titre, un artiste, un album ou un ISRC…',
+          hintStyle: theme.textTheme.bodyMedium?.copyWith(
+            color: colors.textTertiary,
+          ),
+          prefixIcon: Icon(Icons.search_rounded, color: colors.textSecondary),
+          suffixIcon: !hasQuery
+              ? null
+              : IconButton(
+                  icon: Icon(Icons.clear_rounded, color: colors.textSecondary),
+                  onPressed: onClear,
+                ),
+          filled: false,
+          border: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          enabledBorder: InputBorder.none,
+        ),
+      ),
+    );
+  }
+}
+
+/// Rappel « ta musique est en pause pendant l'aperçu » — carte sculptée.
 class _ResumePlaybackBanner extends StatelessWidget {
   const _ResumePlaybackBanner({required this.onResume});
 
@@ -372,79 +415,148 @@ class _ResumePlaybackBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: HomeDesign.space16,
-        vertical: HomeDesign.space4,
-      ),
-      child: Material(
-        color: HomeDesign.surfaceRaised,
-        borderRadius: BorderRadius.circular(HomeDesign.radiusSmall),
-        child: ListTile(
-          key: const ValueKey('catalog-resume-playback'),
-          dense: true,
-          leading: const Icon(
-            Icons.play_circle_rounded,
-            color: HomeDesign.accent,
-          ),
-          title: const Text(
-            'Ta musique est en pause pendant l’aperçu.',
-            style: TextStyle(color: Colors.white70, fontSize: 13),
-          ),
-          trailing: TextButton(
-            onPressed: onResume,
-            child: const Text(
-              'Reprendre ma musique',
-              style: TextStyle(color: HomeDesign.accent),
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 2, AppLayout.gutter, 6),
+      child: SoftCard(
+        key: const ValueKey('catalog-resume-playback'),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          children: [
+            Icon(Icons.play_circle_rounded, color: colors.accent, size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Ta musique est en pause pendant l’aperçu.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.textSecondary,
+                ),
+              ),
             ),
-          ),
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: onResume,
+              style: TextButton.styleFrom(
+                foregroundColor: colors.accent,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 36),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(
+                'Reprendre',
+                style: theme.textTheme.labelLarge?.copyWith(color: colors.accent),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
+/// Bandeau « résultats partiels » : un fournisseur est momentanément absent.
+class _PartialResultsBanner extends StatelessWidget {
+  const _PartialResultsBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppLayout.gutter, 2, AppLayout.gutter, 6),
+      child: Row(
+        key: const ValueKey('catalog-partial-banner'),
+        children: [
+          Icon(Icons.cloud_queue_rounded, size: 16, color: colors.textTertiary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Résultats partiels : certains fournisseurs sont momentanément '
+              'indisponibles.',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: colors.textTertiary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// État centré (initial, vide, erreur) en langage Direction 33.
 class _CenteredMessage extends StatelessWidget {
   const _CenteredMessage({
     super.key,
     required this.icon,
     required this.message,
+    this.title,
     this.actionLabel,
     this.onAction,
   });
 
   final IconData icon;
   final String message;
+  final String? title;
   final String? actionLabel;
   final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(HomeDesign.space24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 44, color: Colors.white24),
-            const SizedBox(height: HomeDesign.space12),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white54),
-            ),
-            if (actionLabel != null) ...[
-              const SizedBox(height: HomeDesign.space16),
-              OutlinedButton(
-                key: const ValueKey('catalog-search-retry'),
-                onPressed: onAction,
-                child: Text(
-                  actionLabel!,
-                  style: const TextStyle(color: HomeDesign.accent),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SoftCircle(
+                size: 84,
+                child: Icon(icon, size: 34, color: colors.textTertiary),
+              ),
+              const SizedBox(height: 20),
+              if (title != null) ...[
+                Text(
+                  title!,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colors.textSecondary,
                 ),
               ),
+              if (actionLabel != null) ...[
+                const SizedBox(height: 20),
+                FilledButton(
+                  key: const ValueKey('catalog-search-retry'),
+                  onPressed: onAction,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: colors.accent,
+                    foregroundColor: colors.onAccent,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 22,
+                      vertical: 12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: AppRadius.chipRadius,
+                    ),
+                  ),
+                  child: Text(actionLabel!),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -469,6 +581,8 @@ class CatalogResultCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final owned = ref.watch(_libraryIdentitiesProvider).contains(
       _identityOf(result),
     );
@@ -481,168 +595,170 @@ class CatalogResultCard extends ConsumerWidget {
     final isPreviewActive = preview.isActiveFor(result.canonicalKey);
     final duration = _formatDuration(result.durationMs);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: HomeDesign.space16,
-        vertical: HomeDesign.space4,
-      ),
-      child: Material(
-        color: HomeDesign.surface,
-        borderRadius: BorderRadius.circular(HomeDesign.radiusMedium),
-        child: Padding(
-          padding: const EdgeInsets.all(HomeDesign.space12),
-          child: Column(
+    return SoftCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(HomeDesign.radiusSmall),
-                    child: SizedBox(
-                      width: 56,
-                      height: 56,
-                      child: result.imageUrl == null
-                          ? const ColoredBox(
-                              color: HomeDesign.surfaceMuted,
-                              child: Icon(
-                                Icons.music_note_rounded,
-                                color: Colors.white38,
-                              ),
-                            )
-                          : Image.network(
-                              result.imageUrl!,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, _, _) => const ColoredBox(
-                                color: HomeDesign.surfaceMuted,
-                                child: Icon(
-                                  Icons.music_note_rounded,
-                                  color: Colors.white38,
-                                ),
-                              ),
-                            ),
-                    ),
-                  ),
-                  const SizedBox(width: HomeDesign.space12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+              _CatalogArtwork(imageUrl: result.imageUrl, size: 58),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                result.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
+                        Expanded(
+                          child: Text(
+                            result.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: colors.textPrimary,
                             ),
-                            if (result.explicit == true)
-                              const Padding(
-                                padding: EdgeInsets.only(
-                                  left: HomeDesign.space4,
-                                ),
-                                child: Icon(
-                                  Icons.explicit_rounded,
-                                  size: 16,
-                                  color: Colors.white38,
-                                ),
-                              ),
-                          ],
-                        ),
-                        Text(
-                          [
-                            if (result.artistLabel.isNotEmpty)
-                              result.artistLabel,
-                            if (result.album != null) result.album!,
-                            if (duration.isNotEmpty) duration,
-                          ].join(' · '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 12,
                           ),
                         ),
-                        const SizedBox(height: HomeDesign.space4),
-                        Wrap(
-                          spacing: HomeDesign.space4,
-                          runSpacing: HomeDesign.space4,
-                          children: [
-                            // UNIQUEMENT les catalogues CONFIRMED/LINK_FOUND :
-                            // UNKNOWN n'est jamais présenté comme un fait.
-                            for (final link in result.positiveLinks)
-                              _Badge(
-                                key: ValueKey('platform-badge-${link.platform}'),
-                                label:
-                                    _platformLabels[link.platform] ??
-                                    link.platform,
-                              ),
-                            if (owned)
-                              const _Badge(
-                                key: ValueKey('badge-owned'),
-                                label: 'Dans ma bibliothèque',
-                                accent: true,
-                              ),
-                          ],
-                        ),
+                        if (result.explicit == true)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 4),
+                            child: Icon(
+                              Icons.explicit_rounded,
+                              size: 16,
+                              color: colors.textTertiary,
+                            ),
+                          ),
                       ],
                     ),
-                  ),
-                  if (hasPreview)
-                    IconButton(
-                      key: ValueKey('preview-button-${result.canonicalKey}'),
-                      tooltip: isPreviewActive
-                          ? 'Mettre l’aperçu en pause'
-                          : 'Écouter un aperçu',
-                      icon: Icon(
-                        isPreviewActive
-                            ? Icons.pause_circle_rounded
-                            : Icons.play_circle_outline_rounded,
-                        color: HomeDesign.accent,
-                      ),
-                      onPressed: () => ref
-                          .read(catalogPreviewProvider.notifier)
-                          .toggle(result.canonicalKey, result.preview!),
-                    )
-                  else
-                    const Tooltip(
-                      key: ValueKey('preview-unavailable'),
-                      message: 'Aucun aperçu disponible pour ce titre',
-                      child: Padding(
-                        padding: EdgeInsets.all(HomeDesign.space8),
-                        child: Icon(
-                          Icons.music_off_rounded,
-                          color: Colors.white24,
-                        ),
+                    const SizedBox(height: 2),
+                    Text(
+                      [
+                        if (result.artistLabel.isNotEmpty) result.artistLabel,
+                        if (result.album != null) result.album!,
+                        if (duration.isNotEmpty) duration,
+                      ].join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.textSecondary,
                       ),
                     ),
-                  _InstallButton(
-                    canonicalKey: result.canonicalKey,
-                    install: install,
-                    onInstall: onInstall,
-                    onRetry: onRetry,
-                  ),
-                ],
-              ),
-              if (install.stage != TrackInstallStage.idle)
-                _InstallProgress(
-                  canonicalKey: result.canonicalKey,
-                  install: install,
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        // UNIQUEMENT les catalogues CONFIRMED/LINK_FOUND :
+                        // UNKNOWN n'est jamais présenté comme un fait.
+                        for (final link in result.positiveLinks)
+                          _Badge(
+                            key: ValueKey('platform-badge-${link.platform}'),
+                            label:
+                                _platformLabels[link.platform] ?? link.platform,
+                          ),
+                        if (owned)
+                          const _Badge(
+                            key: ValueKey('badge-owned'),
+                            label: 'Dans ma bibliothèque',
+                            accent: true,
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
+              const SizedBox(width: 10),
+              if (hasPreview)
+                SoftCircle(
+                  key: ValueKey('preview-button-${result.canonicalKey}'),
+                  size: 44,
+                  tooltip: isPreviewActive
+                      ? 'Mettre l’aperçu en pause'
+                      : 'Écouter un aperçu',
+                  onTap: () => ref
+                      .read(catalogPreviewProvider.notifier)
+                      .toggle(result.canonicalKey, result.preview!),
+                  child: Icon(
+                    isPreviewActive
+                        ? Icons.pause_circle_rounded
+                        : Icons.play_circle_outline_rounded,
+                    color: colors.accent,
+                  ),
+                )
+              else
+                Tooltip(
+                  key: const ValueKey('preview-unavailable'),
+                  message: 'Aucun aperçu disponible pour ce titre',
+                  child: SizedBox(
+                    width: 44,
+                    height: 44,
+                    child: Icon(
+                      Icons.music_off_rounded,
+                      color: colors.textTertiary,
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 10),
+              _InstallButton(
+                canonicalKey: result.canonicalKey,
+                install: install,
+                onInstall: onInstall,
+                onRetry: onRetry,
+              ),
             ],
           ),
-        ),
+          if (install.stage != TrackInstallStage.idle)
+            _InstallProgress(
+              canonicalKey: result.canonicalKey,
+              install: install,
+            ),
+        ],
       ),
     );
   }
 }
 
-/// Bouton d'installation : un seul contrôle, tous les états.
+/// Pochette externe (CDN du catalogue) au langage Direction 33 : rayon,
+/// creux et icône de repli identiques à [ArtworkThumb], mais SANS
+/// authentification (l'URL n'appartient pas au serveur).
+class _CatalogArtwork extends StatelessWidget {
+  const _CatalogArtwork({required this.imageUrl, required this.size});
+
+  final String? imageUrl;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final placeholder = ColoredBox(
+      color: colors.surfaceSunken,
+      child: Icon(
+        Icons.music_note_rounded,
+        color: colors.textTertiary,
+        size: size * 0.34,
+      ),
+    );
+    final url = imageUrl;
+    return ClipRRect(
+      borderRadius: AppRadius.artworkRadius,
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: url == null
+            ? placeholder
+            : Image.network(
+                url,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => placeholder,
+              ),
+      ),
+    );
+  }
+}
+
+/// Bouton d'installation sculpté : un seul contrôle, tous les états.
 class _InstallButton extends StatelessWidget {
   const _InstallButton({
     required this.canonicalKey,
@@ -658,49 +774,52 @@ class _InstallButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+
     if (install.stage.isBusy) {
-      // `onPressed: null` : pendant un job actif, un second appui est
+      // Pas d'`onTap` : pendant un job actif, un second appui est
       // structurellement impossible, pas seulement ignoré.
-      return IconButton(
+      return SoftCircle(
         key: ValueKey('install-busy-$canonicalKey'),
+        size: 46,
         tooltip: install.message,
-        onPressed: null,
-        icon: const SizedBox(
+        child: SizedBox(
           width: 20,
           height: 20,
           child: CircularProgressIndicator(
             strokeWidth: 2,
-            color: HomeDesign.accent,
+            color: colors.accent,
           ),
         ),
       );
     }
     if (install.stage.isInstalled) {
-      return IconButton(
+      return SoftCircle(
         key: ValueKey('install-done-$canonicalKey'),
+        size: 46,
+        color: colors.accentSoft,
         tooltip: install.stage == TrackInstallStage.reused
             ? 'Déjà dans votre bibliothèque'
             : 'Installé',
-        onPressed: null,
-        icon: const Icon(Icons.check_circle_rounded, color: Colors.greenAccent),
+        child: Icon(Icons.check_rounded, color: colors.accent),
       );
     }
     if (install.stage == TrackInstallStage.failed) {
-      return IconButton(
+      return SoftCircle(
         key: ValueKey('install-retry-$canonicalKey'),
+        size: 46,
         tooltip: 'Réessayer',
-        onPressed: onRetry,
-        icon: const Icon(Icons.refresh_rounded, color: Colors.orangeAccent),
+        onTap: onRetry,
+        child: Icon(Icons.refresh_rounded, color: colors.danger),
       );
     }
-    return IconButton(
+    return SoftCircle(
       key: ValueKey('install-button-$canonicalKey'),
+      size: 46,
+      color: colors.accent,
       tooltip: 'Installer ce titre',
-      onPressed: onInstall,
-      icon: const Icon(
-        Icons.download_for_offline_outlined,
-        color: Colors.white70,
-      ),
+      onTap: onInstall,
+      child: Icon(Icons.arrow_downward_rounded, color: colors.onAccent),
     );
   }
 }
@@ -714,40 +833,70 @@ class _InstallProgress extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     final message = install.message;
+    final Color tone = switch (install.stage) {
+      TrackInstallStage.failed => colors.danger,
+      TrackInstallStage.success ||
+      TrackInstallStage.reused => colors.accent,
+      _ => colors.textSecondary,
+    };
+    final busy = install.stage.isBusy;
     return Padding(
-      padding: const EdgeInsets.only(top: HomeDesign.space8),
+      padding: const EdgeInsets.only(top: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (message != null && message.isNotEmpty)
-            Text(
-              message,
-              key: ValueKey('install-message-$canonicalKey'),
-              style: TextStyle(
-                fontSize: 12,
-                color: switch (install.stage) {
-                  TrackInstallStage.failed => Colors.orangeAccent,
-                  TrackInstallStage.success ||
-                  TrackInstallStage.reused => Colors.greenAccent,
-                  _ => Colors.white70,
-                },
-              ),
+            Row(
+              children: [
+                if (busy) ...[
+                  _StageDot(color: colors.accent),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Text(
+                    message,
+                    key: ValueKey('install-message-$canonicalKey'),
+                    style: theme.textTheme.labelMedium?.copyWith(color: tone),
+                  ),
+                ),
+              ],
             ),
           if (install.stage == TrackInstallStage.downloading ||
               install.stage == TrackInstallStage.fallback)
             Padding(
-              padding: const EdgeInsets.only(top: HomeDesign.space4),
-              child: LinearProgressIndicator(
-                key: ValueKey('install-progress-$canonicalKey'),
-                value: install.progress <= 0 ? null : install.progress / 100,
-                backgroundColor: HomeDesign.surfaceMuted,
-                color: HomeDesign.accent,
-                minHeight: 3,
+              padding: const EdgeInsets.only(top: 8),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  key: ValueKey('install-progress-$canonicalKey'),
+                  value: install.progress <= 0 ? null : install.progress / 100,
+                  backgroundColor: colors.surfaceSunken,
+                  color: colors.accent,
+                  minHeight: 5,
+                ),
               ),
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Petite pastille pleine qui signale une étape active (Antra travaille).
+class _StageDot extends StatelessWidget {
+  const _StageDot({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
 }
@@ -760,19 +909,18 @@ class _Badge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final theme = Theme.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       decoration: BoxDecoration(
-        color: accent
-            ? HomeDesign.accent.withValues(alpha: 0.18)
-            : HomeDesign.surfaceMuted,
-        borderRadius: BorderRadius.circular(6),
+        color: accent ? colors.accentSoft : colors.surfaceSunken,
+        borderRadius: AppRadius.chipRadius,
       ),
       child: Text(
         label,
-        style: TextStyle(
-          color: accent ? HomeDesign.accent : Colors.white60,
-          fontSize: 10,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: accent ? colors.accent : colors.textSecondary,
           fontWeight: FontWeight.w600,
         ),
       ),
