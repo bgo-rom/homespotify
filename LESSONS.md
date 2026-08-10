@@ -1183,3 +1183,48 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
   worktree ouvert par défaut. Toujours confirmer avec l'utilisateur avant de
   changer de worktree en cours de tâche plutôt que de merger/cherry-picker
   silencieusement pour combler l'écart.
+
+### L-129 — Derrière un proxy, l'IP cliente fiable est la DERNIÈRE entrée de X-Forwarded-For (2026-08-10)
+
+- **Contexte** : limiteur de débit (`lib/rate-limit.ts`) keyé par IP cliente,
+  Node lié à `127.0.0.1` derrière Caddy.
+- **Piège** : prendre la PREMIÈRE entrée de `X-Forwarded-For` (ou activer
+  `trustProxy` naïvement) laisse un client falsifier sa clé en pré-remplissant
+  l'en-tête ; il contourne alors le quota ou empoisonne celui d'un tiers.
+- **Règle** : quand le service n'a qu'un seul pair direct de confiance (ici
+  Caddy, garanti par le bind loopback), retenir la **dernière** valeur de
+  `X-Forwarded-For` — celle que ce pair appose. Repli sur
+  `socket.remoteAddress` en l'absence d'en-tête. Ne jamais faire confiance à
+  `request.ip` sans maîtriser la configuration `trustProxy`.
+
+### L-130 — Un drop-in sshd ne gagne que s'il est chargé AVANT (first-match) (2026-08-10)
+
+- **Contexte** : durcissement SSH prod, `PasswordAuthentication` forcé à `yes`
+  par `/etc/ssh/sshd_config.d/50-cloud-init.conf`.
+- **Piège** : sshd applique la PREMIÈRE valeur obtenue pour un mot-clé, et les
+  drop-ins sont inclus en tête de `sshd_config` dans l'ordre lexical. Un fichier
+  `99-hardening.conf` chargé APRÈS `50-cloud-init.conf` ne peut donc PAS
+  surcharger `PasswordAuthentication` — la valeur du `50-` est déjà figée.
+- **Règle** : pour surcharger un réglage cloud-init sans éditer son fichier
+  (que cloud-init peut réécrire), poser un drop-in à préfixe numérique
+  **inférieur** (`00-…`) afin qu'il charge en premier. Toujours valider par
+  `sshd -t` puis vérifier l'effectif à froid par `sshd -T | grep <clé>` AVANT
+  `systemctl reload ssh`, et confirmer une nouvelle session par clé avant de
+  fermer la session courante. Rollback = supprimer le drop-in + reload.
+
+### L-131 — Deux branches parallèles réutilisent les mêmes numéros de leçon (2026-08-10)
+
+- **Contexte** : intégration finale Direction 33. La lignée PROD (`add5a2b`) et
+  la branche design (`4adf06f`) avaient chacune ajouté **leurs propres** L-126
+  et L-127, sur des sujets totalement différents (règle métier dupliquée /
+  ACL Storage Agent d'un côté ; X-Forwarded-For / drop-in sshd de l'autre).
+- **Piège** : un `git cherry-pick` du commit de documentation aurait soit
+  produit un conflit trompeur, soit — pire — écrasé la leçon de PROD par celle
+  de la branche design sous le même numéro, faisant disparaître silencieusement
+  une leçon d'infrastructure déjà déployée.
+- **Règle** : `LESSONS.md` et `TECH_DECISIONS.md` sont des journaux
+  **append-only à numérotation globale** : ils fusionnent mal par nature. Avant
+  d'intégrer un commit de doc venu d'une branche parallèle, comparer les
+  numéros réellement pris de part et d'autre (`grep -oE '^### L-[0-9]+'`) et
+  renuméroter le contenu importé plutôt que de laisser Git arbitrer. Corriger
+  aussi les renvois `[[L-nnn]]` internes au contenu déplacé.

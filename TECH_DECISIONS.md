@@ -1173,3 +1173,73 @@ disponibilité des 7 adaptateurs ~3,2 s, résolution multi-sources ~4,5 s),
 téléchargement 3,9–14,9 s, HomeSpotify ~0,75 s au total. Le coût fixe d'Antra
 est payé à chaque job parce que chaque job est un nouveau processus Python :
 `is_available()` ne met en cache qu'en mémoire de processus.
+
+## Décisions du chantier Security Hardening V1 (2026-08-10)
+
+### TD-Sec-RateLimit — limitation de débit API en mémoire, sans dépendance (2026-08-10)
+
+**Décision** : les points d'authentification et de mise à jour publics sont
+protégés par un limiteur à fenêtre fixe interne (`services/api/src/lib/rate-limit.ts`),
+**pas** par un plugin externe. Un seul foyer derrière Caddy ne justifie pas la
+surface de dépendance de `@fastify/rate-limit`.
+
+**Portée** : `/api/auth/{login,bootstrap,refresh,change-password}` (40 requêtes /
+15 min) contre le bourrage d'identifiants ; `/api/app-update/android/{latest,download}`
+(60 / min) contre l'abus des routes publiques. Dépassement → `429` + `Retry-After`.
+
+**Clé d'identification** : la **dernière** entrée de `X-Forwarded-For`. Le
+processus Node n'écoute que sur `127.0.0.1`, Caddy est donc son unique pair et
+appose l'IP réelle en fin d'en-tête ; une valeur pré-remplie par un client ne
+peut qu'apparaître avant, donc jamais être retenue. `request.socket.remoteAddress`
+en repli (appel direct en test). Voir [[L-129]].
+
+### TD-Sec-SSH-PublicKeyOnly — SSH prod par clé uniquement, via drop-in prioritaire (2026-08-10)
+
+**Décision** : sur le VPS, `PasswordAuthentication no` et `KbdInteractiveAuthentication no`.
+L'authentification par mot de passe est désactivée ; seule la clé publique est
+acceptée. `X11Forwarding no` en complément. fail2ban reste actif en défense
+supplémentaire, non en unique barrière.
+
+**Mise en œuvre** : fichier `/etc/ssh/sshd_config.d/00-homespotify-hardening.conf`,
+chargé **avant** `50-cloud-init.conf` (qui forçait `yes`). sshd retient la
+PREMIÈRE valeur, donc le préfixe `00-` prime sans éditer le fichier cloud-init.
+Rollback : supprimer ce fichier puis `systemctl reload ssh`. Voir [[L-130]].
+
+### TD-Sec-Android-Signing-Keep — signature Android conservée (2026-08-10)
+
+**Décision** : `KEEP_CURRENT_SIGNING_KEY`. La clé est **RSA 2048 bits**, schéma
+de signature **APK v2**, empreinte de certificat `9d461189…78d6` (invariant du
+projet). Aucun critère de rotation n'est rempli : clé privée hors de tout arbre
+Git, non publique, non compromise, algorithme suffisant. `CN=Android Debug` est
+un libellé cosmétique, pas une raison de rotation — laquelle imposerait une
+désinstallation/réinstallation à l'utilisateur. La chaîne de publication
+compare l'empreinte de l'APK produite à cette valeur et refuse toute divergence
+(fail-closed).
+
+### TD-Sec-Updater-FailClosed — chaîne de mise à jour fail-closed (2026-08-10)
+
+**Décision** (formalisée, comportement déjà en place) : une mise à jour Android
+n'est installée que si TOUTES les vérifications passent, dans cet ordre, chacune
+supprimant le fichier en cas d'écart : taille annoncée, SHA-256, `packageName`,
+`versionCode`, empreinte du certificat de signature, monotonie stricte du
+`versionCode`. Un seul écart ⇒ l'installateur système n'est jamais ouvert. Aucun
+octet n'est servi si la taille sur disque diffère du manifeste. Une APK
+partielle n'existe que sous `.part` jusqu'à complétion.
+
+### TD-Sec-Cleartext-Off — HTTPS strict en release Android (2026-08-10)
+
+**Décision** : `android:usesCleartextTraffic="false"` explicite sur
+l'`<application>` en build release, plutôt que par simple défaut du targetSdk.
+La variante debug conserve son `network_security_config` (HTTP local de
+développement), qui prime UNIQUEMENT en debug. La build release ne parle qu'en
+HTTPS — vers l'API comme vers le point de mise à jour.
+
+### TD-Sec-Keystore-OutOfGit — keystore de signature hors dépôt (2026-08-10)
+
+**Décision** : le keystore `.jks` et `key.properties` (mots de passe) vivent
+exclusivement sous `F:\dev\homespotify-secrets\android`, hors de tout arbre Git.
+Le build ne résout que leur CHEMIN (variable `HOMESPOTIFY_ANDROID_KEY_PROPERTIES`),
+jamais leur contenu ; sans secret local, la build retombe sur la clé debug sans
+échouer. Corollaire opérationnel (**responsabilité propriétaire**) : permissions
+locales restreintes au seul propriétaire et sauvegarde chiffrée hors ligne du
+keystore — sa perte rendrait toute future mise à jour impossible.
