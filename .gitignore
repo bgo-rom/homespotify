@@ -149,3 +149,14 @@ romainvast.pub
 
 # --- Regles reprises du deploiement VPS ---
 # Bytecode Python : produit par les outils de d├®ploiement, jamais versionn├®.
+
+# --- Signature Android (jamais dans git) -----------------------------------
+# La keystore de release vit hors du dépôt (F:\dev\homespotify-secrets\android).
+# Ces règles sont une ceinture supplémentaire : aucune clé ne doit pouvoir
+# entrer dans l'historique, même déposée par erreur dans l'arbre.
+*.jks
+*.keystore
+key.properties
+
+# Diagnostics de goldens Flutter (régénérés à chaque échec, jamais versionnés)
+**/test/failures/

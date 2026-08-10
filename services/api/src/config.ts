@@ -73,6 +73,17 @@ export interface AppConfig {
    * la rétro-compatibilité des configs de test : buildApp applique
    * defaultDiscoveryConfig() en absence. */
   discovery?: DiscoveryConfig;
+  /**
+   * Mise à jour automatique de l'application Android. Absente tant que
+   * `APP_UPDATE_ANDROID_DIR` n'est pas configuré : les routes
+   * `/api/app-update/android/*` répondent alors 503, et rien d'autre ne change.
+   */
+  appUpdate?: AppUpdateConfig;
+}
+
+export interface AppUpdateConfig {
+  /** Racine du catalogue de releases Android (releases/, metadata/, latest.json). */
+  androidDir: string;
 }
 
 export interface OfflineConfig {
@@ -599,6 +610,18 @@ function loadAcquisitionProviderConfig(
   };
 }
 
+/**
+ * Catalogue des mises à jour Android. Absent si `APP_UPDATE_ANDROID_DIR` n'est
+ * pas fourni : la fonctionnalité est indisponible, jamais une panne. Le chemin
+ * est résolu ici pour échouer tôt sur une valeur relative ambiguë ; son
+ * existence n'est PAS exigée au démarrage (le premier `publish` le crée).
+ */
+function loadAppUpdateConfig(env: NodeJS.ProcessEnv): AppUpdateConfig | undefined {
+  const raw = env.APP_UPDATE_ANDROID_DIR?.trim() ?? '';
+  if (raw.length === 0) return undefined;
+  return { androidDir: resolve(raw) };
+}
+
 function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value.length === 0) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
@@ -739,6 +762,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const lucida = loadLucidaConfig(env);
   const acquisitionProviders = loadAcquisitionProviderConfig(env);
   const antra = loadAntraConfig(env);
+  const appUpdate = loadAppUpdateConfig(env);
   const backup: BackupConfig = {
     enabled: parseBool(env.BACKUP_ENABLED, nodeEnv !== 'test'),
     root: env.BACKUP_ROOT ?? '../../backups/server',
@@ -781,6 +805,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(antra ? { antra } : {}),
     ...(lastfm ? { lastfm } : {}),
     ...(appleMusic ? { appleMusic } : {}),
+    ...(appUpdate ? { appUpdate } : {}),
     discovery: loadDiscoveryConfig(env),
   };
 }

@@ -1077,3 +1077,32 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
 - **Conséquence** : `pump()` (éventuellement répété avec un délai court) sur
   tout test traversant un état actif, et `pumpAndSettle` réservé aux états
   terminaux.
+
+### L-123 — Dans `testWidgets`, toute E/S réelle doit passer par `runAsync` (2026-08-10)
+
+- **Contexte** : deux tests widgets de l'assistant de mise à jour ne
+  terminaient JAMAIS — ni succès, ni échec, ni même le `--timeout 30s`. Le
+  processus `flutter_tester` tournait sans avancer.
+- **Cause** : `testWidgets` exécute le corps du test dans une horloge figée.
+  Un `await` sur une vraie E/S (SharedPreferences, HTTP, fichier) ne se résout
+  jamais tant que l'horloge n'avance pas, et le délai du test étant lui-même
+  porté par cette horloge, il ne se déclenche pas non plus. Le symptôme
+  ressemble à un blocage applicatif alors qu'il n'y a aucune boucle.
+- **Conséquence** : toute préparation asynchrone RÉELLE d'un test widget passe
+  par `await tester.runAsync(() => …)`. Corollaire de diagnostic : un test qui
+  ignore son propre `--timeout` accuse l'horloge de test, pas le code testé.
+
+### L-124 — Un état Riverpod ne survit pas seul à un état déjà connu (2026-08-10)
+
+- **Contexte** : l'assistant de mise à jour n'apparaissait pas alors que
+  `shouldPrompt` était vrai juste avant le montage. Le `initState` de
+  l'enveloppe déclenchait une vérification automatique qui repassait
+  immédiatement l'état en `checking`, écrasant le résultat déjà obtenu.
+- **Leçon** : un déclencheur « au montage » doit vérifier ce qui est DÉJÀ connu
+  avant de repartir de zéro. Sinon le remontage d'un widget racine (bascule
+  connexion → application) annule silencieusement un résultat valide, un
+  « Plus tard » ou un téléchargement en cours.
+- **Conséquence** : `AppUpdateState.updatePending` court-circuite la
+  vérification automatique, l'instant de la dernière vérification est mémorisé
+  pour les contrôles manuels AUSSI, et le contrôleur appelle `ref.keepAlive()`
+  pour survivre au remontage de son observateur.

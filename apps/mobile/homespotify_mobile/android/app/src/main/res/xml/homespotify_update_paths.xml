@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Périmètre EXACT du FileProvider de mise à jour : le seul sous-dossier
+  `app-updates/` du cache privé de l'application. Rien d'autre n'est
+  partageable par ce provider, même par erreur.
+-->
+<paths>
+    <cache-path
+        name="homespotify-app-updates"
+        path="app-updates/" />
+</paths>

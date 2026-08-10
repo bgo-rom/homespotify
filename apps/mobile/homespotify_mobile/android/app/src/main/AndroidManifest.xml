@@ -6,6 +6,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      Mise à jour automatique privée de HomeSpotify (application hors Play
+      Store). Cette permission n'autorise RIEN à elle seule : Android exige en
+      plus que l'utilisateur désigne explicitement HomeSpotify comme source
+      autorisée, puis confirme chaque installation dans son propre écran
+      système. Aucune installation silencieuse n'est tentée.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="homespotify_mobile"
@@ -34,6 +42,22 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+          Partage de l'APK téléchargée avec l'installateur Android. L'URI
+          `content://` remplace un `file://` (interdit depuis Android 7) et
+          n'expose QUE le sous-dossier `app-updates` du cache privé — jamais la
+          musique, ni la base locale, ni les jetons.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updateprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/homespotify_update_paths" />
+        </provider>
 
         <meta-data
             android:name="HOMESPOTIFY_STRETCH_ENGINE"

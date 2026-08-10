@@ -29,12 +29,15 @@ param(
     [string] $StagingRoot = 'F:\dev\homespotify-phase6-staging',
     [string] $BundleId = 'linux-x64-node22.18.0-abi127',
     [string] $AntraRoot = '',
+    # Branche attendue du dépôt HomeSpotify. Paramétrable pour pouvoir
+    # construire depuis un worktree DESCENDANT de la lignée PROD (chantier
+    # isolé) sans jamais compiler les sources d'un autre chantier. La valeur
+    # par défaut reste la lignée PROD elle-même.
+    [string] $ExpectedBranch = 'phase6/vps-final-c2',
     [switch] $SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
-
-$ExpectedBranch = 'phase6/vps-final-c2'
 $ExpectedAntraBranch = 'homespotify/vps-linux-runtime'
 $ExpectedAntraCommit = 'dbce23c5960af504d672cc28c7c51ece0bea8e68'
 $ExpectedRequirementsSha256 = '6d0ced20523398f2d2b24d849588957006b4d721130989c9fd40c7a588e8a589'

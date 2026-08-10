@@ -17,6 +17,7 @@ import 'src/core/theme/app_theme.dart';
 import 'src/features/auth/application/auth_controller.dart';
 import 'src/features/auth/data/auth_session_manager.dart';
 import 'src/features/auth/data/token_store.dart';
+import 'src/features/app_update/presentation/app_update_shell.dart';
 import 'src/features/auth/presentation/auth_flow.dart';
 import 'src/features/listening/application/listening_activity_tracker.dart';
 import 'src/features/offline/application/offline_index.dart';
@@ -259,7 +260,10 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
         // Le parcours d'authentification n'est pas encore migré en
         // Direction 33 : il reste figé sur le thème sombre historique.
         theme: AppTheme.legacyDark,
-        home: const AuthFlowScreen(),
+        // L'assistant de mise à jour couvre AUSSI l'écran de connexion : une
+        // version trop ancienne pour ouvrir une session doit pouvoir se mettre
+        // à jour (cf. features/app_update).
+        home: const AppUpdateShell(child: AuthFlowScreen()),
       );
     }
 
@@ -287,8 +291,10 @@ class HomeSpotifyMobileApp extends ConsumerWidget {
       darkTheme: AppTheme.dark,
       themeMode: ThemeMode.system,
       routerConfig: appRouter,
-      // Bandeau discret « Mode hors connexion » au-dessus de toute l'app.
-      builder: (context, child) => OfflineAwareShell(child: child),
+      // Bandeau discret « Mode hors connexion », puis l'assistant de mise à
+      // jour par-dessus toute l'application.
+      builder: (context, child) =>
+          AppUpdateShell(child: OfflineAwareShell(child: child)),
     );
   }
 }

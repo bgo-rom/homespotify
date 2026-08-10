@@ -1037,3 +1037,75 @@ comportement historique (`ambiguous` rendu à l'appelant).
 **succès**, présenté comme « Ce titre est déjà présent dans votre
 bibliothèque. » — jamais comme un échec. Aucun champ nouveau n'expose de
 chemin, de PID ni de secret.
+
+## TD-Android-Self-Update (2026-08-10)
+
+**Décision** : HomeSpotify se met à jour lui-même depuis le VPS du
+propriétaire. La copie manuelle d'APK devient l'exception. Détail complet :
+`docs/ANDROID_SELF_UPDATE.md`.
+
+**Identité de signature — INVARIANT (définitive)** : toutes les versions
+Android conservent le certificat de l'application déjà installée, empreinte
+SHA-256 `9d461189865d0d1f3774ae06a4bbf84f13c890c471b3e8d2082887006a5a78d6`
+(`C=US, O=Android, CN=Android Debug`, RSA 2048/SHA-256, valide jusqu'au
+2056-06-30). Android refuse toute mise à jour signée autrement : en changer
+imposerait une désinstallation et la perte de la session, des préférences, de
+la base locale et du cache hors ligne. La keystore et ses mots de passe vivent
+dans `F:\dev\homespotify-secrets\android\`, **hors de tout arbre Git**, et sont
+référencés par Gradle via `HOMESPOTIFY_ANDROID_KEY_PROPERTIES` ou
+`android/key.properties`. La garantie n'est pas dans Gradle mais dans le script
+de publication, qui compare l'empreinte de l'APK produite à la valeur attendue
+et **refuse de publier en cas d'écart**.
+
+**Versioning** : `versionName` lisible, `versionCode` strictement croissant et
+seule référence de comparaison. `pubspec.yaml` n'est plus édité à la main —
+`--build-name` / `--build-number` sont passés à `flutter build apk`. Le
+prochain numéro vaut `max(versionCode publié, dernier construit localement) + 1`.
+Le serveur est la source de vérité préférée ; le journal local
+(`publish-state.json`) empêche seulement qu'une build non publiée voie son
+numéro réattribué.
+
+**Routes publiques assumées** : `GET /api/app-update/android/latest` et
+`GET /api/app-update/android/download/<versionCode>` sont les **seules** routes
+du backend sans Bearer. Raison de fonctionnement : une version peut être
+obsolète précisément parce que son format de jeton ou son contrat d'API n'est
+plus compatible ; exiger une session valide rendrait la mise à jour impossible
+dans le seul cas où elle est indispensable. Elles n'exposent que le manifeste
+de l'APK HomeSpotify et cette APK — soit exactement ce que le propriétaire
+copiait auparavant à la main. Aucune donnée utilisateur, aucun identifiant,
+aucun chemin serveur.
+
+**Aucun chemin fourni par le client** : le seul paramètre accepté est un
+entier `versionCode` ; le nom de fichier est reconstruit côté serveur
+(`homespotify-<n>.apk`) et doit exister au catalogue. Il n'existe donc pas de
+surface de traversée de chemin, et aucune extension autre que `.apk` n'est
+atteignable.
+
+**Stockage** : `/var/lib/homespotify-shadow/mobile-updates/android/`
+(`releases/`, `metadata/`, `latest.json`) — la seule racine inscriptible du
+service, qui survit à chaque release backend. Jamais sous
+`/opt/homespotify-api-shadow/current`, qui change à chaque déploiement.
+Le catalogue est un arbre de fichiers : rien à migrer, rollback trivial.
+
+**Publication atomique** : APK d'abord (copie sous un nom temporaire puis
+`mv -T`), métadonnées de version ensuite, `latest.json` **en dernier**. Le
+serveur revalide taille, SHA-256 et entête ZIP avant toute mise en place,
+refuse un `versionCode` non croissant et n'écrase jamais une release publiée.
+
+**Rollback** : Android n'accepte pas un `versionCode` inférieur. Un rollback est
+donc toujours « revenir au code sain → rebuild avec un versionCode SUPÉRIEUR →
+publier », jamais la republication d'une ancienne APK. Les anciennes APK
+restent au catalogue pour diagnostic.
+
+**Installation** : aucune installation silencieuse, aucun contournement. Le
+client vérifie taille, SHA-256, puis l'identité lue dans l'archive
+(`getPackageArchiveInfo` : paquet, `versionCode`, certificat) ; un seul écart
+supprime le fichier et l'installateur n'est jamais ouvert. La remise à
+l'installateur passe par un `FileProvider` limité au sous-dossier
+`app-updates/` du cache privé, et Android affiche sa propre confirmation.
+
+**Disponibilité** : un service de mise à jour indisponible ne peut jamais
+empêcher HomeSpotify de démarrer. Toute panne de vérification automatique
+(timeout, DNS, JSON invalide, 5xx) est silencieuse ; une erreur n'est affichée
+que sur vérification demandée par l'utilisateur. Vérification automatique
+throttlée à 30 minutes ; la vérification manuelle des Paramètres l'ignore.

@@ -6,6 +6,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../../core/platform/app_package_info.dart';
+import '../../app_update/application/app_update_controller.dart';
+import '../../app_update/domain/app_update_models.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../auth/data/biometric_service.dart';
 import '../../discovery/application/discovery_settings.dart';
@@ -159,6 +161,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final discoverySettings = ref.watch(discoverySettingsProvider);
     final audioHandler = ref.watch(audioHandlerProvider);
     final replayGainController = ref.watch(replayGainControllerProvider);
+    final updateState = ref.watch(appUpdateControllerProvider);
 
     return Scaffold(
       backgroundColor: _background,
@@ -430,6 +433,79 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ],
           ),
           _SettingsSection(
+            title: 'Mise à jour',
+            children: [
+              _InfoRow(label: 'Version actuelle', value: _appVersion),
+              _InfoRow(
+                label: 'Dernière version',
+                value: _latestVersionLabel(updateState),
+              ),
+              if (updateState.phase == AppUpdatePhase.downloading) ...[
+                const SizedBox(height: 12),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    key: const ValueKey('settings-update-progress'),
+                    value: updateState.progress,
+                    minHeight: 6,
+                    backgroundColor: Colors.white12,
+                    color: _accent,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Téléchargement en cours'
+                  '${updateState.progress == null ? '' : ' · ${(updateState.progress! * 100).round()} %'}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ],
+              if (updateState.phase == AppUpdatePhase.error &&
+                  updateState.message != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text(
+                    updateState.message!,
+                    style: const TextStyle(
+                      color: Color(0xFFE57373),
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('settings-check-update'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _accent,
+                    side: const BorderSide(color: _accent),
+                  ),
+                  onPressed: updateState.busy
+                      ? null
+                      : () => ref
+                            .read(appUpdateControllerProvider.notifier)
+                            .checkManually(),
+                  icon: updateState.phase == AppUpdatePhase.checking
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: _accent,
+                          ),
+                        )
+                      : const Icon(Icons.system_update_rounded),
+                  label: const Text('Rechercher une mise à jour'),
+                ),
+              ),
+              const _Note(
+                'HomeSpotify n’est pas sur le Play Store : les mises à jour '
+                'viennent de ton propre serveur. Android demande toujours '
+                'confirmation avant d’installer.',
+              ),
+            ],
+          ),
+          _SettingsSection(
             title: 'Données du compte',
             children: [
               _InfoRow(label: 'Favoris', value: _countLabel(favoriteCount)),
@@ -517,6 +593,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   static String _countLabel(int? count) => count?.toString() ?? 'Chargement…';
+
+  /// N'affirme jamais qu'une version est « à jour » sans l'avoir vérifié.
+  static String _latestVersionLabel(AppUpdateState update) {
+    final latest = update.latest;
+    if (latest != null) {
+      return update.phase == AppUpdatePhase.upToDate
+          ? '${latest.display} · à jour'
+          : latest.display;
+    }
+    return switch (update.phase) {
+      AppUpdatePhase.checking => 'Vérification…',
+      AppUpdatePhase.upToDate => 'À jour',
+      _ => 'Inconnue',
+    };
+  }
 
   Future<void> _testConnection() async {
     if (_serverStatus == _ServerStatus.testing) return;

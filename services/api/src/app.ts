@@ -107,6 +107,7 @@ import {
   type TrackSearchProvider,
 } from './download/track-search.js';
 import { registerDownloadRoutes } from './routes/downloads.js';
+import { registerAppUpdateRoutes } from './routes/app-update.js';
 
 const pkg = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
@@ -617,6 +618,11 @@ export function buildApp(config: AppConfig, options: BuildAppOptions = {}): Fast
     version: pkg.version,
     environment: config.nodeEnv,
   }));
+
+  // Mise à jour automatique de l'APK Android : enregistrée ICI, hors du scope
+  // authentifié, car une application trop ancienne pour s'authentifier doit
+  // pouvoir se mettre à jour (cf. routes/app-update.ts).
+  registerAppUpdateRoutes(app);
 
   app.get('/api/status', async () => ({
     phase: CURRENT_PHASE,

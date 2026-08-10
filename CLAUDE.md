@@ -30,6 +30,33 @@ Architecte logiciel principal et développeur du projet **HomeSpotify** : applic
 - Ne pas supprimer d'information utile lors d'une modification de fichier existant : lire d'abord, améliorer ensuite.
 - Séquencement des phases `ROADMAP.md` : le **développement** d'une phase suivante peut démarrer sur autorisation explicite du propriétaire, mais une phase ne peut être déclarée **terminée** ou **prête pour production** tant que les critères de la phase précédente ne sont pas validés sur l'environnement réel.
 
+## Livraison Android — règle durable
+
+HomeSpotify se met à jour tout seul depuis le VPS du propriétaire
+(cf. `docs/ANDROID_SELF_UPDATE.md`). La copie manuelle d'APK est l'exception.
+
+- **Changement backend uniquement** : aucune APK à publier.
+- **Changement Flutter destiné au propriétaire** : après `flutter analyze` et
+  `flutter test` verts, publier une nouvelle version Android avec le script
+  officiel, sauf instruction contraire :
+
+  ```powershell
+  ./scripts/publish_android_update.ps1 -ReleaseNotes '…'
+  ```
+
+- Ne jamais éditer `version:` dans `pubspec.yaml` pour incrémenter un build :
+  le `versionCode` est piloté par le script, source de vérité = manifeste publié.
+- Ne jamais changer l'identité de signature Android (empreinte de référence dans
+  `docs/ANDROID_SELF_UPDATE.md`) : Android refuserait la mise à jour par-dessus
+  l'application installée, imposant une désinstallation et la perte des données
+  locales.
+- Terminer tout rapport touchant au client Flutter par ces deux lignes :
+
+  ```text
+  MISE À JOUR ANDROID PUBLIÉE : OUI/NON
+  APK À INSTALLER MANUELLEMENT : OUI/NON
+  ```
+
 ## Ordre de lecture des fichiers
 
 1. `CLAUDE.md` (ce fichier)
@@ -38,6 +65,8 @@ Architecte logiciel principal et développeur du projet **HomeSpotify** : applic
 4. `ARCHITECTURE.md` — comment
 5. `ROADMAP.md` — dans quel ordre
 6. `AUDIO_SOURCING.md` — si la tâche touche à l'acquisition ou la qualité audio
+6bis. `docs/ANDROID_SELF_UPDATE.md` — si la tâche touche au client Flutter, à la
+     signature Android ou à la publication d'une version
 7. `AGENTS.md` — si des sous-agents sont impliqués
 8. `LESSONS.md` — toujours consulter avant une décision technique
 
