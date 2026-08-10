@@ -361,13 +361,21 @@ if ([int] $check.latest.sizeBytes -ne $apkItem.Length) { Fail 'taille publiée i
 if (-not $check.updateAvailable) { Fail 'updateAvailable=false pour un client en version 1' }
 
 Step 'vérification du téléchargement (1 Ko, lecture seule)'
-# -UseBasicParsing : sans lui, Windows PowerShell tente d'utiliser le moteur
-# Internet Explorer et echoue en session non interactive.
-$probe = Invoke-WebRequest -UseBasicParsing -Uri "$PublicBaseUrl$($check.latest.downloadPath)" -Headers @{ Range = 'bytes=0-1023' } -TimeoutSec 30
-if ($probe.StatusCode -ne 206) { Fail "téléchargement partiel refusé (HTTP $($probe.StatusCode))" }
-if ($probe.Headers['Content-Type'] -notlike 'application/vnd.android.package-archive*') {
-    Fail "Content-Type inattendu : $($probe.Headers['Content-Type'])"
+# curl.exe et non Invoke-WebRequest : Windows PowerShell refuse `Range` comme
+# en-tête libre (en-tête « restreint » du .NET Framework). La sonde ne lit que
+# le premier kilo-octet — vérification, pas téléchargement.
+$downloadUrl = "$PublicBaseUrl$($check.latest.downloadPath)"
+$probe = Invoke-NativeOutput 'sonde de téléchargement' {
+    curl.exe -sS -o NUL --max-time 30 -H 'Range: bytes=0-1023' `
+        -w '%{http_code}|%{content_type}|%{size_download}' $downloadUrl
 }
+$probeFields = ($probe -join '').Split('|')
+if ($probeFields.Count -lt 3) { Fail "sonde de téléchargement illisible : $probe" }
+if ($probeFields[0] -ne '206') { Fail "téléchargement partiel refusé (HTTP $($probeFields[0]))" }
+if ($probeFields[1] -notlike 'application/vnd.android.package-archive*') {
+    Fail "Content-Type inattendu : $($probeFields[1])"
+}
+if ([int] $probeFields[2] -ne 1024) { Fail "plage servie inattendue : $($probeFields[2]) octets" }
 
 Step 'PUBLIÉ.'
 [pscustomobject]@{
