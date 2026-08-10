@@ -160,3 +160,8 @@ key.properties
 
 # Diagnostics de goldens Flutter (régénérés à chaque échec, jamais versionnés)
 **/test/failures/
+
+# Artefacts CMake/NDK regeneres a chaque build Android (chemins absolus de la
+# machine). Suivis par erreur : ils salissaient le worktree a chaque build et
+# bloquaient le controle « worktree propre » de la publication Android.
+.cxx/

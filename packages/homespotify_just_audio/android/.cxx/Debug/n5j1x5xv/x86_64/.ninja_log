@@ -1,5 +1,0 @@
-# ninja log v5
-9	1140	8058448277815860	CMakeFiles/homespotify_stretch.dir/homespotify_stretch/JniBridge.cpp.o	36a5b6692ee3b21a
-1	4293	8058448309161263	CMakeFiles/homespotify_stretch_engine.dir/homespotify_stretch/HomeSpotifyStretchEngine.cpp.o	48d5e129e77a4b4b
-4294	4403	8058448310304835	libhomespotify_stretch_engine.a	3bc7514d8aaee72f
-4403	4547	8058448311804542	F:/dev/homespotify/apps/mobile/homespotify_mobile/build/just_audio/intermediates/cxx/Debug/n5j1x5xv/obj/x86_64/libhomespotify_stretch.so	147b34384773b505
