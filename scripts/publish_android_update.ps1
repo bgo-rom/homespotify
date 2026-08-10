@@ -260,13 +260,26 @@ if ($apkVersionName -ne $VersionName) { Fail "versionName de l'APK ($apkVersionN
 
 Step 'contrôle du certificat de signature'
 $certs = Invoke-NativeOutput 'apksigner verify' { & $apksigner verify --print-certs -v $apkPath }
-$certLine = $certs | Where-Object { $_ -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]{64})' } | Select-Object -First 1
-if (-not $certLine) { Fail 'empreinte de certificat introuvable' }
-$null = $certLine -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]{64})'
-$apkCert = $Matches[1].ToLowerInvariant()
-if ($apkCert -ne $ExpectedCertSha256.ToLowerInvariant()) {
-    Fail "CERTIFICAT INATTENDU ($apkCert). Android refuserait la mise à jour par-dessus l'application installée."
+# Le libellé dépend de la version des build-tools : « Signer #1 certificate »
+# jusqu'aux 34.x, « V2 Signer: certificate » à partir des 37.x. Les DEUX formes
+# sont acceptées, et TOUS les signataires trouvés doivent porter l'empreinte
+# attendue — pas seulement le premier.
+$certPattern = '(?:Signer #\d+|V\d(?:\.\d)? Signer:)\s*certificate SHA-256 digest:\s*([0-9a-fA-F]{64})'
+$apkCerts = @(
+    $certs |
+        ForEach-Object { if ($_ -match $certPattern) { $Matches[1].ToLowerInvariant() } } |
+        Select-Object -Unique
+)
+if ($apkCerts.Count -eq 0) {
+    $certs | ForEach-Object { Write-Host $_ }
+    Fail 'empreinte de certificat introuvable dans la sortie apksigner'
 }
+$expectedCert = $ExpectedCertSha256.ToLowerInvariant()
+$unexpected = @($apkCerts | Where-Object { $_ -ne $expectedCert })
+if ($unexpected.Count -gt 0) {
+    Fail "CERTIFICAT INATTENDU ($($unexpected -join ', ')). Android refuserait la mise à jour par-dessus l'application installée."
+}
+$apkCert = $expectedCert
 
 $apkItem = Get-Item -LiteralPath $apkPath
 $apkSha256 = (Get-FileHash -LiteralPath $apkPath -Algorithm SHA256).Hash.ToLowerInvariant()
