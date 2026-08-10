@@ -15,6 +15,7 @@ import {
 } from '../import/import-service.js';
 import { findExistingTrack } from '../import/track-match.js';
 import { sameVersion, versionFingerprint } from '../lib/version-identity.js';
+import { timelineFromRequestId } from './download-timeline.js';
 import type { RemoteLogger } from '../storage/remote/storage-agent-client.js';
 import {
   StorageAgentClient,
@@ -309,6 +310,11 @@ export class RemoteDownloadedFileImporter {
       );
     }
 
+    const timeline = timelineFromRequestId(
+      this.options.logger,
+      input.requestId,
+    );
+    timeline?.mark('analysis_start');
     const analysis = await analyzeAudioFile(input.filePath).catch((error) => {
       throw new RemoteDownloadedFileImportError(
         'invalid_file',
@@ -332,10 +338,13 @@ export class RemoteDownloadedFileImporter {
       }
     }
     const extension = analysis.kind;
+    timeline?.mark('analysis_end');
+    timeline?.mark('hash_start');
     const [contentHash, fileInfo] = await Promise.all([
       hashFile(input.filePath),
       stat(input.filePath),
     ]);
+    timeline?.mark('hash_end', { sizeBytes: fileInfo.size });
     if (!fileInfo.isFile() || fileInfo.size <= 0) {
       throw new RemoteDownloadedFileImportError(
         'invalid_file',
@@ -357,6 +366,7 @@ export class RemoteDownloadedFileImporter {
       contentHash,
       metadata,
     );
+    timeline?.mark('dedup_end', { matchKind: match.kind });
     if (match.kind === 'ambiguous') {
       return {
         status: 'WAITING_FOR_OWNER_MATCH',
@@ -496,6 +506,11 @@ export class RemoteDownloadedFileImporter {
     sizeBytes: number;
     requestId?: string;
   }): Promise<void> {
+    const timeline = timelineFromRequestId(
+      this.options.logger,
+      input.requestId,
+    );
+    timeline?.mark('storage_put_start', { sizeBytes: input.sizeBytes });
     let receipt: DurableObjectReceipt;
     try {
       receipt = await this.options.client.putObject(input);
@@ -506,6 +521,7 @@ export class RemoteDownloadedFileImporter {
         error,
       );
     }
+    timeline?.mark('storage_put_end', { reused: receipt.reused ?? null });
     if (
       receipt.durable !== true ||
       receipt.contentHash !== input.contentHash ||
@@ -520,8 +536,11 @@ export class RemoteDownloadedFileImporter {
   }
 
   private async publishIndex(requestId?: string): Promise<void> {
+    const timeline = timelineFromRequestId(this.options.logger, requestId);
+    timeline?.mark('index_publish_start');
     try {
       await this.indexPublisher.publish(requestId);
+      timeline?.mark('index_publish_end');
     } catch (error) {
       if (error instanceof RemoteDownloadedFileImportError) throw error;
       throw new RemoteDownloadedFileImportError(

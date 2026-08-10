@@ -40,6 +40,7 @@ import type {
   ProviderHealth,
 } from './download-provider.js';
 import { versionFingerprint } from '../lib/version-identity.js';
+import { DownloadTimeline } from './download-timeline.js';
 import { sanitizeMessage, sanitizeShortField } from './log-sanitizer.js';
 import {
   RemoteDownloadedFileImportError,
@@ -210,6 +211,8 @@ const MESSAGE_BY_STAGE: Record<DownloadStage, string> = {
  */
 export class DownloadService {
   private readonly queue: QueuedDownload[] = [];
+  /** Chronologies d'observabilité, une par job actif. Purgée à la finalisation. */
+  private readonly timelines = new Map<string, DownloadTimeline>();
   private readonly active = new Map<string, ActiveDownload>();
   private readonly workers = new Set<Promise<void>>();
   private readonly subscribers = new Map<
@@ -602,6 +605,9 @@ export class DownloadService {
    */
   private async processItem(running: ActiveDownload): Promise<void> {
     const { item } = running;
+    const timeline = new DownloadTimeline(this.options.logger, item.jobId);
+    this.timelines.set(item.jobId, timeline);
+    timeline.mark('processing_start');
     const paths =
       this.options.remoteImportService === undefined
         ? await this.localImportService.ensureUserDirectory(
@@ -757,6 +763,7 @@ export class DownloadService {
     paths: UserImportPaths | null,
     order: number,
   ): Promise<AttemptOutcome> {
+    const timeline = this.timelines.get(running.item.jobId);
     const { item } = running;
     const stagingDir = this.stagingDirFor(item.jobId, order);
     if (!isConfined(this.options.importRoot, stagingDir)) {
@@ -780,11 +787,13 @@ export class DownloadService {
         ? {}
         : { durationSeconds: candidate.durationSeconds }),
     };
+    timeline?.mark('antra_spawn_start', { attempt: order, provider: candidate.provider });
     const handle = await this.provider.start({
       jobId: item.jobId,
       url: candidate.url,
       outputDir: stagingDir,
     });
+    timeline?.mark('antra_spawn_end');
     running.handle = handle;
     // Deuxième garde : `start` est lui aussi asynchrone. Un processus démarré
     // juste après une demande d'annulation doit être arrêté tout de suite.
@@ -797,6 +806,11 @@ export class DownloadService {
     }
 
     const unsubscribe = handle.onEvent((event) => {
+      // Seules les TRANSITIONS de phase sont marquées : journaliser chaque
+      // ligne NDJSON d'Antra (une quarantaine par job) noierait le signal.
+      if (event.type === 'stage') {
+        timeline?.mark('antra_stage', { antraStage: event.stage });
+      }
       this.applyProviderEvent(item, event, track);
     });
 
@@ -817,6 +831,7 @@ export class DownloadService {
     let result: DownloadResult;
     try {
       result = await handle.completion;
+      timeline?.mark('antra_exit', { ok: result.ok });
     } finally {
       unsubscribe();
       if (running.timeoutTimer !== null) clearTimeout(running.timeoutTimer);
@@ -856,6 +871,7 @@ export class DownloadService {
       message: 'Vérification du fichier téléchargé.',
     });
 
+    timeline?.mark('detect_start');
     const detection = await detectDownloadedFiles(stagingDir, {
       allowedExtensions: this.options.allowedExtensions,
       knownPaths,
@@ -869,6 +885,10 @@ export class DownloadService {
       ...(this.options.maxStabilityChecks === undefined
         ? {}
         : { maxStabilityChecks: this.options.maxStabilityChecks }),
+    });
+    timeline?.mark('detect_end', {
+      accepted: detection.accepted.length,
+      rejected: detection.rejected.length,
     });
 
     if (detection.accepted.length === 0) {
@@ -1036,6 +1056,8 @@ export class DownloadService {
     // métadonnées choisies par le catalogue : un candidat mal résolu ne peut
     // pas se valider lui-même. Une demande par URL directe n'exprime aucune
     // intention de version — le contrôle est alors omis.
+    const timeline = this.timelines.get(item.jobId);
+    timeline?.mark('remote_import_start', { files: files.length });
     const job = this.repository.getJobForUser(item.jobId, item.userId);
     const expectedVersionFingerprint =
       job === null || job.query === null
@@ -1067,6 +1089,7 @@ export class DownloadService {
         importedTrackId ??= result.trackId;
         reused ||= result.status === 'REUSED';
 
+        timeline?.mark('remote_import_end', { status: result.status });
         // Cette suppression arrive uniquement après :
         // objet durable -> transaction SQLite -> index distant durable.
         await rm(file, { force: true });
@@ -1281,6 +1304,9 @@ export class DownloadService {
     jobId: string,
     values: Parameters<DownloadJobRepository['updateJob']>[1],
   ): void {
+    const timeline = this.timelines.get(jobId);
+    timeline?.mark('job_completed', { status: values.status ?? null });
+    this.timelines.delete(jobId);
     const row = this.update(jobId, { ...values, processId: null });
     if (row === null) return;
     if (row.status === 'completed') this.emit(jobId, { type: 'completed', job: row });

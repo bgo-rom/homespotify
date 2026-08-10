@@ -119,7 +119,11 @@ async function waitForStableFile(
   path: string,
   options: DetectionOptions,
 ): Promise<{ size: number } | null> {
-  const interval = options.stabilityIntervalMs ?? 500;
+  // 200 ms et non 500 : la détection ne démarre qu'APRÈS la sortie du
+  // processus Antra, donc plus aucun écrivain n'existe. Deux échantillons
+  // identiques restent exigés — c'est la garde qui compte, pas sa lenteur.
+  // Mesuré en production : 1 010 ms d'attente pure par job avant ce réglage.
+  const interval = options.stabilityIntervalMs ?? 200;
   const required = options.stabilityChecks ?? 2;
   const maxChecks = options.maxStabilityChecks ?? 40;
 

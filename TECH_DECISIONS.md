@@ -1147,3 +1147,29 @@ aucune intention de version — le contrôle 2 est alors omis.
 — document adressé par son SHA-256, `generatedAt` identique accepté — donc un
 réessai ne peut rien corrompre. Un échec définitif reste un échec du job : la
 piste est en base mais l'index ne la référence pas, et le message le dit.
+
+## TD-Download-Observability (2026-08-10) — Chronologie de job, et attente de stabilité ramenée à 200 ms
+
+**Constat** : le pipeline Antra n'émettait qu'un seul événement structuré
+(`DOWNLOAD_SEARCH_QUEUED`). Impossible de dire où passaient les ~17 s entre la
+demande du téléphone et la piste en bibliothèque.
+
+**Décision** : `download-timeline.ts` marque chaque transition du job
+(`DL_PHASE`, un `jobId`, une phase, deux durées). C'est de l'observabilité
+PURE : aucune décision n'en dépend, aucun secret, aucune URL, aucun chemin
+absolu. Seules les **transitions de phase** d'Antra sont marquées, pas ses
+~40 lignes NDJSON par job.
+
+**Décision** : l'attente de stabilité de fichier passe de 500 ms à **200 ms**
+par échantillon, deux échantillons identiques toujours exigés. La détection ne
+démarre qu'APRÈS la sortie du processus Antra : plus aucun écrivain n'existe,
+et la garde conserve tout son sens à 200 ms. Mesuré en production :
+1 010 ms d'attente pure par job avant, 420 ms après (5 jobs réels).
+
+**Mesures de référence** (2026-08-10, 5 jobs réels, piste déjà en
+bibliothèque donc terminés en `REUSED`, aucune écriture) : total 15,6–23,2 s.
+Répartition : Antra 8–9 s de coût FIXE (démarrage Python 0,44 s, sondes de
+disponibilité des 7 adaptateurs ~3,2 s, résolution multi-sources ~4,5 s),
+téléchargement 3,9–14,9 s, HomeSpotify ~0,75 s au total. Le coût fixe d'Antra
+est payé à chaque job parce que chaque job est un nouveau processus Python :
+`is_available()` ne met en cache qu'en mémoire de processus.
