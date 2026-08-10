@@ -103,10 +103,28 @@ void main() {
     expect(find.text('Freakin’ Out'), findsWidgets);
 
     // Sections de la refonte, alimentées par la bibliothèque locale.
+    //
+    // `skipOffstage: false` : l'Accueil Direction 33 est une page qui DÉFILE.
+    // Sous le viewport de test par défaut (800x600), seules les premières
+    // sections sont montées « onstage » ; « Récemment ajoutés » et
+    // « Recommandations » vivent sous la ligne de flottaison. Ce test vérifie
+    // que ces sections sont bien COMPOSÉES à partir des données locales, pas
+    // qu'elles tiennent dans un écran de 600 px de haut — sinon la moindre
+    // section ajoutée en tête casserait l'assertion sans qu'aucune régression
+    // n'existe.
     expect(find.byKey(const ValueKey('home-shuffle-library')), findsOneWidget);
-    expect(find.byKey(const ValueKey('home-recently-added')), findsOneWidget);
-    expect(find.byKey(const ValueKey('home-recommendations')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('home-recently-added'), skipOffstage: false),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('home-recommendations'), skipOffstage: false),
+      findsOneWidget,
+    );
     // Rien à installer : la section reste absente, pas vide.
-    expect(find.byKey(const ValueKey('home-installations')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('home-installations'), skipOffstage: false),
+      findsNothing,
+    );
   });
 }
