@@ -1228,3 +1228,47 @@ La différence entre deux positions est fausse dès qu’un utilisateur seek. La
   numéros réellement pris de part et d'autre (`grep -oE '^### L-[0-9]+'`) et
   renuméroter le contenu importé plutôt que de laisser Git arbitrer. Corriger
   aussi les renvois `[[L-nnn]]` internes au contenu déplacé.
+
+### L-132 — Renouveler un token ne doit pas reconstruire une source audio qui joue (2026-08-10)
+
+- **Contexte** : lecture de `SAFE — DMS` sur téléphone. Micro-coupures d'une à
+  deux secondes, à volume et position identiques, la lecture reprenant
+  exactement là où elle s'était arrêtée.
+- **Preuve** : les journaux `/api/tracks/153/stream` du VPS montrent le **même
+  triplet de requêtes** (GET complet, `Range: bytes=3917342-`,
+  `Range: bytes=3604165-`) répété à **809,7 s / 809,9 s / 820,3 s** d'écart.
+  Des offsets identiques au octet près ne sont pas un rebuffer : c'est un
+  rechargement complet de la source, qui re-sonde les mêmes points de seek
+  FLAC. `ACCESS_TOKEN_TTL_SECONDS=900` et un renouvellement proactif 90 s
+  avant échéance donnent exactement 810 s.
+- **Cause** : `handleAuthorizationChanged` reconstruisait les `AudioSource` à
+  chaque rotation de JWT (`pause()` + `setAudioSources()` + re-seek), parce que
+  leurs headers HTTP sont immuables.
+- **Règle** : les headers d'une source ne servent qu'aux requêtes **à venir**.
+  Une piste déjà ouverte et bufferisée n'a plus besoin du token : reconstruire
+  pendant la lecture est une coupure audio garantie et périodique. Différer la
+  reconstruction jusqu'à un instant gratuit (changement de piste, lecteur en
+  pause) ou réellement nécessaire (401 constaté). Voir [[L-133]].
+
+### L-133 — Un délai de reprise conditionné à « le réseau est up » n'est pas un backoff (2026-08-10)
+
+- **Contexte** : blocage complet du Player, `Mise en tampon…` apparaissant et
+  disparaissant plusieurs fois par seconde, lecture définitivement figée.
+- **Cause** : `_enterNetworkRecovery` planifiait la reprise avec
+  `immediate: _networkAvailable`. Or quand c'est la **source** qui échoue et
+  non l'interface réseau, `connectivity_plus` répond « up » : le délai
+  retombait donc à zéro **à chaque échec**. Pire, une reprise dont le
+  `setAudioSources` réussissait remettait le compteur d'essais à zéro, même si
+  la lecture mourait dans la milliseconde suivante. Aucune borne n'était donc
+  jamais atteinte.
+- **Règle** : un backoff ne doit dépendre que du **nombre d'échecs**, jamais
+  d'un signal externe qui peut rester vert pendant la panne. Un compteur
+  d'essais ne se réarme qu'après un **succès stable et mesuré** (ici 5 s de
+  lecture), pas après une simple étape technique réussie. Toute boucle de
+  reprise doit avoir un plafond et un état terminal explicite : le pire état
+  acceptable est une erreur claire, jamais une oscillation infinie.
+- **Corollaire d'observabilité** : `AudioDiagnostics` était compilé hors des
+  builds release (`kDebugMode || dart-define` absent du script de publication),
+  donc l'incident n'a laissé **aucune trace côté application**. Un diagnostic
+  borné et anonymisé doit rester actif en production, sinon il n'existe pas au
+  moment où on en a besoin.

@@ -54,9 +54,18 @@ void main() {
       ),
   ];
 
-  Future<void> settleUntil(bool Function() condition) async {
-    for (var turn = 0; turn < 400 && !condition(); turn++) {
-      await Future<void>.delayed(Duration.zero);
+  /// Attend qu'une condition devienne vraie en laissant tourner la boucle
+  /// d'événements. Le délai d'une milliseconde (et non `Duration.zero`) est
+  /// nécessaire : la reprise réseau est désormais planifiée par de vrais
+  /// `Timer` à backoff borné, qu'une simple pompe de microtâches ne
+  /// déclencherait jamais.
+  Future<void> settleUntil(
+    bool Function() condition, {
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    while (!condition() && stopwatch.elapsed < timeout) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
     }
   }
 
@@ -653,20 +662,139 @@ void main() {
       rig.player.advanceToIndex(2);
       await rig.handler.seek(const Duration(seconds: 42));
 
-      // Le timer auth renouvelle le JWT 90 secondes avant son expiration.
-      // Le lecteur doit reconstruire immédiatement les AudioSource dont les
-      // headers sont immuables, sans attendre que Media3 rencontre un 401.
+      // Le timer auth renouvelle le JWT 90 secondes avant son expiration —
+      // soit toutes les 810 s avec un access token de 900 s. Reconstruire les
+      // AudioSource à cet instant coupait le son en plein morceau (symptôme
+      // réel du 2026-08-10). La rotation ne doit donc RIEN interrompre : la
+      // piste en cours est déjà ouverte, ses headers ne resserviront pas.
+      final pausesBeforeRotation = rig.player.pauseCalls;
       rig.rotateAuthorization();
       expect(
         await rig.handler.handleAuthorizationChanged(reason: 'test-refresh'),
-        isTrue,
+        isFalse,
+        reason: 'aucune reconstruction pendant une lecture saine',
       );
 
       expect(rig.refreshLog, isEmpty);
-      expect(rig.player.setAudioSourcesCalls, 2);
-      expect(rig.player.lastInitialIndex, 2);
-      expect(rig.player.lastInitialPosition, const Duration(seconds: 42));
+      expect(
+        rig.player.setAudioSourcesCalls,
+        1,
+        reason: 'la source ne doit pas être reconstruite',
+      );
+      expect(
+        rig.player.pauseCalls,
+        pausesBeforeRotation,
+        reason: 'aucune coupure audio',
+      );
+      expect(
+        rig.handler.playbackState.value.processingState,
+        isNot(AudioProcessingState.error),
+      );
+
+      // Au changement de piste, la reconstruction devient gratuite : c'est là
+      // que le nouveau Bearer est réellement propagé, avant tout 401.
+      rig.player.advanceToIndex(3);
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
       expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-1');
+    },
+  );
+
+  test(
+    'une source qui meurt à chaque reprise finit en erreur, sans boucle infinie',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(1), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+
+      // Réseau « disponible » du point de vue système : c'est exactement le
+      // cas où l'ancien code repassait un délai nul à chaque échec, et où une
+      // reprise « réussie » remettait le compteur d'essais à zéro. La lecture
+      // oscillait alors buffering ↔ ready indéfiniment (symptôme A).
+      await rig.handler.handleConnectivityChanged(true);
+      rig.player.failEveryPlayWith = sourceError(
+        'SocketException: connection reset by peer',
+      );
+      rig.player.emitError(rig.player.failEveryPlayWith!);
+
+      await settleUntil(
+        () =>
+            rig.handler.playbackState.value.processingState ==
+            AudioProcessingState.error,
+        timeout: const Duration(seconds: 20),
+      );
+
+      // État final déterministe, atteint en un nombre borné de tentatives.
+      expect(
+        rig.handler.playbackState.value.processingState,
+        AudioProcessingState.error,
+        reason: 'la reprise doit converger vers une erreur explicite',
+      );
+      expect(rig.handler.playbackState.value.errorMessage, isNotNull);
+      expect(
+        rig.player.setAudioSourcesCalls,
+        lessThanOrEqualTo(8),
+        reason: 'rechargements bornés (1 initial + 6 essais + marge)',
+      );
+
+      // Et la boucle est bien arrêtée : plus rien ne bouge après coup.
+      final loadsAtFailure = rig.player.setAudioSourcesCalls;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(rig.player.setAudioSourcesCalls, loadsAtFailure);
+    },
+  );
+
+  test(
+    'après une reprise épuisée, Lecture repart à la position mémorisée',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(1), initialIndex: 0);
+      await settleUntil(() => rig.player.playCalls == 1);
+      await rig.handler.seek(const Duration(seconds: 96));
+
+      await rig.handler.handleConnectivityChanged(true);
+      rig.player.failEveryPlayWith = sourceError(
+        'SocketException: connection reset by peer',
+      );
+      rig.player.emitError(rig.player.failEveryPlayWith!);
+      await settleUntil(
+        () =>
+            rig.handler.playbackState.value.processingState ==
+            AudioProcessingState.error,
+        timeout: const Duration(seconds: 20),
+      );
+
+      // La source redevient saine, l'utilisateur appuie sur Lecture.
+      rig.player.failEveryPlayWith = null;
+      final loadsBefore = rig.player.setAudioSourcesCalls;
+      await rig.handler.play();
+      await settleUntil(
+        () => rig.player.setAudioSourcesCalls > loadsBefore,
+      );
+
+      expect(
+        rig.player.lastInitialPosition,
+        const Duration(seconds: 96),
+        reason: 'reprise à la position mémorisée, jamais depuis le début',
+      );
+    },
+  );
+
+  test(
+    'une interruption récupérable reprend à la position courante',
+    () async {
+      final rig = makeRig();
+      await rig.handler.setQueueAndPlay(items: makeQueue(4), initialIndex: 1);
+      await settleUntil(() => rig.player.playCalls == 1);
+      await rig.handler.seek(const Duration(seconds: 73));
+
+      await rig.handler.handleConnectivityChanged(true);
+      rig.player.emitError(sourceError('SocketException: connection reset'));
+
+      // Une seule coupure : la reprise doit repartir du même index et de la
+      // même position, jamais du début de la piste.
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+      expect(rig.player.lastInitialIndex, 1);
+      expect(rig.player.lastInitialPosition, const Duration(seconds: 73));
       await settleUntil(() => rig.player.playCalls >= 2);
       expect(
         rig.handler.playbackState.value.processingState,
@@ -682,20 +810,30 @@ void main() {
       await rig.handler.setQueueAndPlay(items: makeQueue(20), initialIndex: 0);
       await settleUntil(() => rig.player.playCalls == 1);
 
+      // Une session de plusieurs heures enchaîne les rotations (une toutes
+      // les 810 s). Aucune ne doit interrompre la lecture en cours, et la
+      // dernière doit rester celle qui sera propagée le moment venu.
+      final pausesBeforeRotations = rig.player.pauseCalls;
       for (var generation = 1; generation <= 5; generation++) {
         rig.rotateAuthorization();
         expect(
           await rig.handler.handleAuthorizationChanged(
             reason: 'test-refresh-$generation',
           ),
-          isTrue,
+          isFalse,
         );
-        expect(rig.player.setAudioSourcesCalls, generation + 1);
-        expect(
-          rig.player.lastHeaders?['Authorization'],
-          'Bearer renewed-$generation',
-        );
+        expect(rig.player.setAudioSourcesCalls, 1);
       }
+      expect(
+        rig.player.pauseCalls,
+        pausesBeforeRotations,
+        reason: '5 rotations, zéro coupure audio',
+      );
+
+      // Le token le plus récent est bien celui appliqué à la piste suivante.
+      rig.player.advanceToIndex(1);
+      await settleUntil(() => rig.player.setAudioSourcesCalls == 2);
+      expect(rig.player.lastHeaders?['Authorization'], 'Bearer renewed-5');
 
       expect(rig.refreshLog, isEmpty);
       expect(
@@ -951,12 +1089,14 @@ class _LongSessionFakePlayer implements AudioPlayer {
 
   int setAudioSourcesCalls = 0;
   int playCalls = 0;
+  int pauseCalls = 0;
   int? lastInitialIndex;
   Duration? lastInitialPosition;
   Uri? lastUri;
   Map<String, String>? lastHeaders;
   Duration? loadedDuration = const Duration(minutes: 3);
   bool suppressReadyOnPlay = false;
+  PlayerException? failEveryPlayWith;
   Completer<void>? nextSetAudioSourcesBlocker;
   List<int> shuffleOrder = const <int>[];
 
@@ -1130,6 +1270,7 @@ class _LongSessionFakePlayer implements AudioPlayer {
         }
         return completeLoad();
       case #pause:
+        pauseCalls += 1;
         _playing = false;
         _states.add(PlayerState(false, _processingState));
         return Future<void>.value();
@@ -1145,6 +1286,12 @@ class _LongSessionFakePlayer implements AudioPlayer {
           _processingState = ProcessingState.ready;
         }
         _broadcast();
+        // Source qui se recharge sans jamais tenir : chaque démarrage meurt
+        // aussitôt. C'est le scénario qui bouclait à l'infini.
+        final failure = failEveryPlayWith;
+        if (failure != null) {
+          scheduleMicrotask(() => emitError(failure));
+        }
         return Future<void>.value();
       case #seek:
         _position = invocation.positionalArguments.first as Duration;

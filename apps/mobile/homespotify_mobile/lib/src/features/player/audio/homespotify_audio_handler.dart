@@ -518,6 +518,9 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   String? _loadedAuthorizationHeader;
   Future<bool>? _trackErrorRecoveryInFlight;
   bool _authorizationFailureHandling = false;
+  /// Une rotation de JWT attend un moment gratuit pour être répercutée dans
+  /// les sources natives (voir [handleAuthorizationChanged]).
+  bool _authorizationRebuildPending = false;
   Future<void>? _autoAdvanceInFlight;
   Timer? _endOfTrackWatchdog;
   int? _endOfTrackWatchdogIndex;
@@ -549,6 +552,8 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   Stopwatch? _tapToPlaybackStopwatch;
   Stopwatch? _bufferingStopwatch;
   int _bufferingCount = 0;
+  final List<DateTime> _recentBufferingStarts = <DateTime>[];
+  DateTime? _lastOscillationReportAt;
   int _totalBufferingMs = 0;
   int _longestBufferingMs = 0;
   int? _playbackSessionUserId;
@@ -560,18 +565,53 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   bool _networkAvailable = true;
   bool _networkRecoveryPending = false;
   int _networkRecoveryAttempt = 0;
+  DateTime? _lastNetworkRecoveryAt;
   int? _networkRecoveryIndex;
   Duration _networkRecoveryPosition = Duration.zero;
   Timer? _networkRecoveryTimer;
   Future<bool>? _networkRecoveryInFlight;
-  Future<bool>? _sourceFallbackInFlight;
+  // Une bascule vers le local et une bascule vers le réseau sont deux
+  // opérations distinctes : les dédupliquer ensemble faisait qu'une bascule
+  // locale en vol « satisfaisait » une demande de retour au réseau, dont
+  // l'appelant concluait à tort à une reprise réussie (source jamais
+  // rebasculée, lecture définitivement figée).
+  Future<bool>? _localFallbackInFlight;
+  Future<bool>? _networkFallbackInFlight;
   final ValueNotifier<SleepTimerState> _sleepTimerState =
       ValueNotifier<SleepTimerState>(const SleepTimerState.off());
   Timer? _sleepTimer;
   int? _sleepTimerTrackIndex;
 
   static const Duration _positionPersistenceInterval = Duration(seconds: 5);
-  static const Duration _networkRecoveryMaximumDelay = Duration(seconds: 30);
+
+  /// Backoff borné des reprises réseau. Court au début (une coupure de
+  /// quelques centaines de ms doit être invisible), puis assez espacé pour ne
+  /// pas marteler un serveur réellement tombé. Jamais zéro : un délai nul
+  /// transforme le moindre échec répété en boucle serrée.
+  static const List<Duration> _networkRecoveryBackoff = <Duration>[
+    Duration(milliseconds: 250),
+    Duration(milliseconds: 750),
+    Duration(milliseconds: 1500),
+    Duration(seconds: 4),
+    Duration(seconds: 10),
+    Duration(seconds: 30),
+  ];
+  /// Doit rester égal à `_networkRecoveryBackoff.length` (non calculable en
+  /// contexte constant) — un test verrouille l'égalité.
+  static const int _maxNetworkRecoveryAttempts = 6;
+
+  /// Durée de lecture stable au-delà de laquelle une reprise est considérée
+  /// réellement réussie : seul ce délai remet le compteur d'essais à zéro.
+  static const Duration _networkRecoveryStabilityDelay = Duration(seconds: 5);
+
+  /// Détection d'oscillation `buffering ↔ ready` (observation seule).
+  static const Duration _bufferingOscillationWindow = Duration(
+    milliseconds: 800,
+  );
+  static const int _bufferingOscillationThreshold = 4;
+  static const Duration _bufferingOscillationReportCooldown = Duration(
+    seconds: 10,
+  );
   static const Duration _endOfTrackPositionTolerance = Duration(
     milliseconds: 250,
   );
@@ -1317,7 +1357,16 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         0,
         _queueItems.length - 1,
       );
-      final recovered = await _resumeAtIndexAfterError(_loadRequest, index);
+      // Une reprise automatique épuisée a mémorisé où la lecture s'est
+      // arrêtée : un appui sur Lecture doit repartir de là, pas du début.
+      final preserved = _networkRecoveryIndex == index
+          ? _networkRecoveryPosition
+          : Duration.zero;
+      final recovered = await _resumeAtIndexAfterError(
+        _loadRequest,
+        index,
+        initialPosition: preserved,
+      );
       if (recovered) return;
       _playbackRequested = false;
       throw const AudioPlaybackException('Source audio inaccessible.');
@@ -1343,6 +1392,11 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     );
     await _player.pause();
     _schedulePlaybackPersistence(immediate: true);
+    // Lecteur à l'arrêt : reconstruire une rotation différée ne coupe rien.
+    if (_authorizationRebuildPending &&
+        _authorizationHasRotatedSinceSourceCreation()) {
+      unawaited(handleAuthorizationChanged(reason: 'paused', force: true));
+    }
   }
 
   @override
@@ -2036,13 +2090,25 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  /// Répercute immédiatement une rotation de JWT dans les sources Media3.
+  /// Répercute une rotation de JWT dans les sources Media3.
   ///
   /// Les headers HTTP d'une [AudioSource] sont immuables. Renouveler le token
-  /// dans [AuthSessionManager] ne suffit donc pas : sans cette reconstruction,
-  /// les lectures Range suivantes repartent avec l'ancien Bearer jusqu'au 401.
+  /// dans [AuthSessionManager] ne suffit donc pas : sans reconstruction, les
+  /// lectures Range suivantes repartent avec l'ancien Bearer jusqu'au 401.
+  ///
+  /// MAIS reconstruire pendant une lecture saine coupe le son (pause +
+  /// `setAudioSources` + re-seek ≈ 1–2 s). Avec un access token de 900 s
+  /// renouvelé 90 s avant l'échéance, cela produisait une micro-coupure
+  /// **toutes les 810 s**, en plein milieu d'un morceau (L-132).
+  ///
+  /// Or les headers ne comptent que pour les requêtes **à venir** : la piste
+  /// en cours est déjà ouverte et bufferisée, elle n'a plus besoin du token.
+  /// La reconstruction est donc différée jusqu'au prochain moment où elle est
+  /// gratuite (changement de piste, lecteur à l'arrêt) ou réellement
+  /// nécessaire (401 constaté). [force] est réservé à ces moments-là.
   Future<bool> handleAuthorizationChanged({
     String reason = 'session-change',
+    bool force = false,
   }) async {
     final authorization = _currentAuthorizationHeaders?.call()['Authorization'];
     final hasUsableAuthorization =
@@ -2068,6 +2134,19 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         _activeQueueIndex == null) {
       return false;
     }
+    // Lecture en cours et reconstruction non imposée : on diffère. Le drapeau
+    // n'est qu'informatif — `_authorizationHasRotatedSinceSourceCreation()`
+    // reste la source de vérité et rearmera la reconstruction au bon moment.
+    if (!force && _player.playing) {
+      _authorizationRebuildPending = true;
+      AudioDiagnostics.instance.log('AUDIO_AUTHORIZATION_REBUILD_DEFERRED', {
+        ..._queueDiagnosticFields(),
+        'reason': reason,
+        'positionMs': _player.position.inMilliseconds,
+      });
+      return false;
+    }
+    _authorizationRebuildPending = false;
     final request = _loadRequest;
     final index = _activeQueueIndex!;
     final position = _player.position;
@@ -2156,26 +2235,66 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     _scheduleNetworkRecovery(immediate: _networkAvailable);
   }
 
+  /// Planifie la prochaine tentative de reprise, **toujours avec un délai non
+  /// nul et un nombre d'essais borné**.
+  ///
+  /// L'ancienne version passait `immediate: _networkAvailable` : dès que
+  /// `connectivity_plus` voyait une interface up — ce qui est le cas quand
+  /// c'est la *source* qui échoue, pas le réseau — le délai retombait à zéro à
+  /// chaque échec, et une reprise « réussie » remettait le compteur à zéro.
+  /// Une source qui repart puis meurt aussitôt bouclait donc indéfiniment en
+  /// `buffering ↔ ready`, plusieurs fois par seconde, sans jamais converger
+  /// (L-133). Le backoff est désormais inconditionnel et le nombre d'essais
+  /// est plafonné : l'état final est toujours déterministe.
   void _scheduleNetworkRecovery({bool immediate = false}) {
     if (!_networkRecoveryPending || !_playbackRequested) return;
     _networkRecoveryTimer?.cancel();
-    final exponent = _networkRecoveryAttempt.clamp(0, 4).toInt();
-    final exponentialSeconds = 2 << exponent;
+    if (_networkRecoveryAttempt >= _maxNetworkRecoveryAttempts) {
+      _failNetworkRecovery();
+      return;
+    }
     final delay = immediate
-        ? Duration.zero
-        : Duration(
-            seconds: exponentialSeconds
-                .clamp(2, _networkRecoveryMaximumDelay.inSeconds)
-                .toInt(),
-          );
+        ? _networkRecoveryBackoff.first
+        : _networkRecoveryBackoff[_networkRecoveryAttempt.clamp(
+            0,
+            _networkRecoveryBackoff.length - 1,
+          )];
     AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_SCHEDULED', {
       ..._queueDiagnosticFields(),
       'attempt': _networkRecoveryAttempt + 1,
+      'maxAttempts': _maxNetworkRecoveryAttempts,
       'delayMs': delay.inMilliseconds,
     });
     _networkRecoveryTimer = Timer(
       delay,
       () => unawaited(_attemptNetworkRecovery()),
+    );
+  }
+
+  /// Sortie déterministe quand la reprise automatique a épuisé ses essais :
+  /// la lecture s'arrête sur une erreur explicite plutôt que d'osciller.
+  void _failNetworkRecovery() {
+    _networkRecoveryTimer?.cancel();
+    _networkRecoveryPending = false;
+    _networkRecoveryAttempt = 0;
+    _sourceReady = false;
+    _playbackRequested = false;
+    AudioDiagnostics.instance.log('AUDIO_NETWORK_RECOVERY_EXHAUSTED', {
+      ..._queueDiagnosticFields(),
+      'attempts': _maxNetworkRecoveryAttempts,
+      'positionMs': _networkRecoveryPosition.inMilliseconds,
+    });
+    playbackState.add(
+      playbackState.value.copyWith(
+        controls: const <MediaControl>[MediaControl.play, MediaControl.stop],
+        processingState: AudioProcessingState.error,
+        playing: false,
+        updatePosition: _networkRecoveryPosition,
+        queueIndex: _networkRecoveryIndex ?? _activeQueueIndex,
+        errorMessage:
+            'Lecture interrompue : source injoignable. Appuyez sur Lecture '
+            'pour réessayer.',
+      ),
     );
   }
 
@@ -2223,7 +2342,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       _currentQueueIndex = _player.currentIndex ?? index;
       _publishedMediaKey = null;
       _networkRecoveryPending = false;
-      _networkRecoveryAttempt = 0;
+      // Le compteur d'essais n'est PAS remis à zéro ici : recharger la source
+      // n'est pas jouer. Une source qui se recharge puis meurt aussitôt doit
+      // continuer à consommer son budget d'essais, sinon le plafond n'est
+      // jamais atteint et la boucle redevient infinie. Le compteur ne repart
+      // qu'après une lecture réellement stable (_broadcastPlaybackState).
+      _lastNetworkRecoveryAt = _clock();
       _publishQueue();
       _publishCurrentMediaItem(includeArtwork: true);
       _broadcastPlaybackState(_player.playbackEvent);
@@ -2298,9 +2422,12 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     required bool preferLocal,
     required String reason,
   }) {
-    final active = _sourceFallbackInFlight;
+    final active = preferLocal
+        ? _localFallbackInFlight
+        : _networkFallbackInFlight;
     if (active != null) return active;
-    final operation =
+    late final Future<bool> operation;
+    operation =
         _performQueueSourceSwitch(
           request: request,
           targetIndex: targetIndex,
@@ -2308,9 +2435,19 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
           preferLocal: preferLocal,
           reason: reason,
         ).whenComplete(() {
-          _sourceFallbackInFlight = null;
+          if (preferLocal) {
+            if (identical(_localFallbackInFlight, operation)) {
+              _localFallbackInFlight = null;
+            }
+          } else if (identical(_networkFallbackInFlight, operation)) {
+            _networkFallbackInFlight = null;
+          }
         });
-    _sourceFallbackInFlight = operation;
+    if (preferLocal) {
+      _localFallbackInFlight = operation;
+    } else {
+      _networkFallbackInFlight = operation;
+    }
     return operation;
   }
 
@@ -2584,7 +2721,11 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
   /// Après une erreur native, just_audio repasse en idle : recharger les
   /// sources (mêmes URI, headers d'autorisation courants si disponibles) puis
   /// reprendre sur [index]. Aucune donnée audio n'est modifiée.
-  Future<bool> _resumeAtIndexAfterError(int request, int index) async {
+  Future<bool> _resumeAtIndexAfterError(
+    int request,
+    int index, {
+    Duration initialPosition = Duration.zero,
+  }) async {
     try {
       final headers = _currentAuthorizationHeaders?.call();
       final authorization = headers?['Authorization'];
@@ -2601,7 +2742,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       await _player.setAudioSources(
         _createAudioSources(reason: 'track-error-recovery'),
         initialIndex: index.clamp(0, _queueItems.length - 1),
-        initialPosition: Duration.zero,
+        initialPosition: initialPosition,
         preload: true,
       );
       if (request != _loadRequest) return false;
@@ -2844,7 +2985,10 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
       }
     }
     if (_authorizationHasRotatedSinceSourceCreation()) {
-      unawaited(handleAuthorizationChanged(reason: 'track-change'));
+      // Frontière de piste : la reconstruction repart de la position courante
+      // (proche de zéro sur la nouvelle piste), donc sans coupure perceptible.
+      // C'est ici qu'on rattrape les rotations différées pendant la lecture.
+      unawaited(handleAuthorizationChanged(reason: 'track-change', force: true));
     }
   }
 
@@ -2900,6 +3044,16 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
           (lastSkip == null ||
               _clock().difference(lastSkip) >= _errorSkipCounterResetDelay)) {
         _consecutiveErrorSkips = 0;
+      }
+      // Même politique pour les reprises réseau : le budget d'essais ne se
+      // réarme qu'après une lecture stable, jamais sur un simple rechargement.
+      final lastRecovery = _lastNetworkRecoveryAt;
+      if (_networkRecoveryAttempt > 0 &&
+          lastRecovery != null &&
+          _clock().difference(lastRecovery) >=
+              _networkRecoveryStabilityDelay) {
+        _networkRecoveryAttempt = 0;
+        _lastNetworkRecoveryAt = null;
       }
       final index = _activeQueueIndex;
       if (index != null && index != _lastStartedIndex) {
@@ -3209,6 +3363,7 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
         ..._queueDiagnosticFields(),
         'bufferingCount': _bufferingCount,
       });
+      _detectBufferingOscillation();
     } else if (_bufferingStopwatch != null) {
       final durationMs = _bufferingStopwatch!.elapsedMilliseconds;
       _bufferingStopwatch = null;
@@ -3224,6 +3379,35 @@ class HomeSpotifyAudioHandler extends BaseAudioHandler with SeekHandler {
     if (state == ProcessingState.completed) {
       _handleCompletedState(reason: 'native-completed');
     }
+  }
+
+  /// Signale une oscillation `buffering ↔ ready` anormale : plusieurs entrées
+  /// en tampon dans une fenêtre de quelques centaines de millisecondes. Un
+  /// rebuffer réseau normal est isolé ; une boucle de reprise, elle, flappe.
+  /// Purement observationnel — n'altère jamais l'état du lecteur.
+  void _detectBufferingOscillation() {
+    final now = _clock();
+    _recentBufferingStarts.add(now);
+    _recentBufferingStarts.removeWhere(
+      (at) => now.difference(at) > _bufferingOscillationWindow,
+    );
+    if (_recentBufferingStarts.length < _bufferingOscillationThreshold) return;
+    final since = _lastOscillationReportAt;
+    if (since != null &&
+        now.difference(since) < _bufferingOscillationReportCooldown) {
+      return;
+    }
+    _lastOscillationReportAt = now;
+    AudioDiagnostics.instance.log('AUDIO_BUFFERING_OSCILLATION_DETECTED', {
+      ..._queueDiagnosticFields(),
+      'transitions': _recentBufferingStarts.length,
+      'windowMs': _bufferingOscillationWindow.inMilliseconds,
+      'positionMs': _player.position.inMilliseconds,
+      'bufferedPositionMs': _player.bufferedPosition.inMilliseconds,
+      'networkAvailable': _networkAvailable,
+      'networkRecoveryPending': _networkRecoveryPending,
+      'networkRecoveryAttempt': _networkRecoveryAttempt,
+    });
   }
 
   void _observeEndOfTrack(Duration position) {

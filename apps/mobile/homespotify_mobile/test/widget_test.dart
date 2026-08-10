@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -122,6 +124,74 @@ void main() {
     expect(find.text('80 %'), findsOneWidget);
   });
 
+  testWidgets(
+    'mise en tampon transitoire : aucun clignotement de l’indicateur',
+    (tester) async {
+      final states = StreamController<PlaybackState>.broadcast();
+      addTearDown(states.close);
+      await usePhoneSurface(tester);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            favoritesApiProvider.overrideWithValue(FakeFavoritesRepository()),
+            remoteTrackMembershipProvider.overrideWith(
+              (ref, trackId) async => true,
+            ),
+            mediaItemProvider.overrideWith(
+              (ref) => Stream.value(
+                const MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+              ),
+            ),
+            playbackStateProvider.overrideWith((ref) => states.stream),
+            queueProvider.overrideWith(
+              (ref) => Stream.value(const <MediaItem>[
+                MediaItem(id: '1', title: 'Genesis', artist: 'Justice'),
+              ]),
+            ),
+            positionDataProvider.overrideWith(
+              (ref) => Stream.value(PlayerPositionData.zero),
+            ),
+            volumeProvider.overrideWith((ref) => Stream.value(1.0)),
+          ],
+          child: const MaterialApp(home: PlayerScreen()),
+        ),
+      );
+
+      states.add(
+        PlaybackState(
+          playing: true,
+          processingState: AudioProcessingState.ready,
+        ),
+      );
+      await tester.pump();
+
+      // Rebuffer réseau bref (150 ms) : sous le seuil d'affichage.
+      states.add(
+        PlaybackState(
+          playing: true,
+          processingState: AudioProcessingState.buffering,
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 150));
+      states.add(
+        PlaybackState(
+          playing: true,
+          processingState: AudioProcessingState.ready,
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(
+        find.text('Mise en tampon audio...'),
+        findsNothing,
+        reason: 'un rebuffer de 150 ms ne doit rien afficher',
+      );
+      expect(find.text('Preparation de la lecture...'), findsNothing);
+    },
+  );
+
   testWidgets('buffering : affiche preparation et bloque le play initial', (
     tester,
   ) async {
@@ -165,6 +235,17 @@ void main() {
 
     final preparationLabel = find.text('Preparation de la lecture...');
     final bufferingLabel = find.text('Mise en tampon audio...');
+
+    // L'indicateur est volontairement retardé : une mise en tampon de
+    // quelques dizaines de ms ne doit pas faire clignoter le Player.
+    expect(
+      preparationLabel.evaluate().isEmpty && bufferingLabel.evaluate().isEmpty,
+      isTrue,
+      reason: 'aucun indicateur avant le délai anti-clignotement',
+    );
+
+    // Mise en tampon durable : le message doit bien finir par apparaître.
+    await tester.pump(const Duration(milliseconds: 500));
     expect(
       preparationLabel.evaluate().isNotEmpty ||
           bufferingLabel.evaluate().isNotEmpty,

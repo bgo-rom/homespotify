@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
@@ -224,10 +225,10 @@ class PlayerScreen extends ConsumerWidget {
                         children: [
                           const SizedBox(height: 12),
                           header,
-                          if (isBusy) ...[
-                            const SizedBox(height: 8),
-                            _PlaybackStatus(processingState: processing),
-                          ],
+                          _DebouncedPlaybackStatus(
+                            isBusy: isBusy,
+                            processingState: processing,
+                          ),
                           const SizedBox(height: 20),
                           controlsBlock,
                         ],
@@ -239,10 +240,10 @@ class PlayerScreen extends ConsumerWidget {
                     children: [
                       const SizedBox(height: 12),
                       header,
-                      if (isBusy) ...[
-                        const SizedBox(height: 8),
-                        _PlaybackStatus(processingState: processing),
-                      ],
+                      _DebouncedPlaybackStatus(
+                        isBusy: isBusy,
+                        processingState: processing,
+                      ),
                       // La pochette absorbe la hauteur restante et se réduit
                       // d'elle-même : les contrôles gardent toujours leur place.
                       Expanded(
@@ -699,6 +700,78 @@ class _ErrorBanner extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Affiche l'indicateur de tampon **uniquement** si l'état occupé persiste.
+///
+/// Une transition `ready → buffering → ready` de quelques dizaines de
+/// millisecondes est normale et ne doit pas faire clignoter le Player. Le
+/// délai ne porte que sur l'AFFICHAGE : `processingState` n'est ni retardé,
+/// ni filtré, ni réécrit — l'état réel du lecteur reste intact pour la
+/// notification, les diagnostics et le reste de l'application.
+///
+/// La disparition, elle, est immédiate : dès que la lecture repart, plus
+/// aucune raison de montrer un indicateur.
+class _DebouncedPlaybackStatus extends StatefulWidget {
+  const _DebouncedPlaybackStatus({
+    required this.isBusy,
+    required this.processingState,
+  });
+
+  final bool isBusy;
+  final AudioProcessingState? processingState;
+
+  static const Duration showDelay = Duration(milliseconds: 400);
+
+  @override
+  State<_DebouncedPlaybackStatus> createState() =>
+      _DebouncedPlaybackStatusState();
+}
+
+class _DebouncedPlaybackStatusState extends State<_DebouncedPlaybackStatus> {
+  Timer? _showTimer;
+  bool _visible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant _DebouncedPlaybackStatus oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isBusy != widget.isBusy) _sync();
+  }
+
+  void _sync() {
+    _showTimer?.cancel();
+    _showTimer = null;
+    if (!widget.isBusy) {
+      if (_visible) setState(() => _visible = false);
+      return;
+    }
+    if (_visible) return;
+    _showTimer = Timer(_DebouncedPlaybackStatus.showDelay, () {
+      if (!mounted || !widget.isBusy) return;
+      setState(() => _visible = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _showTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_visible) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: _PlaybackStatus(processingState: widget.processingState),
     );
   }
 }

@@ -223,10 +223,16 @@ Push-Location $FlutterRoot
 try {
     Step 'flutter build apk --release'
     Invoke-Checked 'flutter build apk' {
+        # HOMESPOTIFY_AUDIO_DIAGNOSTICS : sans ce define, `AudioDiagnostics`
+        # est compilé hors des builds release et un incident de lecture en
+        # production ne laisse AUCUNE trace côté application (constaté sur le
+        # blocage du 2026-08-10). Le journal est borné, tournant, et purge
+        # tokens/URL/chemins avant écriture : il reste local à l'appareil.
         flutter build apk --release `
             --build-name=$VersionName `
             --build-number=$VersionCode `
-            --dart-define=HOMESPOTIFY_API_BASE_URL=$ApiBaseUrl
+            --dart-define=HOMESPOTIFY_API_BASE_URL=$ApiBaseUrl `
+            --dart-define=HOMESPOTIFY_AUDIO_DIAGNOSTICS=true
     }
 }
 finally { Pop-Location }
