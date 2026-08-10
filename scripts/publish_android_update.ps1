@@ -33,6 +33,11 @@ param(
     [int]      $MinSupportedVersionCode = 1,
     [switch]   $BuildOnly,
     [switch]   $AllowDirty,
+    # ÉCHAPPATOIRE EXPLICITE, jamais un défaut. Réservée au cas où la suite
+    # Flutter porte des échecs PRÉ-EXISTANTS, étrangers au changement publié
+    # (par exemple des goldens à régénérer dans un autre chantier). L'emploi de
+    # cette option est journalisé et remonté dans le rapport final.
+    [switch]   $SkipTests,
     [string]   $RepoRoot,
     [string]   $VpsHost = 'debian@135.125.101.79',
     [string]   $PublicBaseUrl = 'https://music.romainbegot.fr',
@@ -140,8 +145,13 @@ try {
         Fail 'flutter analyze a signalé des avertissements ou des erreurs'
     }
 
-    Step 'flutter test'
-    Invoke-Checked 'flutter test' { flutter test }
+    if ($SkipTests) {
+        Write-Warning 'flutter test IGNORÉ (-SkipTests) — à justifier dans le rapport de publication.'
+    }
+    else {
+        Step 'flutter test'
+        Invoke-Checked 'flutter test' { flutter test }
+    }
 }
 finally { Pop-Location }
 
@@ -333,6 +343,7 @@ Step 'PUBLIÉ.'
     sha256       = $apkSha256
     certSha256   = $apkCert
     releaseNotes = ($notes -join ' | ')
+    testsSkipped = [bool] $SkipTests
     downloadUrl  = "$PublicBaseUrl$($check.latest.downloadPath)"
     sourceCommit = $gitCommit
     apkPath      = $apkPath
