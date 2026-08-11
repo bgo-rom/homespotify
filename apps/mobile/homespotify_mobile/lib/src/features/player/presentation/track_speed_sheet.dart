@@ -7,14 +7,13 @@ import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../discovery/presentation/discovery_preview_controller.dart';
 import '../audio/homespotify_audio_handler.dart';
 import '../audio/time_stretch_engine.dart';
 import '../data/playback_settings_api.dart';
 
-const _background = Color(0xFF15151B);
-const _surface = Color(0xFF24242D);
-const _accent = Color(0xFF1DB954);
 const _presets = <double>[0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3];
 const _defaultAnalysisPollInterval = Duration(seconds: 2);
 const _defaultMaxAnalysisPolls = 105;
@@ -75,9 +74,9 @@ Future<void> showTrackSpeedSheet(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
-      backgroundColor: _background,
+      backgroundColor: context.colors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.pill)),
       ),
       builder: (_) => TrackSpeedSheet(session: session),
     );
@@ -437,6 +436,7 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final analysis = _analysis;
     final originalBpm = analysis?.bpm;
     final adjustedBpm = originalBpm == null
@@ -451,7 +451,7 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
             width: 42,
             height: 5,
             decoration: BoxDecoration(
-              color: Colors.white24,
+              color: colors.surfaceSunken,
               borderRadius: BorderRadius.circular(3),
             ),
           ),
@@ -459,24 +459,25 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
             padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
             child: Row(
               children: [
-                const Icon(Icons.speed_rounded, color: _accent),
+                Icon(Icons.speed_rounded, color: colors.accent),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
+                      Text(
                         'Vitesse du titre',
                         style: TextStyle(
+                          color: colors.textPrimary,
                           fontSize: 21,
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       Text(
                         '${widget.session.target.title} · ${widget.session.target.artist}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white54),
+                        style: TextStyle(color: colors.textTertiary),
                       ),
                     ],
                   ),
@@ -484,14 +485,16 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
                 IconButton(
                   tooltip: 'Fermer',
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close_rounded),
+                  icon: Icon(Icons.close_rounded, color: colors.textSecondary),
                 ),
               ],
             ),
           ),
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator(color: _accent))
+                ? Center(
+                    child: CircularProgressIndicator(color: colors.accent),
+                  )
                 : SingleChildScrollView(
                     padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
                     child: Column(
@@ -506,11 +509,11 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
                         Text(
                           speedFactorLabel(_ratio),
                           key: const ValueKey('speed-factor-label'),
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: colors.textPrimary,
                             fontSize: 32,
-                            fontWeight: FontWeight.w900,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                            fontWeight: FontWeight.w600,
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -526,25 +529,25 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
                           max: 1.3,
                           divisions: 60,
                           value: _ratio,
-                          activeColor: _accent,
+                          activeColor: colors.accent,
                           onChanged: _saving
                               ? null
                               : (value) => _changeRatio(value),
                         ),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: const [
+                          children: [
                             Text(
                               '0.70x',
-                              style: TextStyle(color: Colors.white38),
+                              style: TextStyle(color: colors.textTertiary),
                             ),
                             Text(
                               '1.00x',
-                              style: TextStyle(color: Colors.white70),
+                              style: TextStyle(color: colors.textSecondary),
                             ),
                             Text(
                               '1.30x',
-                              style: TextStyle(color: Colors.white38),
+                              style: TextStyle(color: colors.textTertiary),
                             ),
                           ],
                         ),
@@ -573,7 +576,7 @@ class _TrackSpeedSheetState extends State<TrackSpeedSheet> {
                           const SizedBox(height: 18),
                           Text(
                             _error!,
-                            style: const TextStyle(color: Color(0xFFE57373)),
+                            style: TextStyle(color: colors.danger),
                           ),
                         ],
                       ],
@@ -657,10 +660,11 @@ class _BpmPanel extends StatelessWidget {
             status == 'FAILED' ||
             status == 'ERROR' ||
             status == 'UNAVAILABLE');
+    final colors = context.colors;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: _surface,
-        borderRadius: BorderRadius.circular(22),
+        color: colors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.card),
       ),
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -680,7 +684,7 @@ class _BpmPanel extends StatelessWidget {
                     : '${approximate ? '≈ ' : ''}${_formatBpm(originalBpm!)}',
               ),
             ),
-            Container(width: 1, height: 45, color: Colors.white12),
+            Container(width: 1, height: 45, color: colors.surfaceSunken),
             Expanded(
               child: _BpmValue(
                 label: 'BPM effectif',
@@ -703,17 +707,27 @@ class _BpmValue extends StatelessWidget {
   final String value;
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-      const SizedBox(height: 6),
-      Text(
-        value,
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-      ),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      children: [
+        Text(
+          label,
+          style: TextStyle(color: colors.textTertiary, fontSize: 12),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          value,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: colors.textPrimary,
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _EngineStatusPanel extends StatelessWidget {
@@ -728,47 +742,50 @@ class _EngineStatusPanel extends StatelessWidget {
   final bool appliedForCurrentSession;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    // Accès développeur discret : appui long → laboratoire A/B du moteur.
-    onLongPress: () => context.push('/dev/stretch-lab'),
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        color: _surface,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Row(
-          children: [
-            Expanded(
-              child: _EngineStatusValue(
-                label: 'Mode audio',
-                value: currentTimeStretchQualityLabel,
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GestureDetector(
+      // Accès développeur discret : appui long → laboratoire A/B du moteur.
+      onLongPress: () => context.push('/dev/stretch-lab'),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surfaceRaised,
+          borderRadius: BorderRadius.circular(AppRadius.artwork),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: _EngineStatusValue(
+                  label: 'Mode audio',
+                  value: currentTimeStretchQualityLabel,
+                ),
               ),
-            ),
-            Container(width: 1, height: 38, color: Colors.white12),
-            Expanded(
-              child: _EngineStatusValue(
-                label: 'État',
-                value: applying
-                    ? 'Application…'
-                    : appliedForCurrentSession
-                    ? 'Appliquée pour cette écoute'
-                    : 'Traitement en temps réel',
+              Container(width: 1, height: 38, color: colors.surfaceSunken),
+              Expanded(
+                child: _EngineStatusValue(
+                  label: 'État',
+                  value: applying
+                      ? 'Application…'
+                      : appliedForCurrentSession
+                      ? 'Appliquée pour cette écoute'
+                      : 'Traitement en temps réel',
+                ),
               ),
-            ),
-            Container(width: 1, height: 38, color: Colors.white12),
-            Expanded(
-              child: _EngineStatusValue(
-                label: 'Vitesse',
-                value: '${ratio.toStringAsFixed(2)}x',
+              Container(width: 1, height: 38, color: colors.surfaceSunken),
+              Expanded(
+                child: _EngineStatusValue(
+                  label: 'Vitesse',
+                  value: '${ratio.toStringAsFixed(2)}x',
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _EngineStatusValue extends StatelessWidget {
@@ -778,27 +795,34 @@ class _EngineStatusValue extends StatelessWidget {
   final String value;
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 5),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white54, fontSize: 11),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: colors.textTertiary, fontSize: 11),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 bool _analysisIsRunning(TrackAudioAnalysis? analysis) {

@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../domain/local_playlist.dart';
 import 'library_playlists.dart';
-
-const Color _surface = Color(0xFF23232B);
-const Color _accent = Color(0xFF1DB954);
 
 Future<LocalPlaylist?> showCreatePlaylistDialog(BuildContext context) {
   return showDialog<LocalPlaylist>(
@@ -52,9 +51,14 @@ class _RenamePlaylistDialogState extends ConsumerState<_RenamePlaylistDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return AlertDialog(
-      backgroundColor: _surface,
-      title: const Text('Renommer la playlist'),
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+      title: Text(
+        'Renommer la playlist',
+        style: TextStyle(color: colors.textPrimary),
+      ),
       content: TextField(
         controller: _nameController,
         autofocus: true,
@@ -69,12 +73,12 @@ class _RenamePlaylistDialogState extends ConsumerState<_RenamePlaylistDialog> {
       actions: [
         TextButton(
           onPressed: _saving ? null : () => Navigator.of(context).pop(false),
-          child: const Text('Annuler'),
+          child: Text('Annuler', style: TextStyle(color: colors.textSecondary)),
         ),
         FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: _accent,
-            foregroundColor: Colors.black,
+            backgroundColor: colors.accent,
+            foregroundColor: colors.onAccent,
           ),
           onPressed: _saving ? null : _submit,
           child: const Text('Enregistrer'),
@@ -144,9 +148,14 @@ class _CreatePlaylistDialogState extends ConsumerState<_CreatePlaylistDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return AlertDialog(
-      backgroundColor: _surface,
-      title: const Text('Créer une playlist'),
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+      title: Text(
+        'Créer une playlist',
+        style: TextStyle(color: colors.textPrimary),
+      ),
       content: TextField(
         controller: _nameController,
         autofocus: true,
@@ -161,12 +170,12 @@ class _CreatePlaylistDialogState extends ConsumerState<_CreatePlaylistDialog> {
       actions: [
         TextButton(
           onPressed: _saving ? null : () => Navigator.of(context).pop(),
-          child: const Text('Annuler'),
+          child: Text('Annuler', style: TextStyle(color: colors.textSecondary)),
         ),
         FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: _accent,
-            foregroundColor: Colors.black,
+            backgroundColor: colors.accent,
+            foregroundColor: colors.onAccent,
           ),
           onPressed: _saving ? null : _submit,
           child: const Text('Créer'),
@@ -217,7 +226,10 @@ Future<void> showAddTrackToPlaylistSheet(
     context: context,
     useSafeArea: true,
     isScrollControlled: true,
-    backgroundColor: _surface,
+    backgroundColor: context.colors.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.tile)),
+    ),
     builder: (_) => _AddTrackToPlaylistSheet(trackId: trackId),
   );
 }
@@ -250,6 +262,7 @@ class _AddTrackToPlaylistSheetState
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final playlists = ref.watch(playlistsProvider);
     final playlistItems = playlists.asData?.value ?? const <LocalPlaylist>[];
     return SizedBox(
@@ -261,27 +274,30 @@ class _AddTrackToPlaylistSheetState
             width: 36,
             height: 4,
             decoration: BoxDecoration(
-              color: Colors.white24,
+              color: colors.surfaceSunken,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 18, 20, 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
                 'Ajouter à une playlist',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: colors.textPrimary,
                   fontSize: 19,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.add_rounded, color: _accent),
-            title: const Text('Créer une playlist'),
+            leading: Icon(Icons.add_rounded, color: colors.accent),
+            title: Text(
+              'Créer une playlist',
+              style: TextStyle(color: colors.textPrimary),
+            ),
             onTap: () => setState(() => _creating = !_creating),
           ),
           if (_creating)
@@ -319,7 +335,7 @@ class _AddTrackToPlaylistSheetState
                 ],
               ),
             ),
-          const Divider(height: 1, color: Colors.white12),
+          Divider(height: 1, color: colors.surfaceSunken),
           if (playlistItems.length > 8)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
@@ -335,20 +351,20 @@ class _AddTrackToPlaylistSheetState
             ),
           Expanded(
             child: playlists.when(
-              loading: () => const Center(
-                child: CircularProgressIndicator(color: _accent),
+              loading: () => Center(
+                child: CircularProgressIndicator(color: colors.accent),
               ),
-              error: (_, _) => const Center(
+              error: (_, _) => Center(
                 child: Text(
                   'Impossible de charger les playlists.',
-                  style: TextStyle(color: Colors.white70),
+                  style: TextStyle(color: colors.textSecondary),
                 ),
               ),
               data: (items) => items.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text(
                         'Aucune playlist',
-                        style: TextStyle(color: Colors.white54),
+                        style: TextStyle(color: colors.textTertiary),
                       ),
                     )
                   : ListView.builder(
@@ -360,42 +376,48 @@ class _AddTrackToPlaylistSheetState
                         );
                         return ListTile(
                           key: ValueKey('playlist-toggle-${playlist.id}'),
-                          leading: const Icon(
+                          leading: Icon(
                             Icons.queue_music_rounded,
-                            color: Colors.white54,
+                            color: colors.textSecondary,
                           ),
-                          title: Text(playlist.name),
+                          title: Text(
+                            playlist.name,
+                            style: TextStyle(color: colors.textPrimary),
+                          ),
                           subtitle: Text(
                             '${playlist.trackCount} '
                             '${playlist.trackCount > 1 ? 'pistes' : 'piste'}',
+                            style: TextStyle(color: colors.textSecondary),
                           ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               if (_pendingPlaylistIds.contains(playlist.id))
-                                const Padding(
-                                  padding: EdgeInsets.only(right: 8),
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
                                   child: SizedBox(
                                     width: 14,
                                     height: 14,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
-                                      color: _accent,
+                                      color: colors.accent,
                                     ),
                                   ),
                                 ),
                               AnimatedSwitcher(
                                 duration: const Duration(milliseconds: 180),
                                 child: alreadyAdded
-                                    ? const Icon(
+                                    ? Icon(
                                         Icons.check_circle_rounded,
-                                        key: ValueKey('playlist-selected'),
-                                        color: _accent,
+                                        key: const ValueKey('playlist-selected'),
+                                        color: colors.accent,
                                       )
-                                    : const Icon(
+                                    : Icon(
                                         Icons.circle_outlined,
-                                        key: ValueKey('playlist-unselected'),
-                                        color: Colors.white24,
+                                        key: const ValueKey(
+                                          'playlist-unselected',
+                                        ),
+                                        color: colors.textTertiary,
                                       ),
                               ),
                             ],

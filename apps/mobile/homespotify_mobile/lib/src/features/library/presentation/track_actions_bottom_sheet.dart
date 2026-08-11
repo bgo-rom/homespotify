@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/navigation.dart';
 import '../../../core/logging/app_logger.dart';
 import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../player/audio/homespotify_audio_handler.dart';
 import '../../offline/presentation/offline_download_sheet.dart';
@@ -15,10 +17,6 @@ import 'library_artists.dart';
 import 'library_playback_controller.dart';
 import 'playlist_dialogs.dart';
 import 'track_removal.dart';
-
-const _background = Color(0xFF17171D);
-const _accent = Color(0xFF1DB954);
-const _danger = Color(0xFFE57373);
 
 enum _TrackAction {
   playNext,
@@ -50,9 +48,9 @@ Future<void> showTrackActionsBottomSheet(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
-      backgroundColor: _background,
+      backgroundColor: context.colors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.tile)),
       ),
       builder: (_) => _TrackActionsSheet(track: track),
     );
@@ -160,6 +158,7 @@ class _TrackActionsSheet extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.colors;
     final api = ref.read(libraryApiProvider);
     final coverUrl = track.hasCover ? api.coverUri(track.id).toString() : null;
     return DraggableScrollableSheet(
@@ -176,7 +175,7 @@ class _TrackActionsSheet extends ConsumerWidget {
               width: 42,
               height: 5,
               decoration: BoxDecoration(
-                color: Colors.white24,
+                color: colors.surfaceSunken,
                 borderRadius: BorderRadius.circular(3),
               ),
             ),
@@ -230,12 +229,12 @@ class _TrackActionsSheet extends ConsumerWidget {
             label: 'Télécharger',
             onTap: () => Navigator.pop(context, _TrackAction.download),
           ),
-          const Divider(color: Colors.white12, height: 24),
+          Divider(color: colors.surfaceSunken, height: 24),
           _ActionTile(
             key: const ValueKey('track-action-remove-library'),
             icon: Icons.delete_outline_rounded,
             label: 'Supprimer de la bibliothèque',
-            color: _danger,
+            color: colors.danger,
             onTap: () => Navigator.pop(context, _TrackAction.remove),
           ),
         ],
@@ -251,67 +250,73 @@ class _TrackHeader extends StatelessWidget {
   final String? coverUrl;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: SizedBox(
-          width: 76,
-          height: 76,
-          child: coverUrl == null
-              ? const ColoredBox(
-                  color: Color(0xFF292933),
-                  child: Icon(Icons.music_note_rounded, color: Colors.white30),
-                )
-              : AuthenticatedNetworkImage(coverUrl!, fit: BoxFit.cover),
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.artwork),
+          child: SizedBox(
+            width: 76,
+            height: 76,
+            child: coverUrl == null
+                ? ColoredBox(
+                    color: colors.surfaceSunken,
+                    child: Icon(
+                      Icons.music_note_rounded,
+                      color: colors.textTertiary,
+                    ),
+                  )
+                : AuthenticatedNetworkImage(coverUrl!, fit: BoxFit.cover),
+          ),
         ),
-      ),
-      const SizedBox(width: 14),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              track.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              track.artist,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white70),
-            ),
-            if (track.album.trim().isNotEmpty)
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Text(
-                track.album,
+                track.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white38, fontSize: 12),
-              ),
-            if (track.formatLabel != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: Text(
-                  track.formatLabel!,
-                  style: const TextStyle(
-                    color: _accent,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                  ),
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-          ],
+              const SizedBox(height: 4),
+              Text(
+                track.artist,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: colors.textSecondary),
+              ),
+              if (track.album.trim().isNotEmpty)
+                Text(
+                  track.album,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: colors.textTertiary, fontSize: 12),
+                ),
+              if (track.formatLabel != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Text(
+                    track.formatLabel!,
+                    style: TextStyle(
+                      color: colors.accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 }
 
 class _ActionTile extends StatelessWidget {
@@ -332,10 +337,13 @@ class _ActionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final foreground = enabled ? (color ?? Colors.white) : Colors.white30;
+    final colors = context.colors;
+    final foreground = enabled
+        ? (color ?? colors.textPrimary)
+        : colors.textTertiary;
     return ListTile(
       enabled: enabled,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
       leading: Icon(icon, color: foreground),
       title: Text(label, style: TextStyle(color: foreground)),
       onTap: enabled ? onTap : null,

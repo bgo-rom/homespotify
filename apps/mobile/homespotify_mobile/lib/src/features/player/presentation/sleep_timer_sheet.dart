@@ -3,15 +3,20 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../audio/homespotify_audio_handler.dart';
 
 Future<void> showSleepTimerSheet(BuildContext context, WidgetRef ref) async {
   final handler = ref.read(audioHandlerProvider);
   final message = await showModalBottomSheet<String>(
     context: context,
-    backgroundColor: const Color(0xFF17171D),
+    backgroundColor: context.colors.surface,
     isScrollControlled: true,
     showDragHandle: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.tile)),
+    ),
     builder: (_) => _SleepTimerSheet(handler: handler),
   );
   if (message == null || !context.mounted) return;
@@ -61,6 +66,7 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final state = _state;
     return SafeArea(
       top: false,
@@ -75,19 +81,19 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Row(
+            Row(
               children: [
-                Icon(Icons.bedtime_rounded, color: Color(0xFF1DB954)),
-                SizedBox(width: 12),
+                Icon(Icons.bedtime_rounded, color: colors.accent),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     'Minuteur de sommeil',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: Colors.white,
+                      color: colors.textPrimary,
                       fontSize: 20,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
@@ -98,7 +104,7 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
               state.isActive
                   ? _activeDescription(state)
                   : 'La lecture se mettra en pause en conservant votre file.',
-              style: const TextStyle(color: Colors.white60, height: 1.35),
+              style: TextStyle(color: colors.textSecondary, height: 1.35),
             ),
             const SizedBox(height: 16),
             Wrap(
@@ -121,17 +127,17 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
             const SizedBox(height: 10),
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-              leading: const Icon(
+              leading: Icon(
                 Icons.skip_next_rounded,
-                color: Colors.white70,
+                color: colors.textSecondary,
               ),
-              title: const Text(
+              title: Text(
                 'À la fin du titre',
-                style: TextStyle(color: Colors.white),
+                style: TextStyle(color: colors.textPrimary),
               ),
-              subtitle: const Text(
+              subtitle: Text(
                 'Aucune piste suivante ne démarrera.',
-                style: TextStyle(color: Colors.white54),
+                style: TextStyle(color: colors.textTertiary),
               ),
               onTap: () {
                 widget.handler.armSleepTimerAtEndOfTrack();
@@ -142,8 +148,9 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
               },
             ),
             if (state.isActive) ...[
-              const Divider(color: Colors.white12),
+              Divider(color: colors.surfaceSunken),
               TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: colors.danger),
                 onPressed: () {
                   widget.handler.cancelSleepTimer();
                   Navigator.pop(context, 'Minuteur annulé.');
@@ -188,13 +195,15 @@ class _DurationChoice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return ActionChip(
-      avatar: const Icon(Icons.timer_outlined, size: 18),
+      avatar: Icon(Icons.timer_outlined, size: 18, color: colors.textPrimary),
       label: Text(label),
       onPressed: onTap,
-      backgroundColor: const Color(0xFF272730),
-      labelStyle: const TextStyle(color: Colors.white),
-      side: const BorderSide(color: Colors.white12),
+      backgroundColor: colors.surfaceRaised,
+      labelStyle: TextStyle(color: colors.textPrimary),
+      shape: RoundedRectangleBorder(borderRadius: AppRadius.chipRadius),
+      side: BorderSide.none,
     );
   }
 }

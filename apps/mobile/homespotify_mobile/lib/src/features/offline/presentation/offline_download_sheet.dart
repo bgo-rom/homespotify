@@ -4,6 +4,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../library/domain/track.dart';
 import '../application/offline_index.dart';
@@ -12,10 +14,6 @@ import '../application/offline_profile_preference.dart';
 import '../application/offline_track_downloader.dart';
 import '../data/offline_api.dart';
 import '../domain/offline_models.dart';
-
-const _background = Color(0xFF17171D);
-const _accent = Color(0xFF1DB954);
-const _danger = Color(0xFFE57373);
 
 /// Feuille de téléchargement hors ligne : les TROIS choix sont toujours
 /// visibles, Opus 256 est présélectionné (ou la préférence appareil), les
@@ -28,9 +26,9 @@ Future<void> showOfflineDownloadSheet(
     context: context,
     useSafeArea: true,
     isScrollControlled: true,
-    backgroundColor: _background,
+    backgroundColor: context.colors.surface,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.tile)),
     ),
     builder: (_) => OfflineDownloadSheet(track: track),
   );
@@ -152,6 +150,7 @@ class _OfflineDownloadSheetState extends ConsumerState<OfflineDownloadSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final options = _options;
     return SafeArea(
       child: Padding(
@@ -165,7 +164,7 @@ class _OfflineDownloadSheetState extends ConsumerState<OfflineDownloadSheet> {
                 width: 42,
                 height: 5,
                 decoration: BoxDecoration(
-                  color: Colors.white24,
+                  color: colors.surfaceSunken,
                   borderRadius: BorderRadius.circular(3),
                 ),
               ),
@@ -175,21 +174,23 @@ class _OfflineDownloadSheetState extends ConsumerState<OfflineDownloadSheet> {
               'Télécharger « ${widget.track.title} »',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: colors.textPrimary,
                 fontSize: 18,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 14),
             if (_loadError != null) ...[
-              Text(_loadError!, style: const TextStyle(color: _danger)),
+              Text(_loadError!, style: TextStyle(color: colors.danger)),
               const SizedBox(height: 10),
               TextButton(onPressed: _load, child: const Text('Réessayer')),
             ] else if (options == null)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 32),
-                child: Center(child: CircularProgressIndicator(color: _accent)),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 32),
+                child: Center(
+                  child: CircularProgressIndicator(color: colors.accent),
+                ),
               )
             else ...[
               for (final option in options)
@@ -202,12 +203,15 @@ class _OfflineDownloadSheetState extends ConsumerState<OfflineDownloadSheet> {
                 ),
               const SizedBox(height: 14),
               if (_done)
-                const ListTile(
-                  key: ValueKey('offline-download-done'),
-                  leading: Icon(Icons.check_circle_rounded, color: _accent),
+                ListTile(
+                  key: const ValueKey('offline-download-done'),
+                  leading: Icon(
+                    Icons.check_circle_rounded,
+                    color: colors.accent,
+                  ),
                   title: Text(
                     'Téléchargement terminé et vérifié.',
-                    style: TextStyle(color: Colors.white),
+                    style: TextStyle(color: colors.textPrimary),
                   ),
                 )
               else if (_progress != null) ...[
@@ -216,10 +220,7 @@ class _OfflineDownloadSheetState extends ConsumerState<OfflineDownloadSheet> {
                 TextButton(
                   key: const ValueKey('offline-download-cancel'),
                   onPressed: _cancel,
-                  child: const Text(
-                    'Annuler',
-                    style: TextStyle(color: _danger),
-                  ),
+                  child: Text('Annuler', style: TextStyle(color: colors.danger)),
                 ),
               ] else ...[
                 if (_downloadError != null)
@@ -228,14 +229,14 @@ class _OfflineDownloadSheetState extends ConsumerState<OfflineDownloadSheet> {
                     child: Text(
                       _downloadError!,
                       key: const ValueKey('offline-download-error'),
-                      style: const TextStyle(color: _danger),
+                      style: TextStyle(color: colors.danger),
                     ),
                   ),
                 FilledButton.icon(
                   key: const ValueKey('offline-download-start'),
                   style: FilledButton.styleFrom(
-                    backgroundColor: _accent,
-                    foregroundColor: Colors.black,
+                    backgroundColor: colors.accent,
+                    foregroundColor: colors.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                   onPressed: _download,
@@ -298,13 +299,14 @@ class _OfflineChoiceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return ListTile(
       enabled: enabled,
       onTap: enabled ? onTap : null,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: AppRadius.chipRadius,
         side: BorderSide(
-          color: selected ? _accent : Colors.white12,
+          color: selected ? colors.accent : colors.surfaceSunken,
           width: selected ? 2 : 1,
         ),
       ),
@@ -312,16 +314,16 @@ class _OfflineChoiceTile extends StatelessWidget {
         selected
             ? Icons.radio_button_checked_rounded
             : Icons.radio_button_off_rounded,
-        color: selected ? _accent : Colors.white38,
+        color: selected ? colors.accent : colors.textTertiary,
       ),
       title: Row(
         children: [
           Flexible(
             child: Text(
               offlineOptionTitle(option),
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -331,15 +333,15 @@ class _OfflineChoiceTile extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: _accent.withValues(alpha: 0.18),
+                  color: colors.accentSoft,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Text(
+                child: Text(
                   'Recommandé',
                   style: TextStyle(
-                    color: _accent,
+                    color: colors.accent,
                     fontSize: 11,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -348,7 +350,7 @@ class _OfflineChoiceTile extends StatelessWidget {
       ),
       subtitle: Text(
         offlineOptionSubtitle(option),
-        style: const TextStyle(color: Colors.white54, fontSize: 12),
+        style: TextStyle(color: colors.textTertiary, fontSize: 12),
       ),
     );
   }
@@ -368,17 +370,18 @@ class _DownloadProgressView extends StatelessWidget {
       OfflineDownloadStatus.verifying => 'Vérification de l’empreinte…',
       _ => '…',
     };
+    final colors = context.colors;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         LinearProgressIndicator(
           key: const ValueKey('offline-download-progress'),
           value: progress.ratio,
-          color: _accent,
-          backgroundColor: Colors.white12,
+          color: colors.accent,
+          backgroundColor: colors.surfaceSunken,
         ),
         const SizedBox(height: 8),
-        Text(label, style: const TextStyle(color: Colors.white70)),
+        Text(label, style: TextStyle(color: colors.textSecondary)),
       ],
     );
   }

@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_shapes.dart';
 import '../../catalog/data/catalog_api.dart';
 import '../application/track_library_membership.dart';
 import '../data/library_api.dart';
-
-const Color _card = Color(0xFF1A1A22);
 
 /// Dialogue de confirmation puis retrait d'une piste de la bibliothèque du
 /// compte courant, via le contrôleur CENTRAL [trackMembershipProvider].
@@ -29,33 +29,37 @@ Future<void> confirmAndRemoveTrackFromLibrary(
 }) async {
   final confirmed = await showDialog<bool>(
     context: context,
-    builder: (context) => AlertDialog(
-      backgroundColor: _card,
-      title: const Text(
-        'Supprimer de ma bibliothèque ?',
-        style: TextStyle(color: Colors.white),
-      ),
-      content: Text(
-        '« $title » sera retiré de ta bibliothèque, de tes favoris et de tes '
-        'playlists. Le fichier reste sur le serveur et les autres comptes ne '
-        'sont pas affectés.',
-        style: const TextStyle(color: Colors.white70),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Garder', style: TextStyle(color: Colors.white54)),
+    builder: (context) {
+      final colors = context.colors;
+      return AlertDialog(
+        backgroundColor: colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: AppRadius.cardRadius),
+        title: Text(
+          'Supprimer de ma bibliothèque ?',
+          style: TextStyle(color: colors.textPrimary),
         ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFFE57373),
-            foregroundColor: Colors.black,
+        content: Text(
+          '« $title » sera retiré de ta bibliothèque, de tes favoris et de tes '
+          'playlists. Le fichier reste sur le serveur et les autres comptes ne '
+          'sont pas affectés.',
+          style: TextStyle(color: colors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text('Garder', style: TextStyle(color: colors.textSecondary)),
           ),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Supprimer'),
-        ),
-      ],
-    ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: colors.danger,
+              foregroundColor: colors.onAccent,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Supprimer'),
+          ),
+        ],
+      );
+    },
   );
   if (confirmed != true || !context.mounted) return;
 

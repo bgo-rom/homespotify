@@ -34,7 +34,9 @@ class AnimatedSuccessOverlay extends StatefulWidget {
   final Color accentColor;
 
   /// Repli si aucune couleur d'accent n'est fournie (contexte hors thème).
-  static const Color defaultAccent = Color(0xFF1DB954);
+  /// Accent argile Direction 33 : le vert Spotify historique est proscrit,
+  /// même en repli. En production, l'appelant passe toujours `colors.accent`.
+  static const Color defaultAccent = Color(0xFFA96A63);
 
   /// Insère l'overlay au-dessus de tout et retourne l'entrée créée. L'entrée se
   /// retire seule à la fin ; [onDismissed] est alors invoqué (ex. réarmer

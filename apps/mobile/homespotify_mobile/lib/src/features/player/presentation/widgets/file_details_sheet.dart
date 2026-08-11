@@ -2,9 +2,9 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/logging/app_logger.dart';
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_shapes.dart';
 
-const Color _sheetBackground = Color(0xFF18181F);
-const Color _accent = Color(0xFF1DB954);
 const String _unknown = 'Inconnu';
 
 Future<void> showFileDetailsSheet(
@@ -22,11 +22,11 @@ Future<void> showFileDetailsSheet(
   try {
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: _sheetBackground,
+      backgroundColor: context.colors.surface,
       isScrollControlled: true,
       useSafeArea: true,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.card)),
       ),
       builder: (_) => _FileDetailsSheet(details: details),
     );
@@ -46,6 +46,7 @@ class _FileDetailsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return FractionallySizedBox(
       heightFactor: 0.78,
       child: Padding(
@@ -56,22 +57,22 @@ class _FileDetailsSheet extends StatelessWidget {
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.white24,
+                color: colors.surfaceSunken,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
             const SizedBox(height: 18),
-            const Row(
+            Row(
               children: [
-                Icon(Icons.info_outline_rounded, color: _accent),
-                SizedBox(width: 10),
+                Icon(Icons.info_outline_rounded, color: colors.accent),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     'Détails du fichier',
                     style: TextStyle(
-                      color: Colors.white,
+                      color: colors.textPrimary,
                       fontSize: 20,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
@@ -82,7 +83,7 @@ class _FileDetailsSheet extends StatelessWidget {
               child: ListView.separated(
                 itemCount: details.rows.length,
                 separatorBuilder: (_, _) =>
-                    const Divider(height: 1, color: Colors.white10),
+                    Divider(height: 1, color: colors.surfaceSunken),
                 itemBuilder: (context, index) {
                   final row = details.rows[index];
                   return _DetailRow(
@@ -98,8 +99,8 @@ class _FileDetailsSheet extends StatelessWidget {
               width: double.infinity,
               child: FilledButton(
                 style: FilledButton.styleFrom(
-                  backgroundColor: _accent,
-                  foregroundColor: Colors.black,
+                  backgroundColor: colors.accent,
+                  foregroundColor: colors.onAccent,
                 ),
                 onPressed: () => Navigator.of(context).pop(),
                 child: const Text('Fermer'),
@@ -120,6 +121,7 @@ class _DetailRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 13),
       child: Row(
@@ -129,7 +131,7 @@ class _DetailRow extends StatelessWidget {
             flex: 4,
             child: Text(
               label,
-              style: const TextStyle(color: Colors.white54, fontSize: 13),
+              style: TextStyle(color: colors.textTertiary, fontSize: 13),
             ),
           ),
           const SizedBox(width: 16),
@@ -140,7 +142,7 @@ class _DetailRow extends StatelessWidget {
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.end,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
+              style: TextStyle(color: colors.textPrimary, fontSize: 14),
             ),
           ),
         ],
