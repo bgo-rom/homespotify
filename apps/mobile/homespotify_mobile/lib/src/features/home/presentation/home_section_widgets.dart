@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/authenticated_network_image.dart';
+import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/home_design.dart';
 import '../../library/data/library_api.dart';
 import '../../library/domain/track.dart';
@@ -52,8 +53,10 @@ class HomeSectionHeader extends StatelessWidget {
               onPressed: onAction,
               child: Text(
                 actionLabel!,
-                style: const TextStyle(
-                  color: HomeDesign.accent,
+                // Même équivalent que `SectionHeader` (Direction 33) pour la
+                // même action « Tout voir » : lien discret, pas l'accent.
+                style: TextStyle(
+                  color: context.colors.link,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -165,9 +168,9 @@ class HomeMediaCard extends ConsumerWidget {
                     width: width,
                     height: width,
                     child: coverUrl == null
-                        ? const ColoredBox(
-                            color: HomeDesign.surfaceMuted,
-                            child: Icon(
+                        ? ColoredBox(
+                            color: context.colors.surfaceSunken,
+                            child: const Icon(
                               Icons.music_note_rounded,
                               color: Colors.white24,
                               size: 34,
@@ -230,12 +233,12 @@ class HomeTrackCard extends StatelessWidget {
       coverTrackId: track.hasCover ? track.id : null,
       onTap: loading ? () {} : onTap,
       badge: loading
-          ? const SizedBox(
+          ? SizedBox(
               width: 18,
               height: 18,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: HomeDesign.accent,
+                color: context.colors.accent,
               ),
             )
           : null,
